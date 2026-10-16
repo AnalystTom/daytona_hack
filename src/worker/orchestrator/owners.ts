@@ -38,15 +38,15 @@ export function surrealOwners(db: SurrealRunStore): Owners {
     },
     async list(owner, since) {
       const [rows] = await db.query(
-        `SELECT ${fields} FROM run_owner WHERE owner = $owner AND createdAt > $since ORDER BY createdAt DESC`,
-        { owner, since },
+        `SELECT ${fields} FROM run_owner WHERE owner = array::join($owner, '') AND createdAt > $since ORDER BY createdAt DESC`,
+        { owner: Array.from(owner), since },
       );
       return (rows as RunOwner[] | null) ?? [];
     },
     async finish(runId, owner) {
       await db.query(
-        "UPDATE type::record('run_owner', $runId) SET busy = false WHERE owner = $owner RETURN NONE",
-        { runId, owner },
+        "UPDATE type::record('run_owner', $runId) SET busy = false WHERE owner = array::join($owner, '') RETURN NONE",
+        { runId, owner: Array.from(owner) },
       );
     },
     async reserve(run, maxActive, perDay, ended) {
@@ -56,6 +56,7 @@ export function surrealOwners(db: SurrealRunStore): Owners {
           const results = await db.query(
             `
 BEGIN TRANSACTION;
+LET $owner = array::join($owner, '');
 UPSERT type::record('run_quota', $owner) SET revision = (revision ?? 0) + 1 RETURN NONE;
 FOR $old IN $ended {
 UPDATE type::record('run_owner', $old.runId) SET active = false
@@ -76,7 +77,14 @@ UPDATE type::record('run_owner', $runId) SET active = true, busy = true, revisio
 };
 RETURN $refusal;
 COMMIT TRANSACTION;`,
-            { ...run, day, maxActive, perDay, ended },
+            {
+              ...run,
+              owner: Array.from(run.owner),
+              day,
+              maxActive,
+              perDay,
+              ended: ended.map(({ runId, revision }) => ({ runId, revision })),
+            },
           );
           return (results.at(-2) ?? undefined) as
             | "active_run_limit"

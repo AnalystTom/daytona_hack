@@ -241,6 +241,87 @@ describe.each(stores)("%s run store", (_name, makeStore) => {
 });
 
 describe.skipIf(!surreal)("surreal run owners", () => {
+  it("preserves UUID-prefixed full emails and isolates ownership, admission and daily quotas by domain", async () => {
+    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const local = crypto.randomUUID();
+    const a = {
+      runId: crypto.randomUUID(),
+      owner: `${local}@example.com`,
+      createdAt: Date.now(),
+    };
+    const b = {
+      ...a,
+      runId: crypto.randomUUID(),
+      owner: `${local}@example.org`,
+    };
+    expect(await owners.reserve(a, 1, 1, [])).toBeUndefined();
+    expect(await owners.reserve(b, 1, 1, [])).toBeUndefined();
+    expect(await owners.get(a.runId)).toMatchObject(a);
+    expect(await owners.get(b.runId)).toMatchObject(b);
+    expect((await owners.list(a.owner, 0)).map((r) => r.runId)).toEqual([
+      a.runId,
+    ]);
+    expect((await owners.list(b.owner, 0)).map((r) => r.runId)).toEqual([
+      b.runId,
+    ]);
+    expect(await owners.list(local, 0)).toEqual([]);
+    await expect(
+      owners.reserve({ ...a, owner: b.owner }, 2, 1, []),
+    ).rejects.toThrow("Run owner mismatch");
+    expect(await owners.reserve(a, 1, 1, [])).toBeUndefined();
+    await owners.finish(a.runId, b.owner);
+    expect(await owners.get(a.runId)).toMatchObject({
+      owner: a.owner,
+      busy: true,
+    });
+    await owners.finish(a.runId, a.owner);
+    expect(await owners.get(a.runId)).toMatchObject({
+      owner: a.owner,
+      busy: false,
+    });
+    const currentA = (await owners.get(a.runId))!;
+    expect(
+      await owners.reserve({ ...b, runId: crypto.randomUUID() }, 1, 1, [
+        currentA,
+      ]),
+    ).toBe("active_run_limit");
+    expect(await owners.get(a.runId)).toMatchObject({ active: true });
+    expect(
+      await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 1, [
+        currentA,
+      ]),
+    ).toBe("daily_run_limit");
+    expect(await owners.get(b.runId)).toMatchObject({
+      owner: b.owner,
+      active: true,
+    });
+    expect(
+      await owners.reserve({ ...b, runId: crypto.randomUUID() }, 1, 1, [b]),
+    ).toBe("daily_run_limit");
+    const env: OrchestratorEnv = {
+      ACCESS_TEAM_DOMAIN: TEAM,
+      ACCESS_AUD: AUD,
+      ORCHESTRATOR: {
+        fetch: async () => Response.json({ id: a.runId }),
+      } as unknown as Fetcher,
+    };
+    for (const [owner, status] of [
+      [a.owner, 200],
+      [b.owner, 404],
+    ] as const) {
+      const response = await handleOrchestrator(
+        new Request(`https://reversy.test/api/v1/runs/${a.runId}`, {
+          headers: {
+            "cf-access-jwt-assertion": await accessJwt({ email: owner }),
+          },
+        }),
+        env,
+        { owners, fetcher: certs },
+      );
+      expect(response?.status).toBe(status);
+    }
+  });
+
   it("atomically admits starts and persists ownership and daily charges", async () => {
     const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
     const owner = `${crypto.randomUUID()}@example.com`;
@@ -429,8 +510,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
       .find((row) => row.id !== original.runId)!
       .createdAt.slice(0, 10);
     const [charged] = await store.query(
-      "SELECT VALUE runs FROM ONLY type::record('run_quota', [$owner, $day])",
-      { owner: original.owner, day },
+      "SELECT VALUE runs FROM ONLY type::record('run_quota', [array::join($owner, ''), $day])",
+      { owner: Array.from(original.owner), day },
     );
     expect(Number(charged)).toBe(day === newDay ? 2 : 1);
   });
