@@ -158,12 +158,14 @@ async function persistedRun(
 
 function bindCapture(signIn: SignIn | null = null) {
   const records = new Map<string, EvidenceRecord>();
+  const content = new Map<string, Uint8Array>();
   const store: EvidenceStore = {
-    putEvidence: async (record) => {
+    putEvidence: async (record, bytes) => {
       records.set(record.id, record);
+      content.set(record.id, bytes);
     },
     getEvidence: async (id) => records.get(id) ?? null,
-    getContent: async () => null,
+    getContent: async (id) => content.get(id) ?? null,
     saveSignIn: async (_id, value) => {
       signIn = value;
     },
@@ -1032,6 +1034,96 @@ describe("Run persisted evidence", () => {
 });
 
 describe("Run entered-URL redirects", () => {
+  it("keeps fallback screenshots inferred and available in first look and gateway capture", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("ok"));
+    const memory = bindCapture();
+    vi.mocked(evidenceStore).mockReturnValue(memory.store);
+    vi.spyOn(anchor, "createSession").mockResolvedValue({
+      id: "session",
+      liveViewUrl: "https://live.example.test/session",
+    });
+    vi.spyOn(anchor, "endSession").mockResolvedValue();
+    vi.spyOn(anchor, "runSnippet").mockRejectedValue(
+      new anchor.CodeExecutionRefused("not enabled"),
+    );
+    const png = new Uint8Array([1, 2, 3]);
+    vi.spyOn(anchor, "screenshotTool").mockResolvedValue(png);
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+
+    const state = await run.start("run-1", "https://example.com/", "copy it");
+
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "screenshot",
+        status: "inferred",
+        url: expect.stringMatching(/^\/runs\/run-1\/evidence\/ev_/),
+      }),
+    );
+    expect(vi.mocked(llmJson).mock.calls.at(-1)?.[1].input).not.toContain(
+      "No screenshot",
+    );
+    expect(await run.gatewayCapture("https://example.com/account")).toEqual({
+      png,
+    });
+    expect(ctx.events()).toContainEqual(
+      expect.objectContaining({
+        type: "evidence",
+        data: expect.objectContaining({
+          kind: "screenshot",
+          status: "inferred",
+        }),
+      }),
+    );
+    expect(
+      [...memory.records.values()].every((r) => r.label === "inferred"),
+    ).toBe(true);
+
+    state.phase = "planned";
+    state.tasks = [
+      {
+        id: "t01",
+        title: "Rebuild",
+        brief: "Rebuild",
+        outOfScope: "",
+        acceptance: [],
+        evidence: [...memory.records.keys()],
+        owns: ["index.html"],
+        dependsOn: [],
+        status: "queued",
+        attempts: 0,
+        branch: "task/t01",
+      },
+    ];
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({
+      id: "sandbox-1",
+    });
+    vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    const start = vi
+      .spyOn(Daytona.prototype, "startAsync")
+      .mockResolvedValue("cmd");
+    vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
+      "https://preview.example.test",
+    );
+    await run.startBuild();
+    await run.alarm();
+    await run.alarm();
+    for (const record of memory.records.values()) {
+      expect(write).toHaveBeenCalledWith(
+        "sandbox-1",
+        `/home/daytona/evidence/${record.id}.png`,
+        png,
+      );
+      expect(start).toHaveBeenCalledWith(
+        "sandbox-1",
+        "w-t01-0",
+        expect.stringContaining(`-i /home/daytona/evidence/${record.id}.png`),
+      );
+    }
+  });
+
   // wikipedia.com answers 301 to wikipedia.org; the browser lands wherever `landing` says.
   function wikipedia(landing: (call: number) => string) {
     vi.stubGlobal(

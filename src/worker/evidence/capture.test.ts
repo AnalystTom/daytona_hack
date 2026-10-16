@@ -501,8 +501,8 @@ describe("captureRun without Anchor code execution", () => {
       "styles not_observed",
       "assets not_observed",
       "network not_observed",
-      "screenshot observed",
-      "screenshot observed",
+      "screenshot inferred",
+      "screenshot inferred",
       "recording not_observed",
     ]);
     for (const item of items.filter((i) => i.label === "not_observed"))
@@ -510,6 +510,10 @@ describe("captureRun without Anchor code execution", () => {
         "Anchor code execution is not enabled on this account",
       ]);
     const shot = items.find((i) => i.kind === "screenshot");
+    for (const item of items.filter((i) => i.kind === "screenshot"))
+      expect(item.limitations).toContain(
+        "captured with the fallback screenshot tool; the final page URL after scripts could not be verified, so it may show a redirect such as a sign-in page",
+      );
     expect(memory.content.get(shot?.id ?? "")?.length).toBeGreaterThan(0);
     const tool = calls.filter((c) => c.path === "/v1/tools/screenshot");
     expect(tool.map((c) => c.body)).toEqual([
@@ -520,13 +524,20 @@ describe("captureRun without Anchor code execution", () => {
       "evidence.page_captured",
       "evidence.capture_finished",
     ]);
+    expect(events.at(-1)?.message).toBe(
+      "0 observed, 2 inferred, 5 not observed",
+    );
   });
 
   it("tries code execution once per run, not once per page", async () => {
     const calls = fakeAnchor({}, { refuseCode: true });
     const { deps: d } = deps(memoryStore().store);
 
-    await captureRun(d, "run_1", { mode: "first_look", scope });
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    expect(
+      result.status === "captured" && result.items.map((i) => i.label),
+    ).toEqual(["inferred", "inferred"]);
 
     expect(
       calls.filter((c) => c.path === "/v1/tools/execute-code"),
@@ -555,6 +566,33 @@ describe("captureRun without Anchor code execution", () => {
 });
 
 describe("captureRun landing check", () => {
+  it("marks a malformed redirect as not observed and continues to the next page", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://[" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed", "inferred"]);
+    expect(items[0]?.limitations).toEqual([
+      "Capture failed: the page's final URL could not be checked against the approved scope",
+    ]);
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/screenshot").map((c) => c.body),
+    ).toEqual([
+      expect.objectContaining({ url: "https://example.com/pricing" }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_stopped",
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
   it("refuses a redirect hop to a private host without fetching it", async () => {
     const calls = fakeAnchor(
       { "https://example.com/": "https://169.254.169.254/latest" },

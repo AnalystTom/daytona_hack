@@ -65,23 +65,22 @@ async function landingUrl(start: string) {
       throw new anchor.AnchorError(
         `a redirect hop was refused: ${checked.error}`,
       );
-    let response: Response;
     try {
-      response = await fetch(checked.url, {
+      const response = await fetch(checked.url, {
         redirect: "manual",
         signal: AbortSignal.timeout(10_000),
         headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
       });
       await response.body?.cancel();
+      const location = response.headers.get("location");
+      if (response.status < 300 || response.status > 399 || !location)
+        return checked.url;
+      current = new URL(location, checked.url).href;
     } catch {
       throw new anchor.AnchorError(
         "the page's final URL could not be checked against the approved scope",
       );
     }
-    const location = response.headers.get("location");
-    if (response.status < 300 || response.status > 399 || !location)
-      return checked.url;
-    current = new URL(location, checked.url).href;
   }
   throw new anchor.AnchorError("the page redirected too many times");
 }
@@ -237,11 +236,10 @@ export async function captureRun(
       contentType: string,
       content: Uint8Array,
       limitations: string[],
+      label: EvidenceRecord["label"] = "observed",
     ) => {
       const expected = pending.shift() as Expected;
-      ids.push(
-        await save(expected, "observed", contentType, content, limitations),
-      );
+      ids.push(await save(expected, label, contentType, content, limitations));
     };
     const skip = async (reason: string) => {
       ids.push(await notObserved(pending.shift() as Expected, reason));
@@ -307,10 +305,15 @@ export async function captureRun(
           if (fallback) {
             const png = await anchor.screenshotTool(key, url, viewport);
             deps.signal?.throwIfAborted();
-            await take("image/png", png, [
-              limit,
-              "Taken with Anchor's screenshot tool: the page's DOM, tokens and requests were not read, and its final URL is only checked for HTTP redirects before the shot, so a script redirect would go unnoticed.",
-            ]);
+            await take(
+              "image/png",
+              png,
+              [
+                limit,
+                "captured with the fallback screenshot tool; the final page URL after scripts could not be verified, so it may show a redirect such as a sign-in page",
+              ],
+              "inferred",
+            );
             continue;
           }
           const shot = await anchor.runSnippet<{
@@ -413,7 +416,7 @@ export async function captureRun(
   await deps.emit({
     type: "evidence.capture_finished",
     state: "captured",
-    message: `${items.filter((item) => item.label === "observed").length} of ${items.length} evidence items observed`,
+    message: `${items.filter((item) => item.label === "observed").length} observed, ${items.filter((item) => item.label === "inferred").length} inferred, ${items.filter((item) => item.label === "not_observed").length} not observed`,
     artifactRefs: items.map((item) => item.id),
   });
   return { status: "captured", items };

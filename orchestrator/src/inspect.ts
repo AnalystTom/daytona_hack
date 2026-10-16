@@ -136,7 +136,7 @@ const extensions: Record<string, string> = {
 
 /** A stored evidence record as the orchestrator's `evidence` event and state entry. */
 export function toEvidence(record: EvidenceRecord): Evidence {
-  const observed = record.label === "observed";
+  const captured = record.label !== "not_observed";
   const media = record.kind === "screenshot" || record.kind === "recording";
   const page = redactQuery(record.pageOrState);
   return {
@@ -149,12 +149,12 @@ export function toEvidence(record: EvidenceRecord): Evidence {
     hash: record.contentHash,
     // Redirect targets keep their query strings only in the stored record, never in events.
     limits: redactQuery(record.limitations.join(" ")),
-    summary: `${observed ? "" : "No "}${record.kind} of ${page}`,
-    path: observed
+    summary: `${captured ? "" : "No "}${record.kind} of ${page}`,
+    path: captured
       ? `evidence/${record.id}.${extensions[record.contentType] ?? "bin"}`
       : undefined,
     url:
-      observed && media
+      captured && media
         ? `/runs/${record.runId}/evidence/${record.id}`
         : undefined,
   };
