@@ -60,6 +60,7 @@ Session navigation, browser persistence and canvas controls are documented in th
 The user gives a URL and a goal, then refines the scope in conversation; questions and follow-ups stay in the chat panel, not in a form.
 Answers update the living spec on the canvas.
 The chat stays visible while Reversy inspects, plans and builds, and is where the user steers and clarifies scope.
+Reversy addresses the user as "you", without a title or nickname.
 
 **The canvas holds the work.**
 Spec and Build show different objects in the same environment.
@@ -71,7 +72,7 @@ Spec and Build show different objects in the same environment.
 The canvas is the specification and evidence surface:
 
 - **Draft spec** card: the target URL, pages and flows, and open questions. Anything not yet agreed is shown as "Not confirmed yet".
-- **Target screenshot** cards: real screenshots captured from the site.
+- **Target screenshot** cards follow the [workspace guide's screenshot and unavailable-evidence behavior](../README.md#workspace).
 - **Video evidence** cards: real recordings from the [evidence contract](orchestrator/spec.md#6-evidence), or "No recording yet".
 - Each piece of evidence links to its page or flow.
 

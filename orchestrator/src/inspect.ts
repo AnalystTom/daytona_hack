@@ -55,7 +55,7 @@ export const maxRedirects = 5;
 /**
  * Follows the entered URL's redirects before scoping, so the final URL's origin is the run's
  * approved origin. Every hop must pass the run URL checks (https, public host); an unsafe or
- * unreadable hop stops the chain at the last safe URL, whose capture then leaves the scope as before.
+ * unreadable hop leaves capture to apply its scope guard to the last accepted URL.
  */
 export async function resolveRedirects(
   url: string,
