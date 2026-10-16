@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-// Run sandbox lifecycle contracts (docs/orchestrator/spec.md sections 2, 6 and 9).
+// Run sandbox lifecycle contracts (docs/orchestrator/spec.md sections 3, 5 and 11).
 
 // Captain input reaches Firstmate through an environment variable, which Linux caps at 128 KiB.
 export const CaptainInput = z.object({

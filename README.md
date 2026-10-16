@@ -43,14 +43,14 @@ Set a secret with `npx wrangler secret put <NAME>`.
 
 ## Verifier
 
-`POST /api/v1/runs/:id/verify` checks the orchestrator's output with `claude-opus-5-5` at high effort (`docs/orchestrator/spec.md` section 7).
+`POST /api/v1/runs/:id/verify` checks the orchestrator's output with `claude-opus-5-5` at high effort (`docs/orchestrator/spec.md` section 9).
 The body is `{kind: "plan" | "task" | "final", spec, evidence, findings, screenshots, plan}`, plus `task` for `kind: "task"` and `rebuildEvidenceIds` for `kind: "final"`; the schemas are in `src/shared/verifier.ts`.
 It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs.
 A model error, refusal, truncated reply or malformed verdict returns 502, never a pass.
 
 ## Run API
 
-The Worker serves the run API under `/api/v1/runs` (see `docs/orchestrator/spec.md` sections 2, 4 and 10, and `src/shared/runs.ts` for the request and response shapes):
+The Worker serves the run API under `/api/v1/runs` (see `docs/orchestrator/spec.md` sections 3, 5 and 12, and `src/shared/runs.ts` for the request and response shapes):
 
 | Route | Who calls it | What it does |
 |---|---|---|
@@ -103,7 +103,7 @@ Without them the deploy job fails, so a merge to `main` that did not deploy show
 
 ## Run sandbox (Daytona)
 
-Each run gets one Daytona sandbox that holds the agent system (`docs/orchestrator/spec.md` sections 2, 3 and 6): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+Each run gets one Daytona sandbox that holds the agent system (the second engine, `docs/orchestrator/spec.md` section 11): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
 The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
 
 - `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).
@@ -166,7 +166,7 @@ Daytona forks only Linux VM sandboxes, and builds from a Dockerfile only for con
 Until VM fork is enabled on the account, pods are snapshot copies: the parent is stopped for the cold snapshot and restarted afterwards.
 To use fork, push the image built from `sandbox/Dockerfile` to a registry and create the snapshot from it with `--image <image> --sandbox-class linux-vm`.
 
-Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo (both open questions in the agent system spec).
+Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo.
 
 ## Evidence capture
 

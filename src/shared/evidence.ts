@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { EventEnvelope, EvidenceItem } from "./contracts";
 
-// Evidence capture contracts (docs/orchestrator/spec.md section 5).
+// Evidence capture contracts (docs/orchestrator/spec.md section 6).
 
 export const viewports = {
   desktop: { width: 1440, height: 900 },

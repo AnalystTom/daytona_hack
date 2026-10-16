@@ -55,7 +55,7 @@ export type PullRequest = {
   head: { ref: string };
 };
 
-// Firstmate's worker states, mapped onto the Build view's columns (spec section 6).
+// Firstmate's worker states, mapped onto the Build view's columns (spec section 7).
 // A blocked or paused worker is still Building; the message carries the reason.
 const STATUS_STATES: Record<string, TaskState> = {
   working: "building",
