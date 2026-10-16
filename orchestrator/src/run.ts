@@ -400,8 +400,55 @@ export class Run extends DurableObject<Env> {
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
-    const signal = this.inspection.signal;
+    this.s.pending = isReportGoal(this.s.spec.goal) ? "report" : "inspect";
+    await this.save(signal);
+    await this.emit("spec", this.s.spec, signal);
+    await this.emit("phase", { phase: "inspecting" }, signal);
     signal.throwIfAborted();
+    await this.ctx.storage.setAlarm(Date.now() + 100);
+    return this.s;
+  }
+
+  /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
+  startSignIn() {
+    return this.serializeSignIn(async () => {
+      const result = await this.capture({
+        mode: "full_pack",
+        scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
+        signIn: "start",
+      });
+      if (result.status !== "awaiting_sign_in")
+        throw new Error("secure sign-in did not start");
+      return { liveViewUrl: result.liveViewUrl };
+    });
+  }
+
+  /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
+  resumeSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      return this.continueInspection("resume_sign_in");
+    });
+  }
+
+  /** Plan without the stopped pages. */
+  skipSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      await endSavedSignIn(this.env, this.s.id);
+      return this.continueInspection("plan");
+    });
+  }
+
+  private awaitingSignIn() {
+    if (this.s.phase !== "awaiting_sign_in" || !this.s.signInPaths?.length)
+      throw new Error(`no sign-in is pending in phase ${this.s.phase}`);
+    return this.s.signInPaths;
+  }
+
+  private async continueInspection(pending: "resume_sign_in" | "plan") {
+    this.s.phase = "inspecting";
+    this.s.pending = pending;
     await this.save();
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);
@@ -650,6 +697,33 @@ Set userApproved=true only if the user's last message clearly approves the spec.
   }
 
   // ---------- phase 2+3: inspect and plan ----------
+  private async storeEvidence(
+    evidence: Evidence[],
+    blobs: Record<string, ArrayBuffer | string>,
+  ) {
+    for (const e of evidence) {
+      const b = blobs[e.id];
+      if (b && (typeof b === "string" ? b.length : b.byteLength) < 1_900_000) {
+        await this.ctx.storage.put(
+          `blob:${e.id}`,
+          typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
+        );
+        if (e.kind === "screenshot")
+          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
+      }
+      this.s.evidence.push(e);
+      await this.emit("evidence", e);
+      if (e.status !== "not_observed") {
+        await remember(
+          this.env,
+          this.memScope(),
+          `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}${e.page}: ${e.summary}. Limits: ${e.limits}.`,
+        );
+      }
+    }
+    await this.save();
+  }
+
   /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
   private capture(request: CaptureRequest) {
     const signal = this.inspection.signal;

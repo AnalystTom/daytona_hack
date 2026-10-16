@@ -93,7 +93,7 @@ function ScreenshotCard({ item }: { item: CanvasEvidence }) {
 }
 
 function VideoCard({ item }: { item?: CanvasEvidence }) {
-  const src = useEvidenceSrc(item?.src ?? "");
+  const { src } = useEvidenceSrc(item?.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">
@@ -139,7 +139,11 @@ export function SpecView({
         </CanvasItem>
       )}
       {canvas.report && (
-        <CanvasItem id="report" label="Report dissection">
+        <CanvasItem
+          id="report"
+          label="Report dissection"
+          className="report-card"
+        >
           <ReportCard
             report={canvas.report}
             evidence={canvas.evidence}
