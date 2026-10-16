@@ -55,12 +55,11 @@ function fakeAnchor(
           headers: { "content-type": "image/png" },
         });
       if (url.host !== "api.anchorbrowser.io") {
-        // The plain fetch that finds where a page lands.
-        const page = new Response("<html></html>");
-        Object.defineProperty(page, "url", {
-          value: finalUrls[input] ?? input,
-        });
-        return page;
+        // The plain fetch that finds where a page lands: a redirect when the test names one.
+        const to = finalUrls[input];
+        return to
+          ? new Response(null, { status: 302, headers: { location: to } })
+          : new Response("<html></html>");
       }
       if (url.pathname.endsWith("/recordings"))
         return Response.json(recordingList);
@@ -552,6 +551,29 @@ describe("captureRun without Anchor code execution", () => {
     const items = result.status === "captured" ? result.items : [];
     expect(items.map((i) => i.label)).toEqual(["not_observed"]);
     expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+  });
+});
+
+describe("captureRun landing check", () => {
+  it("refuses a redirect hop to a private host without fetching it", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://169.254.169.254/latest" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(events[0]?.type).toBe("evidence.page_stopped");
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).not.toContain(
+      "https://169.254.169.254/latest",
+    );
   });
 });
 

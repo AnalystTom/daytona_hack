@@ -8,6 +8,7 @@ import {
   redactQuery,
   viewports,
 } from "../../shared/evidence";
+import { checkTargetUrl } from "../runs/url";
 import * as anchor from "./anchor";
 import { type EvidenceStore, fromBase64 } from "./store";
 
@@ -54,19 +55,35 @@ export { leftScope } from "../../shared/evidence";
 const noCodeExecution = "Anchor code execution is not enabled on this account";
 
 // The screenshot tool follows redirects unseen, so the scope guard checks where the URL lands first.
-async function landingUrl(url: string) {
-  try {
-    const response = await fetch(url, {
-      signal: AbortSignal.timeout(10_000),
-      headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
-    });
-    await response.body?.cancel();
-    return response.url || url;
-  } catch {
-    throw new anchor.AnchorError(
-      "the page's final URL could not be checked against the approved scope",
-    );
+// Every hop must pass the run URL checks (https, public host) before it is fetched.
+const maxHops = 5;
+async function landingUrl(start: string) {
+  let current = start;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const checked = checkTargetUrl(current);
+    if ("error" in checked)
+      throw new anchor.AnchorError(
+        `a redirect hop was refused: ${checked.error}`,
+      );
+    let response: Response;
+    try {
+      response = await fetch(checked.url, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      });
+      await response.body?.cancel();
+    } catch {
+      throw new anchor.AnchorError(
+        "the page's final URL could not be checked against the approved scope",
+      );
+    }
+    const location = response.headers.get("location");
+    if (response.status < 300 || response.status > 399 || !location)
+      return checked.url;
+    current = new URL(location, checked.url).href;
   }
+  throw new anchor.AnchorError("the page redirected too many times");
 }
 
 const signedInLimit =
