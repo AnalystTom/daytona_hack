@@ -1,6 +1,6 @@
 // Verifier: independent checks from Cloudflare, never from inside the sandbox.
-// Spec asks for Opus 5.5; we have no Anthropic key, so it runs on VERIFIER_MODEL (OpenAI)
-// with its own instructions and sees only the spec, evidence and the output being checked.
+// A GPT verifier: it runs on VERIFIER_MODEL (OpenAI, like every model in the demo) with its own
+// instructions, and sees only the spec, evidence and the output being checked.
 import { outline } from "./inspect";
 import { llmJson } from "./services";
 import type { Env, Evidence, Spec, Task } from "./types";

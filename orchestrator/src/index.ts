@@ -98,6 +98,10 @@ export default {
         return json(await run.startBuild());
       if (req.method === "POST" && action === "stop")
         return json(await run.stop());
+      if (req.method === "POST" && action === "variants")
+        return json(await run.makeVariants());
+      if (req.method === "POST" && action === "promote")
+        return json(await run.promote(String(body.variantId || "")));
       if (req.method === "POST" && action === "override")
         return json(
           await run.override(body.taskId, body.verdict, body.reason || ""),
@@ -123,4 +127,6 @@ const ROUTES = [
   "POST /runs/:id/build -> start build (async)",
   "POST /runs/:id/stop",
   "POST /runs/:id/override {taskId, verdict, reason}",
+  "POST /runs/:id/variants -> three landing-page variants from the finished build (async)",
+  "POST /runs/:id/promote {variantId} -> building continues from that variant",
 ];

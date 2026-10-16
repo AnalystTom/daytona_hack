@@ -172,7 +172,15 @@ describe("run routes", () => {
 
   it("guards every action that steers a run", async () => {
     const { env, seen } = setup();
-    for (const action of ["messages", "approve", "build", "stop", "override"]) {
+    for (const action of [
+      "messages",
+      "approve",
+      "build",
+      "stop",
+      "override",
+      "variants",
+      "promote",
+    ]) {
       const response = await call(
         `/api/v1/runs/r1/${action}`,
         { method: "POST", json: {} },
@@ -208,9 +216,11 @@ describe("run routes", () => {
     expect(
       (await post("override", { taskId: "t02", verdict: "maybe" }))?.status,
     ).toBe(400);
-    for (const action of ["approve", "build", "stop"]) {
+    for (const action of ["approve", "build", "stop", "variants"]) {
       expect((await post(action))?.status).toBe(200);
     }
+    expect((await post("promote", { variantId: "v2" }))?.status).toBe(200);
+    expect((await post("promote", { variantId: "../x" }))?.status).toBe(400);
     expect((await post("delete"))?.status).toBe(404);
     expect(
       seen.map((s) => `${s.method} ${new URL(s.url).pathname} ${s.body}`),
@@ -220,6 +230,8 @@ describe("run routes", () => {
       "POST /runs/r1/approve {}",
       "POST /runs/r1/build {}",
       "POST /runs/r1/stop {}",
+      "POST /runs/r1/variants {}",
+      'POST /runs/r1/promote {"variantId":"v2"}',
     ]);
   });
 

@@ -69,7 +69,19 @@ const Verification = z.object({
   taskId: z.string().optional(),
   pass: z.boolean(),
   summary: z.string(),
+  model: z.string().optional(),
 });
+const Variant = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  explanation: z.string(),
+  pod: z.enum(["fork", "copy"]),
+  previewUrl: z.string(),
+  status: z.enum(["building", "ready", "failed", "promoted"]),
+});
+export type VariantView = Omit<z.infer<typeof Variant>, "previewUrl"> & {
+  previewUrl?: string;
+};
 
 const EVIDENCE_PATH = /^\/runs\/[\w-]+\/evidence\/[\w-]+$/;
 const isWebLink = (url: string) => /^https?:\/\//.test(url);
@@ -80,6 +92,7 @@ export type RunView = {
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
   board: BuildEvent[];
+  variants: VariantView[];
 };
 
 // Chat lines for new events. The user's own messages are already in the chat, so they are skipped.
@@ -114,7 +127,12 @@ export function runView(
   runId: string,
   events: readonly OrchestratorEvent[],
 ): RunView {
-  const view: RunView = { hasPreview: false, evidence: [], board: [] };
+  const view: RunView = {
+    hasPreview: false,
+    evidence: [],
+    board: [],
+    variants: [],
+  };
   const envelope = (
     event: OrchestratorEvent,
     fields: Pick<BuildEvent, "state" | "message"> &
@@ -242,9 +260,22 @@ export function runView(
           envelope(event, {
             taskId: check.data.taskId,
             state: "verification",
-            message: `Verifier ${check.data.pass ? "passed" : "failed"}: ${check.data.summary}`,
+            // The verifier is a GPT model; its label says so.
+            message: `GPT verifier${check.data.model ? ` (${check.data.model})` : ""} ${check.data.pass ? "passed" : "failed"}: ${check.data.summary}`,
           }),
         );
+        break;
+      }
+      case "variant": {
+        const variant = Variant.safeParse(data);
+        if (!variant.success) break;
+        const { previewUrl, ...v } = variant.data;
+        view.variants = view.variants.filter((x) => x.id !== v.id);
+        view.variants.push({
+          ...v,
+          previewUrl: isWebLink(previewUrl) ? previewUrl : undefined,
+        });
+        view.variants.sort((a, b) => a.id.localeCompare(b.id));
         break;
       }
       case "phase": {

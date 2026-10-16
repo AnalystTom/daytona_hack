@@ -22,6 +22,10 @@ const OverrideRequest = z.object({
   reason: z.string().trim().max(2000).default(""),
 });
 
+const PromoteRequest = z.object({
+  variantId: z.string().regex(/^v\d{1,2}$/),
+});
+
 const RUNS = /^\/api\/v1\/runs(?:\/([\w-]{1,100})(?:\/(.+))?)?$/;
 const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
@@ -132,7 +136,10 @@ async function runRoute(
     if (action === "override") {
       return call(`${base}/override`, await readJson(request, OverrideRequest));
     }
-    if (["approve", "build", "stop"].includes(action)) {
+    if (action === "promote") {
+      return call(`${base}/promote`, await readJson(request, PromoteRequest));
+    }
+    if (["approve", "build", "stop", "variants"].includes(action)) {
       return call(`${base}/${action}`, {});
     }
   }

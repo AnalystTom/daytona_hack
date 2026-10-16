@@ -11,6 +11,7 @@ import { PreviewView } from "./PreviewView";
 import {
   fetchEvents,
   overrideVerdict,
+  promoteVariant,
   type RunCallError,
   type RunCallResult,
   runAction,
@@ -32,6 +33,7 @@ const PHASES: Record<string, string> = {
   planning: "Planning tasks",
   planned: "Plan ready",
   building: "Building",
+  variants: "Building variants",
   done: "Build finished",
   stopped: "Stopped",
   failed: "Run failed",
@@ -275,7 +277,18 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           {view === "spec" ? (
             <SpecView canvas={canvas} />
           ) : view === "preview" && runId ? (
-            <PreviewView runId={runId} onRefused={(e) => addNotice(e)} />
+            <PreviewView
+              runId={runId}
+              onRefused={(e) => addNotice(e)}
+              phase={run.phase}
+              variants={run.variants}
+              onMakeVariants={() =>
+                runId && void act(runAction(runId, "variants"))
+              }
+              onPromote={(variantId) =>
+                runId && void act(promoteVariant(runId, variantId))
+              }
+            />
           ) : (
             <BuildView
               draftSpec={canvas.draftSpec}

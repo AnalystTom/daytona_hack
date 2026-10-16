@@ -1,36 +1,58 @@
 import { useEffect, useState } from "react";
+import type { VariantView } from "./orchestrator";
 import {
   fetchPreviewLink,
   type RunCallError,
   type RunCallResult,
 } from "./runClient";
 
-// The rebuild's sandbox is private, so the preview opens from a short-lived signed link.
+const STATUS: Record<VariantView["status"], string> = {
+  building: "Building",
+  ready: "Ready",
+  failed: "Did not finish",
+  promoted: "Promoted",
+};
+
+// The rebuilt site is untrusted: it keeps its own (Daytona) origin, so it can fetch its sections but never reach this app.
+const FRAME_SANDBOX = "allow-scripts allow-forms allow-same-origin";
+
 export function PreviewView({
+  previewUrl,
   runId,
   onRefused,
+  phase,
+  variants,
+  onMakeVariants,
+  onPromote,
 }: {
-  runId: string;
-  onRefused: (error: RunCallError) => void;
+  previewUrl?: string;
+  runId?: string;
+  onRefused?: (error: RunCallError) => void;
+  phase?: string;
+  variants: readonly VariantView[];
+  onMakeVariants: () => void;
+  onPromote: (variantId: string) => void;
 }) {
   const [link, setLink] = useState<RunCallResult<string>>();
   const [attempt, setAttempt] = useState(0);
+  const promotedId = variants.find((v) => v.status === "promoted")?.id;
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reloads on run change or Reload, not on every render's callback
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloads on run change, promotion or Reload, not on every render's callback
   useEffect(() => {
+    if (!runId) return;
     let live = true;
     setLink(undefined);
     void fetchPreviewLink(runId).then((result) => {
       if (!live) return;
       setLink(result);
-      if (!result.ok && result.error === "operator_token") onRefused(result);
+      if (!result.ok && result.error === "operator_token") onRefused?.(result);
     });
     return () => {
       live = false;
     };
-  }, [runId, attempt]);
+  }, [runId, attempt, promotedId]);
 
-  if (!link?.ok) {
+  if (runId && !link?.ok) {
     return (
       <div className="empty-state">
         <h2>{link ? "Preview unavailable" : "Opening the preview"}</h2>
@@ -47,33 +69,125 @@ export function PreviewView({
       </div>
     );
   }
-  return (
-    <section className="preview" aria-label="Rebuild preview">
-      <div className="preview-bar">
-        <p className="muted">Links last 30 minutes. Reload for a fresh one.</p>
-        <button
-          type="button"
-          className="button"
-          onClick={() => setAttempt((n) => n + 1)}
-        >
-          Reload
-        </button>
-        <a
-          className="button"
-          href={link.value}
-          target="_blank"
-          rel="noreferrer"
-        >
-          Open in new tab
-        </a>
+  const url = runId && link?.ok ? link.value : previewUrl;
+  if (!url) {
+    return (
+      <div className="empty-state">
+        <h2>No preview yet</h2>
+        <p>The rebuild shows here once the first task merges.</p>
       </div>
-      <iframe
-        className="preview-frame"
-        title="Rebuild preview"
-        src={link.value}
-        sandbox="allow-scripts allow-same-origin allow-forms"
-        referrerPolicy="no-referrer"
-      />
-    </section>
+    );
+  }
+  const finished = phase === "done";
+  const promoted = variants.some((v) => v.status === "promoted");
+  return (
+    <div className="preview-board">
+      <section className="preview-main" aria-label="Rebuild preview">
+        <div className="preview-head">
+          <h2>Your rebuild</h2>
+          <div className="preview-actions">
+            {runId && (
+              <button
+                type="button"
+                className="button"
+                onClick={() => setAttempt((n) => n + 1)}
+              >
+                Reload
+              </button>
+            )}
+            <a
+              className="button"
+              href={url}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Open in a new tab
+            </a>
+            <button
+              type="button"
+              className="button"
+              disabled
+              aria-describedby="deploy-note"
+            >
+              Deploy live
+            </button>
+          </div>
+        </div>
+        <p id="deploy-note" className="muted">
+          Deploying live is not set up yet. Rebuild links last 30 minutes; reload
+          for a fresh rebuild link.
+        </p>
+        <iframe
+          className="preview-frame"
+          title="Rebuild preview"
+          src={url}
+          sandbox={FRAME_SANDBOX}
+          referrerPolicy="no-referrer"
+        />
+      </section>
+
+      <section className="preview-variants" aria-label="Landing-page variants">
+        <div className="preview-head">
+          <div>
+            <h2>Landing-page variants</h2>
+            <p className="muted">
+              Three alternatives built from a snapshot of this rebuild. Promote
+              one to keep building from it.
+            </p>
+          </div>
+          {variants.length === 0 && (
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!finished}
+              title={finished ? undefined : "Available once the build finishes"}
+              onClick={onMakeVariants}
+            >
+              Make three variants
+            </button>
+          )}
+        </div>
+        {variants.length > 0 && (
+          <ul className="variant-list">
+            {variants.map((v) => (
+              <li key={v.id} className="card variant-card">
+                <div className="card-head">
+                  <h3 className="card-title">{v.title}</h3>
+                  <span className={`variant-status variant-${v.status}`}>
+                    {STATUS[v.status]}
+                  </span>
+                </div>
+                <p>{v.explanation}</p>
+                <p className="muted">
+                  {v.pod === "fork"
+                    ? "Fork of the merged rebuild"
+                    : "Copy of the merged rebuild"}
+                </p>
+                {v.previewUrl && v.status !== "failed" && (
+                  <iframe
+                    className="variant-frame"
+                    title={`${v.title} preview`}
+                    src={v.previewUrl}
+                    sandbox={FRAME_SANDBOX}
+                    referrerPolicy="no-referrer"
+                    loading="lazy"
+                  />
+                )}
+                {v.status === "ready" && (
+                  <button
+                    type="button"
+                    className="button button-primary"
+                    disabled={!finished || promoted}
+                    onClick={() => onPromote(v.id)}
+                  >
+                    Promote this variant
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </div>
   );
 }

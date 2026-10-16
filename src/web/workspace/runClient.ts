@@ -128,13 +128,27 @@ export function sendMessage(
 
 export function runAction(
   runId: string,
-  action: "build" | "stop",
+  action: "build" | "stop" | "variants",
   fetchImpl: typeof fetch = fetch,
 ) {
   return call(
     "POST",
     runPath(runId, action),
     {},
+    async () => undefined,
+    fetchImpl,
+  );
+}
+
+export function promoteVariant(
+  runId: string,
+  variantId: string,
+  fetchImpl: typeof fetch = fetch,
+) {
+  return call(
+    "POST",
+    runPath(runId, "promote"),
+    { variantId },
     async () => undefined,
     fetchImpl,
   );

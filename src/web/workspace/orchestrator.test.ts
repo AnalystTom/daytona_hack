@@ -182,7 +182,7 @@ describe("runView", () => {
     expect(t01?.log.map((line) => line.message)).toEqual(
       expect.arrayContaining([
         "Preview updated with this task",
-        "Verifier passed: Hero matches",
+        "GPT verifier passed: Hero matches",
       ]),
     );
     expect(t02).toMatchObject({
@@ -220,7 +220,60 @@ describe("runView", () => {
       }),
       ev("preview", { mergedTask: 7 }),
       ev("task", { id: "t1" }),
+      ev("variant", { id: "v1", title: "Bold" }),
     ]);
-    expect(odd).toEqual({ hasPreview: false, evidence: [], board: [] });
+    expect(odd).toEqual({
+      hasPreview: false,
+      evidence: [],
+      board: [],
+      variants: [],
+    });
+  });
+
+  it("keeps the latest state of each variant and labels the verifier model", () => {
+    const variant = (id: string, status: string, previewUrl: string) => ({
+      id,
+      title: `Variant ${id}`,
+      change: "",
+      explanation: `Why ${id}`,
+      pod: "copy",
+      dir: `/home/daytona/variants/${id}`,
+      previewUrl,
+      snapshot: "abc",
+      status,
+    });
+    const later = runView("r1", [
+      ev("variant", variant("v2", "building", "https://3002-sb.daytona.works")),
+      ev("variant", variant("v1", "building", "https://3001-sb.daytona.works")),
+      ev("variant", variant("v1", "ready", "https://3001-sb.daytona.works")),
+      ev("variant", variant("v2", "failed", "javascript:alert(1)")),
+      ev("verification", {
+        taskId: "v1",
+        pass: false,
+        summary: "Off",
+        model: "gpt-6.1-sol",
+      }),
+    ]);
+    expect(later.variants).toEqual([
+      {
+        id: "v1",
+        title: "Variant v1",
+        explanation: "Why v1",
+        pod: "copy",
+        status: "ready",
+        previewUrl: "https://3001-sb.daytona.works",
+      },
+      {
+        id: "v2",
+        title: "Variant v2",
+        explanation: "Why v2",
+        pod: "copy",
+        status: "failed",
+        previewUrl: undefined,
+      },
+    ]);
+    expect(later.board.at(-1)?.message).toBe(
+      "GPT verifier (gpt-6.1-sol) failed: Off",
+    );
   });
 });

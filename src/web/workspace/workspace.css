@@ -398,6 +398,103 @@
   gap: 1rem;
 }
 
+/* Preview view */
+
+.preview-board {
+  display: grid;
+  gap: 2.5rem;
+  max-width: 72rem;
+}
+
+.preview-main {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.preview-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+}
+
+.preview-head h2 {
+  font-size: 1.5rem;
+}
+
+.preview-head .muted {
+  max-width: 38rem;
+  margin-top: 0.25rem;
+}
+
+.preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The rebuild is the one large thing on this canvas. */
+.preview-frame {
+  width: 100%;
+  height: min(70dvh, 46rem);
+  border: 1px solid var(--line);
+  border-radius: 0.875rem;
+  background: var(--card);
+  box-shadow: var(--shadow);
+}
+
+.preview-variants {
+  display: grid;
+  gap: 1rem;
+}
+
+.variant-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+  gap: 1.25rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.variant-card {
+  display: grid;
+  align-content: start;
+  gap: 0.75rem;
+}
+
+.variant-card p {
+  margin: 0;
+}
+
+.variant-status {
+  margin-left: auto;
+  border-radius: 999px;
+  padding: 0.15rem 0.6rem;
+  background: var(--parchment);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+.variant-ready,
+.variant-promoted {
+  background: var(--pistachio);
+}
+
+.variant-failed {
+  background: var(--error-soft);
+  color: var(--error);
+}
+
+.variant-frame {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  background: var(--parchment);
+}
+
 /* Chat */
 
 .ws-chat {

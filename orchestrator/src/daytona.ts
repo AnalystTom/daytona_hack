@@ -39,17 +39,38 @@ export class Daytona {
         snapshot: opts.snapshot,
         labels: opts.labels || {},
         public: false, // the preview is reached only through short-lived signed links
-        autoStopInterval: 60,
+        autoStopInterval: 60, // the 2-hour run limit also stops active sandboxes
       }),
     });
+    return this.started(sb.id);
+  }
+
+  /** Daytona's experimental fork: a new sandbox with an identical filesystem. Throws where the account lacks it. */
+  async fork(id: string) {
+    const sb = await this.call(
+      `${this.env.DAYTONA_API_URL}/sandbox/${id}/fork`,
+      {
+        method: "POST",
+        body: JSON.stringify({}),
+      },
+    );
+    try {
+      return await this.started(sb.id);
+    } catch (e) {
+      await this.remove(sb.id).catch(() => {});
+      throw e;
+    }
+  }
+
+  private async started(id: string) {
     for (let i = 0; i < 60; i++) {
-      const s = await this.get(sb.id);
+      const s = await this.get(id);
       if (s.state === "started") return s;
       if (s.state === "error" || s.state === "build_failed")
-        throw new Error(`sandbox ${sb.id} ${s.state}`);
+        throw new Error(`sandbox ${id} ${s.state}`);
       await sleep(2000);
     }
-    throw new Error(`sandbox ${sb.id} did not start`);
+    throw new Error(`sandbox ${id} did not start`);
   }
 
   get(id: string) {
@@ -59,6 +80,13 @@ export class Daytona {
   async remove(id: string) {
     await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, {
       method: "DELETE",
+    });
+  }
+
+  /** Stops the sandbox (it keeps its disk and can be started again). */
+  async stop(id: string) {
+    await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
+      method: "POST",
     });
   }
 

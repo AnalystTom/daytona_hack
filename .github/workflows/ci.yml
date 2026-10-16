@@ -23,7 +23,7 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  # The orchestrator Worker has no tests yet; typecheck and a dry-run bundle catch build breaks.
+  # The orchestrator's tests run with the root suite (orchestrator/test); typecheck and a dry-run bundle catch build breaks.
   orchestrator:
     runs-on: ubuntu-latest
     defaults:
