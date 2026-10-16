@@ -36,6 +36,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
 Before paid work and on each alarm, the orchestrator enforces the original start deadline from the [README's lifetime limit](../../README.md#sign-in-with-cloudflare-access). Expiry uses the same confirmed-cancellation path as explicit stop; cancellation failures leave the run stopping and block further work. Stopped and failed runs refuse chat messages. Final verification completes before the phase becomes `done`; a final verification error marks the run `failed` unless cancellation is underway.
+Overriding a completed run returns it to `building` when a task needs merging or requeuing. If that continuation fails, the run becomes `failed` and its alarm is removed, so paid verification is not retried automatically; active-slot retirement follows the [admission policy](../../README.md#sign-in-with-cloudflare-access).
 
 ## Events
 

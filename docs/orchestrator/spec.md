@@ -197,7 +197,7 @@ A failed or stopped task stays on the board with its reason and next action.
 
 ## 10. Steering, limits and failure
 
-- The user's chat messages reach the orchestrator at any stage.
+- Chat availability follows the [API's phase rules](api.md#phases).
 - The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
 - Run admission and lifetime limits are defined in the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
