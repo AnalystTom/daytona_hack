@@ -482,6 +482,83 @@ describe("Run sign-in handoff", () => {
 });
 
 describe("Run inspection cancellation and recovery", () => {
+  it.each(["inspect", "resume"] as const)(
+    "blocks concurrent paid actions while %s Anchor cleanup is delayed",
+    async (kind) => {
+      const { run, ctx } = await persistedRun(
+        [],
+        kind === "resume" ? "awaiting_sign_in" : "brief",
+      );
+      const memory = bindCapture(
+        kind === "resume"
+          ? { sessionId: "active-session", origin: "https://example.com" }
+          : null,
+      );
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "active-session",
+        liveViewUrl: "https://live.example.test/session",
+      });
+      const entered = deferred<void>();
+      const releaseCapture = deferred<void>();
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockImplementation(async () => {
+          entered.resolve();
+          await releaseCapture.promise;
+          return fixturePageFacts("https://example.com/account");
+        });
+      const closing = deferred<void>();
+      const releaseCleanup = deferred<void>();
+      const close = vi
+        .spyOn(anchor, "endSession")
+        .mockImplementation(async () => {
+          closing.resolve();
+          await releaseCleanup.promise;
+        });
+      if (kind === "resume") await run.resumeSignIn();
+      else await run.approveSpec();
+      const inspection = run.alarm();
+      await entered.promise;
+      const stopping = run.stop();
+      await closing.promise;
+      try {
+        expect(await ctx.storage.get("state")).toMatchObject({
+          phase: "inspecting",
+          pending: "stop",
+        });
+        await expect(run.message("Keep working")).rejects.toThrow(/stopping/);
+        await expect(
+          run.override("t01", "approve", "Keep working"),
+        ).rejects.toThrow(/stopping/);
+        await expect(run.approveSpec()).rejects.toThrow(/stopping/);
+        await expect(run.startBuild()).rejects.toThrow(/stopping/);
+        await expect(
+          run.gatewayCapture("https://example.com/account"),
+        ).rejects.toThrow(/stopping/);
+        const reloaded = new Run(ctx as never, {} as Env);
+        await ctx.loaded();
+        await expect(reloaded.message("Keep working")).rejects.toThrow(
+          /stopping/,
+        );
+        expect(llmJson).not.toHaveBeenCalled();
+        expect(captureMock).toHaveBeenCalledTimes(1);
+        expect(memory.records.size).toBe(0);
+      } finally {
+        releaseCleanup.resolve();
+        releaseCapture.resolve();
+        await stopping;
+        await inspection;
+      }
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(snippet).toHaveBeenCalledTimes(1);
+      expect(llmJson).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([
     ["resume", "success"],
     ["resume", "redirect"],

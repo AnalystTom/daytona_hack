@@ -441,10 +441,10 @@ export class Run extends DurableObject<Env> {
   }
 
   private async cancelWork() {
-    this.inspection.abort();
-    await Promise.all([...this.captureSessions].map((close) => close()));
     this.s.pending = "stop";
+    this.inspection.abort();
     await this.save();
+    await Promise.all([...this.captureSessions].map((close) => close()));
     await this.ctx.storage.deleteAlarm();
     if (this.s.sandboxId) {
       const sandbox = await this.daytona.get(this.s.sandboxId);
@@ -483,29 +483,43 @@ export class Run extends DurableObject<Env> {
   ) {
     await this.beforeWork();
     const t = this.task(taskId);
-    if (
+    const reopening =
       this.s.phase === "done" &&
-      (verdict === "reject" || t.status !== "merged")
-    ) {
-      this.s.phase = "building";
+      (verdict === "reject" || t.status !== "merged");
+    try {
+      if (reopening) {
+        this.s.phase = "building";
+        await this.save();
+        await this.emit("phase", { phase: "building" });
+      }
+      t.review = {
+        verdict,
+        reason: `Overridden by user: ${reason}`,
+        findings: t.review?.findings || [],
+      };
+      if (verdict === "approve" && t.status !== "merged") await this.merge(t);
+      await this.beforeWork();
+      if (verdict === "reject") {
+        t.status = "queued";
+        t.attempts = 0;
+      }
       await this.save();
-      await this.emit("phase", { phase: "building" });
+      await this.emit("review", { taskId, ...t.review });
+      await this.ctx.storage.setAlarm(Date.now() + 100);
+      return t;
+    } catch (error) {
+      if (reopening) await this.failWork(error);
+      throw error;
     }
-    t.review = {
-      verdict,
-      reason: `Overridden by user: ${reason}`,
-      findings: t.review?.findings || [],
-    };
-    if (verdict === "approve" && t.status !== "merged") await this.merge(t);
-    await this.beforeWork();
-    if (verdict === "reject") {
-      t.status = "queued";
-      t.attempts = 0;
-    }
+  }
+
+  private async failWork(error: unknown) {
+    if (this.s.pending === "stop" || this.s.phase === "stopped") return;
+    this.s.phase = "failed";
+    this.s.error = error instanceof Error ? error.message : String(error);
     await this.save();
-    await this.emit("review", { taskId, ...t.review });
-    await this.ctx.storage.setAlarm(Date.now() + 100);
-    return t;
+    await this.ctx.storage.deleteAlarm();
+    await this.emit("phase", { phase: "failed" });
   }
 
   /** Says why the run is past RUN_MAX_MINUTES (default 120) since it started, if it is. */
@@ -1147,12 +1161,7 @@ ${DATA_INSTRUCTIONS}`,
           `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is in the app.`,
         );
       } catch (error) {
-        if (this.s.pending !== "stop" && this.s.phase !== "stopped") {
-          this.s.phase = "failed";
-          await this.save();
-          await this.ctx.storage.deleteAlarm();
-          await this.emit("phase", { phase: "failed" });
-        }
+        await this.failWork(error);
         throw error;
       }
       return;

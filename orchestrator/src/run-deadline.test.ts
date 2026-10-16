@@ -201,12 +201,19 @@ function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
         )
           record.active = false;
       }
+      const existing = records.find((r) => r.runId === next.runId);
       if (
-        records.filter((r) => r.owner === next.owner && r.active).length >=
-        maxActive
+        records.filter(
+          (r) => r.owner === next.owner && r.active && r.runId !== next.runId,
+        ).length >= maxActive ||
+        existing?.busy
       )
         return "active_run_limit";
-      records.push({ ...next, active: true, busy: false });
+      if (existing) {
+        existing.active = true;
+        existing.busy = true;
+        existing.revision = (existing.revision ?? 0) + 1;
+      } else records.push({ ...next, active: true, busy: false });
       return undefined;
     },
   };
@@ -226,7 +233,7 @@ function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
         orchestrator.fetch(new Request(input, init), backend),
     } as unknown as Fetcher,
   };
-  const send = async (path: string) =>
+  const send = async (path: string, body?: Record<string, unknown>) =>
     handleOrchestrator(
       new Request(`https://reversy.test/api/v1/runs${path}`, {
         method: "POST",
@@ -235,7 +242,7 @@ function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
           "cf-access-jwt-assertion": await accessJwt(),
         },
         body: JSON.stringify(
-          path ? {} : { url: "https://example.com", goal: "Rebuild" },
+          body ?? (path ? {} : { url: "https://example.com", goal: "Rebuild" }),
         ),
       }),
       front,
@@ -724,6 +731,103 @@ describe("run paid-work deadlines", () => {
         expect(startWorker).toHaveBeenCalledOnce();
       }
       expect((await run.getState()).startedAt).toBe(startedAt);
+    },
+  );
+
+  it.each(["provider", "json", "recording", "alarm"] as const)(
+    "makes completed-run override %s failures terminal and retires admission without paid retries",
+    async (failure) => {
+      const context = await setup({ phase: "done", tasks: [task("failed")] });
+      const {
+        run,
+        state,
+        request,
+        calls,
+        storage,
+        data,
+        ctx,
+        env,
+        startWorker,
+      } = context;
+      state.sandboxId = "sb1";
+      state.previewUrl = "https://preview.test/";
+      const client = frontFor(context);
+      client.records[0].busy = false;
+      request.mockImplementation(async (input, init) => {
+        if (String(input).includes("api.openai.com")) {
+          const body = JSON.parse(String(init?.body)) as {
+            text: { format: { name: string } };
+          };
+          calls.push(body.text.format.name);
+          if (failure === "provider")
+            return Response.json({ error: "unavailable" }, { status: 503 });
+          if (failure === "json") return Response.json({ output_text: "{" });
+          return Response.json({
+            output_text: JSON.stringify({
+              pass: true,
+              findings: [],
+              summary: "Pass",
+            }),
+          });
+        }
+        return new Response("<html>Observed page</html>");
+      });
+      if (failure === "recording") {
+        const put = storage.put;
+        let failed = false;
+        storage.put = async (key, value) => {
+          if (
+            !failed &&
+            typeof value === "object" &&
+            value !== null &&
+            "type" in value &&
+            value.type === "verification"
+          ) {
+            failed = true;
+            throw new Error("verification write failed");
+          }
+          await put(key, value);
+        };
+      }
+      if (failure === "alarm")
+        storage.setAlarm.mockRejectedValueOnce(new Error("alarm write failed"));
+      const body = {
+        taskId: "t01",
+        verdict: failure === "alarm" ? "reject" : "approve",
+        reason: "Make a variant",
+      };
+      expect((await client.send("/r1/override", body))?.status).toBe(502);
+      expect(data.get("state")).toMatchObject({
+        id: "r1",
+        phase: "failed",
+        error: expect.any(String),
+        startedAt: client.original.createdAt,
+      });
+      expect(client.records[0]).toMatchObject({
+        ...client.original,
+        revision: 2,
+        busy: false,
+      });
+      expect(storage.deleteAlarm).toHaveBeenCalled();
+      const alarmAttempts = storage.setAlarm.mock.calls.length;
+      await run.alarm();
+      const reloaded = new Run(ctx as unknown as DurableObjectState, env);
+      await Promise.resolve();
+      await reloaded.alarm();
+      expect((await client.send("/r1/override", body))?.status).toBe(502);
+      expect(storage.setAlarm.mock.calls).toHaveLength(alarmAttempts);
+      expect(calls).toEqual(failure === "alarm" ? [] : ["verify_task"]);
+      expect(startWorker).not.toHaveBeenCalled();
+      expect((await client.send(""))?.status).toBe(201);
+      expect(client.start).toHaveBeenCalledOnce();
+      expect(client.records[0]).toMatchObject({
+        runId: "r1",
+        owner: client.original.owner,
+        createdAt: client.original.createdAt,
+        active: false,
+        busy: false,
+      });
+      expect(calls).toEqual(failure === "alarm" ? [] : ["verify_task"]);
     },
   );
 
