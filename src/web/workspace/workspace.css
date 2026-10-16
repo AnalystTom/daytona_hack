@@ -463,6 +463,11 @@
 
 .notice p {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.notice > div {
+  min-width: 0;
 }
 
 .notice-icon {
