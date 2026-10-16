@@ -19,6 +19,7 @@ export const cleanText = (text: string) =>
     .replace(/&#39;|&rsquo;|&#8217;/g, "'")
     .replace(/&ndash;|&#8211;/g, "–")
     .replace(/&mdash;|&#8212;/g, "—")
+    .replace(/&minus;/g, "−")
     .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
     .replace(/\s+/g, " ")
     .replace(/\s+([,.;:!?%])/g, "$1")
@@ -46,7 +47,7 @@ export function extractFigures(
     if (!quote) continue;
     const offset = Math.max(0, start) + block.index;
     for (const n of quote.matchAll(
-      /(?:[$€£]\s*)?\b\d+(?:,\d{3})*(?:\.\d+)?(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*(?:%|trillion|billion|million|bn|bps)?/gi,
+      /(?:[+−–-]\s*)?(?:[$€£]\s*(?:[+−–-]\s*)?)?\b\d+(?:,\d{3})*(?:\.\d+)?(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*(?:%|trillion|billion|million|bn|bps)?/gi,
     )) {
       const value = n[0].trim();
       const unit =
@@ -139,7 +140,7 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
   )) {
     const text: string = JSON.parse(m[1]);
     for (const n of text.matchAll(
-      /\$\d+(?:\.\d+)?\s*(?:trillion|billion|million)?/g,
+      /(?:[+−–-]\s*)?\$\s*(?:[+−–-]\s*)?\d+(?:\.\d+)?\s*(?:trillion|billion|million)?/g,
     )) {
       figures.push({
         id: `${sourceId}_headline${figures.length}`,

@@ -63,7 +63,7 @@ Media URLs and cache entries include the source run ID and are cached for a year
 ## Report demo
 
 At `/start`, choose **Goldman Sachs report** and send its draft unchanged, or use the same button in an empty `/workspace` to submit it immediately.
-Enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
+Creating runs currently requires the operator token or a valid signed session cookie; enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
 Reopen saved runs using the [workspace session controls](#workspace).
 See the [financial report demo](docs/spec.md#financial-report-demo) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 

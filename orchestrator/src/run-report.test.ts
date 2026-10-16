@@ -473,6 +473,9 @@ it.each([
   "Reconstruct this landing page",
   "Research this website",
   "Show forecast numbers and figures",
+  "Rebuild this website and report accessibility issues",
+  "Reconstruct this website and report accessibility issues",
+  "Report accessibility issues",
 ])("keeps the normal reconstruction journey for %s", async (goal) => {
   const { run } = createRun();
   vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
@@ -494,47 +497,53 @@ it.each([
   });
 });
 
-it("requires scope approval for explicit report mode and then dissects without building", async () => {
-  const { run } = createRun();
-  vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
-  vi.mocked(llmJson).mockResolvedValueOnce({
-    reply: "Review the report scope",
-    spec: {},
-    userApproved: false,
-  });
-  vi.mocked(captureReport).mockResolvedValueOnce({
-    article: {
-      html: "captured",
-      url: GOLDMAN_URL,
-      capturedAt: report().completedAt,
-      hash: "hash",
-    },
-    evidence: [],
-    blobs: {},
-    boxes: [],
-    pageWidth: 1440,
-    pageHeight: 900,
-  });
-  vi.mocked(dissect).mockResolvedValueOnce(report());
-  expect(
-    await run.start("test-run", GOLDMAN_URL, "Reconstruct this report"),
-  ).toMatchObject({
-    phase: "brief",
-    spec: { approved: false },
-  });
-  expect(captureReport).not.toHaveBeenCalled();
-  await run.approveSpec();
-  await run.alarm();
-  expect(await run.getState()).toMatchObject({
-    phase: "done",
-    report: report(),
-  });
-  expect(saveReport).toHaveBeenCalledWith(
-    expect.anything(),
-    { report: report(), evidence: [] },
-    false,
-  );
-  await expect(run.startBuild()).rejects.toThrow(
-    "does not start build workers",
-  );
-});
+it.each([
+  "Reconstruct this report",
+  "Dissect this report",
+  "Rebuild the financial report",
+  "Reconstruct a report",
+])(
+  "requires scope approval for %s and then dissects without building",
+  async (goal) => {
+    const { run } = createRun();
+    vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      reply: "Review the report scope",
+      spec: {},
+      userApproved: false,
+    });
+    vi.mocked(captureReport).mockResolvedValueOnce({
+      article: {
+        html: "captured",
+        url: GOLDMAN_URL,
+        capturedAt: report().completedAt,
+        hash: "hash",
+      },
+      evidence: [],
+      blobs: {},
+      boxes: [],
+      pageWidth: 1440,
+      pageHeight: 900,
+    });
+    vi.mocked(dissect).mockResolvedValueOnce(report());
+    expect(await run.start("test-run", GOLDMAN_URL, goal)).toMatchObject({
+      phase: "brief",
+      spec: { approved: false },
+    });
+    expect(captureReport).not.toHaveBeenCalled();
+    await run.approveSpec();
+    await run.alarm();
+    expect(await run.getState()).toMatchObject({
+      phase: "done",
+      report: report(),
+    });
+    expect(saveReport).toHaveBeenCalledWith(
+      expect.anything(),
+      { report: report(), evidence: [] },
+      false,
+    );
+    await expect(run.startBuild()).rejects.toThrow(
+      "does not start build workers",
+    );
+  },
+);

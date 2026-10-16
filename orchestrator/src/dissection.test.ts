@@ -28,6 +28,37 @@ _Flourish_visualisation_id = 29875854;</script>`;
 const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 
 describe("observed report figures", () => {
+  it.each([
+    "-2.5%",
+    "−2.5%",
+    "–2.5%",
+    "+2.5%",
+    "-$35 billion",
+    "$-35 billion",
+    "− €35 million",
+    "£−35 million",
+  ])("preserves the complete signed article quantity %s", (value) => {
+    const [figure] = extractFigures(`<p>Growth was ${value}.</p>`);
+    expect(figure).toMatchObject({ value, status: "observed" });
+    expect(figure?.quote).toContain(value);
+  });
+  it("preserves an HTML-encoded minus sign", () => {
+    expect(extractFigures("<p>Growth was &minus;2.5%.</p>")[0]).toMatchObject({
+      value: "−2.5%",
+      status: "observed",
+    });
+  });
+  it.each(["-$35 billion", "−$35 billion", "+$35 billion", "$-35 billion"])(
+    "preserves the complete signed chart headline %s",
+    (value) => {
+      const figures = extractChart(
+        chart.replace("$1.019 trillion", value).replace("[530,", "[-530,"),
+        "chart1",
+      );
+      expect(figures.at(-1)).toMatchObject({ value, status: "observed" });
+      expect(figures[0]).toMatchObject({ value: "-530", status: "observed" });
+    },
+  );
   it("extracts every occurrence, including periods and percentages, without the old eight-figure cap", () => {
     const figures = extractFigures(html);
     expect(figures.length).toBeGreaterThan(8);
@@ -280,7 +311,7 @@ it.each([
 
 const originalQuote = "AI investment is $35 billion in 2026 and will rise.";
 it.each([
-  ["$35 billion", originalQuote, "matches"],
+  ["$35 billion", originalQuote, "not_found"],
   ["$35 bn", originalQuote, "not_found"],
   ["$0.035 trillion", originalQuote, "not_found"],
   [
@@ -397,6 +428,52 @@ it.each([
       value: "35",
       unit: "$ billions",
       quote: '{"label":"US","metadata":[],"value":[530,35,15]}',
+    });
+  },
+);
+
+it.each(["$", "£"])(
+  "keeps identical %s passages unverified across different page currencies",
+  async (currency) => {
+    const quote = `Investment reaches ${currency}35 billion.`;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(`<h1>CAD</h1><p>${quote}</p>`)),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [],
+      traces: [
+        {
+          figureId: "article_f1",
+          url: "https://independent.example/research",
+          status: "matches",
+          value: `${currency}35 billion`,
+          quote,
+        },
+      ],
+    });
+    const report = await dissect(env, "run", {
+      html: `<h1>USD</h1><p>${quote}</p>`,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(report.figures[0]).toMatchObject({
+      value: `${currency}35 billion`,
+      quote,
+      status: "observed",
+    });
+    expect(report.traces[0]).toMatchObject({
+      status: "not_found",
+      value: "",
+      quote,
+      completePassage: true,
+    });
+    expect(
+      report.sources.find((s) => s.id === report.traces[0].sourceId),
+    ).toMatchObject({
+      status: "traced_online",
+      quote,
     });
   },
 );

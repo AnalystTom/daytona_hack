@@ -44,7 +44,7 @@ describe("report canvas data", () => {
       "matches",
       "$581 billion",
       "including $581 billion in the US",
-      "Exact source quote match",
+      "Unverified online",
     ],
     [
       "matches",
@@ -107,6 +107,53 @@ describe("report canvas data", () => {
       const figure = report.figures[0];
       assert(figure);
       expect(html).toContain(figure.quote);
+      expect(html).toContain(quote);
+    },
+  );
+  it.each(["$", "£", "€"])(
+    "rechecks saved currency evidence for %s before displaying a match",
+    (currency) => {
+      const value = `${currency}35 billion`;
+      const quote = `Investment reaches ${value}.`;
+      const report = ReportDissection.parse({
+        ...reportContractExample,
+        figures: [
+          {
+            ...reportContractExample.figures[0],
+            value,
+            unit: `${currency} billion`,
+            quote,
+          },
+        ],
+        sources: [
+          ...reportContractExample.sources,
+          {
+            ...reportContractExample.sources[0],
+            id: "independent",
+            url: "https://independent.example/research",
+            quoteUrl: "https://independent.example/research",
+            quote,
+            status: "traced_online",
+          },
+        ],
+        traces: [
+          {
+            figureId: "f1",
+            sourceId: "independent",
+            status: "matches",
+            value,
+            quote,
+            completePassage: true,
+            reason: "Previously saved comparison",
+          },
+        ],
+      });
+      const html = renderToStaticMarkup(
+        <ReportCard report={report} evidence={[]} />,
+      );
+      expect(html).toContain(
+        currency === "€" ? "Exact source quote match" : "Unverified online",
+      );
       expect(html).toContain(quote);
     },
   );

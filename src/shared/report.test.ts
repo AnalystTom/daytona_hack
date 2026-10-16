@@ -59,6 +59,11 @@ it.each([
   ["2026", "year", "2026.5 will rise", false],
   ["35", "$ billions", "35", false],
   ["35", "number", "35 widgets", false],
+  ["$35 billion", "$ billion", "Investment reaches $35 billion.", false],
+  ["£35 billion", "£ billion", "Investment reaches £35 billion.", false],
+  ["€35 billion", "€ billion", "Investment reaches €35 billion.", true],
+  ["-2.5%", "%", "Growth was -2.5%.", true],
+  ["2.5%", "%", "Growth was -2.5%.", false],
 ])(
   "requires complete values and explicit units in exact quote evidence",
   (value, unit, quote, expected) => {

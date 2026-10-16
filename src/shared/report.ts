@@ -47,6 +47,7 @@ export function exactQuoteEvidence(
   if (
     !trace.completePassage ||
     !value ||
+    /[$£]/.test(value) ||
     text(trace.value) !== value ||
     text(trace.quote) !== text(figure.quote)
   )
