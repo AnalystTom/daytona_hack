@@ -102,6 +102,7 @@ describe("bridge observations", () => {
     const pod = toEnvelope(observation, { ...context, podId: "sb2" });
     expect(pod.eventId).not.toBe(envelope.eventId);
     expect(pod.artifactRefs).toEqual(["pod:sb2"]);
+    expect(EventEnvelope.parse(pod).taskId).toBe("sb2/hero");
   });
 });
 
@@ -208,6 +209,36 @@ describe("bridge cycle", () => {
     const retry = fakeFetch();
     await runCycle(config, retry.fetch, now);
     expect(retry.posts[0]).toEqual(refused.posts[0]);
+  });
+
+  it("starts a pod from what it observes, then posts its changes under pod task ids", async () => {
+    const { config, fmHome } = sandboxHome();
+    await runCycle(config, fakeFetch().fetch, now);
+    writeFileSync(join(config.stateDir, "env", "REVERSY_POD_ID"), "sb2");
+
+    const baseline = fakeFetch();
+    expect(await runCycle(config, baseline.fetch, now)).toEqual({
+      posted: 0,
+      error: undefined,
+    });
+    expect(baseline.posts).toEqual([]);
+
+    writeFileSync(
+      join(fmHome, "state", "hero.status"),
+      "working [at=1792167459]: started\nfailed [at=1792167600]: broke\n",
+    );
+    const change = fakeFetch();
+    await runCycle(config, change.fetch, now);
+    expect(
+      (change.posts[0] ?? []).map((e) => EventEnvelope.parse(e)),
+    ).toMatchObject([
+      {
+        sequence: 4,
+        taskId: "sb2/hero",
+        state: "failed",
+        artifactRefs: ["pod:sb2"],
+      },
+    ]);
   });
 
   it("names missing run variables instead of posting", async () => {

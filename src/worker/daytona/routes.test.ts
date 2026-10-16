@@ -53,6 +53,23 @@ describe("run sandbox routes", () => {
     });
   });
 
+  it("serves reads, messages and cleanup without the start-only bindings", async () => {
+    const { call } = setup({
+      SANDBOX_API_TOKEN: "admin",
+      DAYTONA_API_KEY: "dtn",
+    });
+    expect((await call("GET", "/api/v1/runs/r1/sandbox"))?.status).toBe(404);
+    expect((await call("DELETE", "/api/v1/runs/r1/sandbox"))?.status).toBe(200);
+    expect(
+      (
+        await call("POST", "/api/v1/runs/r1/sandbox/messages", {
+          kind: "chat",
+          text: "hi",
+        })
+      )?.status,
+    ).toBe(404);
+  });
+
   it("refuses callers without the sandbox API token", async () => {
     const { call, fake } = setup({
       ...allBindings,

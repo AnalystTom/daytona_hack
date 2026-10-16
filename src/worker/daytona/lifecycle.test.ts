@@ -38,6 +38,7 @@ describe("run sandbox lifecycle", () => {
       id: "sb1",
       command: "/opt/reversy/sandbox/save-env.sh",
       envs: {
+        REVERSY_BOOT: "1",
         REVERSY_RUN_ID: "run-1",
         REVERSY_API_URL: "https://reversy.test",
         BRIDGE_TOKEN: "bridge-test",
@@ -195,6 +196,29 @@ describe("run sandbox lifecycle", () => {
       return create(input);
     };
     await expect(createPod(deps, env)).rejects.toThrow("quota exceeded");
+    expect(snapshots.size).toBe(0);
+  });
+
+  it("removes the copy snapshot when the snapshot never becomes active", async () => {
+    const { deps, snapshots, sandboxes } = fakeDaytona({ forkStatus: 400 });
+    await startRunSandbox(deps, env);
+    deps.daytona.getSnapshot = async (name) => ({
+      id: name,
+      name,
+      state: "build_failed",
+    });
+    await expect(createPod(deps, env)).rejects.toThrow(/build_failed/);
+    expect(snapshots.size).toBe(0);
+    expect(sandboxes.get("sb1")?.state).toBe("started");
+  });
+
+  it("removes the copy snapshot when restarting the parent fails, keeping that error", async () => {
+    const { deps, snapshots } = fakeDaytona({ forkStatus: 400 });
+    await startRunSandbox(deps, env);
+    deps.daytona.start = async () => {
+      throw new DaytonaError("start refused", 500);
+    };
+    await expect(createPod(deps, env)).rejects.toThrow("start refused");
     expect(snapshots.size).toBe(0);
   });
 

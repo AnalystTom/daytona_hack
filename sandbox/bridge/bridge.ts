@@ -156,7 +156,14 @@ export function toEnvelope(
     eventId,
     sequence: context.sequence,
     runId: context.runId,
-    ...(observation.taskId ? { taskId: observation.taskId } : {}),
+    // A pod's tasks are its own: namespaced so they never overwrite the run's tasks.
+    ...(observation.taskId
+      ? {
+          taskId: context.podId
+            ? `${context.podId}/${observation.taskId}`
+            : observation.taskId,
+        }
+      : {}),
     timestamp: observation.timestamp ?? context.now,
     type: observation.type,
     state: observation.state,
@@ -175,7 +182,7 @@ export type BridgeConfig = {
   forgejoRepo: string;
 };
 
-type BridgeState = { sequence: number; sent: string[] };
+type BridgeState = { sequence: number; sent: string[]; podId?: string };
 
 const readText = (path: string) =>
   existsSync(path) ? readFileSync(path, "utf8").trim() : "";
@@ -248,7 +255,16 @@ export async function runCycle(
   const state: BridgeState = existsSync(statePath)
     ? JSON.parse(readFileSync(statePath, "utf8"))
     : { sequence: 0, sent: [] };
-  const sent = new Set(state.sent);
+  const save = (next: BridgeState) => {
+    mkdirSync(config.stateDir, { recursive: true });
+    writeFileSync(`${statePath}.tmp`, JSON.stringify(next));
+    renameSync(`${statePath}.tmp`, statePath);
+  };
+  // A pod inherits its parent's state: it resets it to what it observes now, so the
+  // parent's history is not posted again as the pod's.
+  const inherited = state.podId !== podId;
+  if (inherited && forgejoError) return { posted: 0, error: forgejoError };
+  const sent = new Set(inherited ? [] : state.sent);
   const timestamp = now();
   let sequence = state.sequence;
   const pending = observations
@@ -257,6 +273,14 @@ export async function runCycle(
     )
     .filter((envelope) => !sent.has(envelope.eventId))
     .map((envelope) => ({ ...envelope, sequence: ++sequence }));
+  if (inherited) {
+    save({
+      sequence: state.sequence,
+      sent: [...sent, ...pending.map((envelope) => envelope.eventId)],
+      podId,
+    });
+    return { posted: 0, error: undefined };
+  }
 
   let posted = 0;
   for (let start = 0; start < pending.length; start += 500) {
@@ -280,13 +304,11 @@ export async function runCycle(
     }
     for (const envelope of batch) sent.add(envelope.eventId);
     posted += batch.length;
-    const next: BridgeState = {
+    save({
       sequence: batch.at(-1)?.sequence ?? state.sequence,
       sent: [...sent],
-    };
-    mkdirSync(config.stateDir, { recursive: true });
-    writeFileSync(`${statePath}.tmp`, JSON.stringify(next));
-    renameSync(`${statePath}.tmp`, statePath);
+      podId,
+    });
   }
   return { posted, error: forgejoError };
 }

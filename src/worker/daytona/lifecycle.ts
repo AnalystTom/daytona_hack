@@ -91,10 +91,11 @@ export async function findRunSandbox(deps: Deps, runId: string) {
 }
 
 // Hands the run's secrets to the sandbox through the toolbox, so they never sit in
-// Daytona's sandbox metadata, then starts boot.sh in its own session.
+// Daytona's sandbox metadata, marks the boot running, then starts boot.sh in its own session.
 async function boot(deps: Deps, id: string, env: RunEnv, podId?: string) {
   const saved = await deps.daytona.exec(id, `${SCRIPTS}/save-env.sh`, {
     envs: {
+      REVERSY_BOOT: "1",
       REVERSY_RUN_ID: env.runId,
       REVERSY_API_URL: env.apiUrl,
       BRIDGE_TOKEN: env.bridgeToken,
@@ -266,40 +267,42 @@ export async function createPod(
   // Copy: a cold snapshot needs the parent stopped, so stop it and bring it back afterwards.
   const wasStarted = parent.state === "started";
   const snapshotName = `reversy-copy-${parent.id}-${Date.now()}`;
+  let snapshotted = false;
+  let copy: Sandbox;
   try {
-    if (parent.state !== "stopped") {
-      await deps.daytona.stop(parent.id);
+    try {
+      if (parent.state !== "stopped") {
+        await deps.daytona.stop(parent.id);
+        await waitFor(
+          deps,
+          `Sandbox ${parent.id} stop`,
+          () => deps.daytona.get(parent.id),
+          (s) => s === "stopped",
+        );
+      }
+      await deps.daytona.snapshot(parent.id, snapshotName);
+      snapshotted = true;
       await waitFor(
         deps,
-        `Sandbox ${parent.id} stop`,
+        `Snapshot of ${parent.id}`,
         () => deps.daytona.get(parent.id),
-        (s) => s === "stopped",
+        (s) => s !== "snapshotting",
       );
+      await waitFor(
+        deps,
+        `Snapshot ${snapshotName}`,
+        () => deps.daytona.getSnapshot(snapshotName),
+        (s) => s === "active",
+      );
+    } finally {
+      if (wasStarted) {
+        await deps.daytona.start(parent.id);
+        await waitStarted(deps, parent.id);
+        // save-env.sh only adds variables, so a parent pod keeps its own pod id.
+        await boot(deps, parent.id, env);
+      }
     }
-    await deps.daytona.snapshot(parent.id, snapshotName);
-    await waitFor(
-      deps,
-      `Snapshot of ${parent.id}`,
-      () => deps.daytona.get(parent.id),
-      (s) => s !== "snapshotting",
-    );
-    await waitFor(
-      deps,
-      `Snapshot ${snapshotName}`,
-      () => deps.daytona.getSnapshot(snapshotName),
-      (s) => s === "active",
-    );
-  } finally {
-    if (wasStarted) {
-      await deps.daytona.start(parent.id);
-      await waitStarted(deps, parent.id);
-      // save-env.sh only adds variables, so a parent pod keeps its own pod id.
-      await boot(deps, parent.id, env);
-    }
-  }
-  // Cleanup finds a copy's snapshot through the pod's label, so without a pod it is removed here.
-  const copy = await deps.daytona
-    .create({
+    copy = await deps.daytona.create({
       snapshot: snapshotName,
       labels: {
         ...labels,
@@ -308,11 +311,14 @@ export async function createPod(
       },
       autoStopInterval: 0,
       ttlMinutes: SANDBOX_TTL_MINUTES,
-    })
-    .catch(async (error) => {
-      await deps.daytona.removeSnapshot(snapshotName).catch(() => {});
-      throw error;
     });
+  } catch (error) {
+    // Cleanup finds a copy's snapshot through the pod's label, so without a pod it is removed here.
+    if (snapshotted) {
+      await deps.daytona.removeSnapshot(snapshotName).catch(() => {});
+    }
+    throw error;
+  }
   await waitStarted(deps, copy.id);
   await boot(deps, copy.id, env, copy.id);
   return { podId: copy.id, kind: "copy", parentSandboxId: parent.id };

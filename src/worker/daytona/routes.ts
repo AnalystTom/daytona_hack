@@ -112,7 +112,9 @@ export async function handleSandboxRoute(
     apiUrl: url.origin,
     openaiApiKey: env.OPENAI_API_KEY ?? "",
     // Never the Worker-wide BRIDGE_TOKEN: the sandbox gets a token valid for this run only.
-    bridgeToken: await runBridgeToken(env.BRIDGE_TOKEN ?? "", runId),
+    bridgeToken: needsAll
+      ? await runBridgeToken(env.BRIDGE_TOKEN ?? "", runId)
+      : "",
   };
 
   try {
