@@ -64,7 +64,7 @@ Media URLs and cache entries include the source run ID and are cached for a year
 
 At `/start`, choose **Goldman Sachs report** and send its draft unchanged, or use the same button in an empty `/workspace` to submit it immediately.
 Enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
-Keep the workspace's `?run=<id>` URL to reopen that run after a reload.
+Reopen saved runs using the [workspace session controls](#workspace).
 See the [financial report demo](docs/spec.md#financial-report-demo) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
@@ -179,7 +179,7 @@ Without them the deploy job fails, so a merge to `main` that did not deploy show
 
 ## Run sandbox (Daytona)
 
-Each run gets one Daytona sandbox that holds the agent system (the second engine, `docs/orchestrator/spec.md` section 11): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+In the second engine (`docs/orchestrator/spec.md` section 11), each run gets one Daytona sandbox that holds Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
 The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
 
 - `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).
@@ -249,7 +249,7 @@ Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandb
 `src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
 It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `POST /v1/tools/screenshot`, `POST /v1/sessions/{id}/recordings/pause`, `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
 Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
-The orchestrator (`orchestrator/`) runs the same capture for its runs, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls.
+For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
 
 | Endpoint | What it does |
 |---|---|
