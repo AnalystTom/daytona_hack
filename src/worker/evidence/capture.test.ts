@@ -23,7 +23,12 @@ function fakeAnchor(
   finalUrls: Record<string, string> = {},
   options: { refuseCode?: boolean } = {},
 ) {
-  const calls: { method: string; path: string; body?: unknown }[] = [];
+  const calls: {
+    method: string;
+    path: string;
+    body?: unknown;
+    sessionId: string | null;
+  }[] = [];
   let current = "";
   vi.stubGlobal(
     "fetch",
@@ -31,7 +36,12 @@ function fakeAnchor(
       const url = new URL(input);
       const method = init.method ?? "GET";
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, path: url.pathname, body });
+      calls.push({
+        method,
+        path: url.pathname,
+        body,
+        sessionId: url.searchParams.get("sessionId"),
+      });
       if (url.pathname === "/v1/sessions") return Response.json(fixtureSession);
       if (url.pathname === "/v1/tools/execute-code") {
         if (options.refuseCode)
@@ -516,6 +526,13 @@ describe("captureRun without Anchor code execution", () => {
       );
     expect(memory.content.get(shot?.id ?? "")?.length).toBeGreaterThan(0);
     const tool = calls.filter((c) => c.path === "/v1/tools/screenshot");
+    expect(tool.map((c) => c.sessionId)).toEqual([
+      fixtureSession.data.id,
+      fixtureSession.data.id,
+    ]);
+    expect(calls.find((c) => c.path === "/v1/sessions")?.body).toMatchObject({
+      browser: { sensitive_data_mask: { active: true } },
+    });
     expect(tool.map((c) => c.body)).toEqual([
       expect.objectContaining({ url: "https://example.com/", width: 1440 }),
       expect.objectContaining({ url: "https://example.com/", width: 390 }),
@@ -545,6 +562,11 @@ describe("captureRun without Anchor code execution", () => {
     expect(calls.filter((c) => c.path === "/v1/tools/screenshot")).toHaveLength(
       2,
     );
+    expect(
+      calls
+        .filter((c) => c.path === "/v1/tools/screenshot")
+        .map((c) => c.sessionId),
+    ).toEqual([fixtureSession.data.id, fixtureSession.data.id]);
   });
 
   it("still stops a page that lands outside the scope", async () => {

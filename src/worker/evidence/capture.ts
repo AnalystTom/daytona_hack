@@ -303,7 +303,12 @@ export async function captureRun(
           const limit =
             "Full-page capture after load; lazy-loaded or animated content may differ.";
           if (fallback) {
-            const png = await anchor.screenshotTool(key, url, viewport);
+            const png = await anchor.screenshotTool(
+              key,
+              sessionId,
+              url,
+              viewport,
+            );
             deps.signal?.throwIfAborted();
             await take(
               "image/png",

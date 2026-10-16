@@ -102,21 +102,25 @@ export async function runSnippet<T>(
   return JSON.parse(result.output) as T;
 }
 
-// Anchor's one-shot screenshot tool: no session and no code execution, so no recording or page facts.
 export async function screenshotTool(
   apiKey: string,
+  sessionId: string,
   url: string,
   viewport: { width: number; height: number },
 ): Promise<Uint8Array> {
-  const response = await call(apiKey, "/v1/tools/screenshot", {
-    method: "POST",
-    body: JSON.stringify({
-      url,
-      ...viewport,
-      capture_full_height: true,
-      wait: 1500,
-    }),
-  });
+  const response = await call(
+    apiKey,
+    `/v1/tools/screenshot?sessionId=${encodeURIComponent(sessionId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        url,
+        ...viewport,
+        capture_full_height: true,
+        wait: 1500,
+      }),
+    },
+  );
   if (!response.headers.get("content-type")?.startsWith("image/"))
     throw new AnchorError("Anchor screenshot tool did not return an image");
   return new Uint8Array(await response.arrayBuffer());
