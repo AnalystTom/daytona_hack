@@ -1,4 +1,5 @@
 import { version } from "../../package.json";
+import { handleRunsApi, type RunsEnv } from "./runs/api";
 import { handleVerify, type VerifierEnv } from "./verifier/route";
 
 export default {
@@ -11,6 +12,7 @@ export default {
     if (request.method === "POST" && verify?.[1]) {
       return handleVerify(request, env, verify[1]);
     }
+    if (pathname.startsWith("/api/v1/")) return handleRunsApi(request, env);
     return Response.json({ error: "Not found" }, { status: 404 });
   },
-} satisfies ExportedHandler<VerifierEnv>;
+} satisfies ExportedHandler<RunsEnv & VerifierEnv>;
