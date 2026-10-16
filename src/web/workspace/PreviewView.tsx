@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { VariantView } from "./orchestrator";
 import {
   fetchPreviewLink,
@@ -15,6 +15,61 @@ const STATUS: Record<VariantView["status"], string> = {
 
 // The rebuilt site is untrusted: it keeps its own (Daytona) origin, so it can fetch its sections but never reach this app.
 const FRAME_SANDBOX = "allow-scripts allow-forms allow-same-origin";
+
+function VariantPreview({
+  runId,
+  variant,
+  onRefused,
+}: {
+  runId: string;
+  variant: VariantView;
+  onRefused: (error: RunCallError) => void;
+}) {
+  const [link, setLink] = useState<RunCallResult<string>>();
+  const [attempt, setAttempt] = useState(0);
+  const refused = useRef(onRefused);
+  refused.current = onRefused;
+  useEffect(() => {
+    let live = true;
+    void fetchPreviewLink(runId, variant.id).then((result) => {
+      if (!live) return;
+      setLink(result);
+      if (!result.ok && result.error === "operator_token")
+        refused.current(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [runId, variant.id, attempt]);
+  if (!link?.ok)
+    return (
+      <p role="status">
+        {link ? link.detail : "Opening variant preview…"}
+        {link && (
+          <button
+            type="button"
+            className="button"
+            onClick={() => {
+              setLink(undefined);
+              setAttempt((n) => n + 1);
+            }}
+          >
+            Try again
+          </button>
+        )}
+      </p>
+    );
+  return (
+    <iframe
+      className="variant-frame"
+      title={`${variant.title} preview`}
+      src={link.value}
+      sandbox={FRAME_SANDBOX}
+      referrerPolicy="no-referrer"
+      loading="lazy"
+    />
+  );
+}
 
 export function PreviewView({
   runId,
@@ -145,14 +200,12 @@ export function PreviewView({
                     ? "Fork of the merged rebuild"
                     : "Copy of the merged rebuild"}
                 </p>
-                {v.previewUrl && v.status !== "failed" && (
-                  <iframe
-                    className="variant-frame"
-                    title={`${v.title} preview`}
-                    src={v.previewUrl}
-                    sandbox={FRAME_SANDBOX}
-                    referrerPolicy="no-referrer"
-                    loading="lazy"
+                {v.status !== "failed" && (
+                  <VariantPreview
+                    key={`${runId}:${v.id}:${attempt}:${promotedId}`}
+                    runId={runId}
+                    variant={v}
+                    onRefused={onRefused}
                   />
                 )}
                 {v.status === "ready" && (

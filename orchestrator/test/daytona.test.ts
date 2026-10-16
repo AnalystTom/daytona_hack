@@ -75,4 +75,25 @@ describe("Daytona shutdown", () => {
     await vi.runAllTimersAsync();
     await stopping;
   });
+
+  it.each(["create", "fork"] as const)(
+    "reports allocated ownership before %s startup can fail",
+    async (action) => {
+      const owned: string[] = [];
+      vi.stubGlobal("fetch", async (_input: string, init: RequestInit = {}) => {
+        if (init.method === "POST") return Response.json({ id: "sb1" });
+        expect(owned).toEqual(["sb1"]);
+        return Response.json({ state: "error" });
+      });
+      const allocated = async (id: string) => {
+        owned.push(id);
+      };
+      await expect(
+        action === "create"
+          ? client().create({}, allocated)
+          : client().fork("main", allocated),
+      ).rejects.toThrow("sandbox sb1 error");
+      expect(owned).toEqual(["sb1"]);
+    },
+  );
 });

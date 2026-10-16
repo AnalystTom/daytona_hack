@@ -261,7 +261,6 @@ describe("runView", () => {
         explanation: "Why v1",
         pod: "copy",
         status: "ready",
-        previewUrl: "https://3001-sb.daytona.works",
       },
       {
         id: "v2",
@@ -269,7 +268,6 @@ describe("runView", () => {
         explanation: "Why v2",
         pod: "copy",
         status: "failed",
-        previewUrl: undefined,
       },
     ]);
     expect(later.board.at(-1)?.message).toBe(

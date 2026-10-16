@@ -124,7 +124,21 @@ async function runRoute(
     }
     if (EVIDENCE.test(action)) return call(`${base}/${action}`);
     // A fresh short-lived signed link to the run's private sandbox preview.
-    if (action === "preview") return call(`${base}/preview`);
+    if (action === "preview") {
+      const variant = url.searchParams.get("variant");
+      if (
+        variant !== null &&
+        !PromoteRequest.shape.variantId.safeParse(variant).success
+      )
+        throw new Failure(
+          400,
+          "invalid_variant",
+          "variant must be a variant id.",
+        );
+      return call(
+        `${base}/preview${variant === null ? "" : `?variant=${variant}`}`,
+      );
+    }
   }
   if (method === "POST") {
     if (action === "messages") {

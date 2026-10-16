@@ -7,6 +7,7 @@ import type { Env, RunEvent, RunRecord, Task } from "../src/types";
 // A Durable Object state in memory; Daytona and OpenAI are answered by a mocked fetch.
 function fakeRun(state: object, overrides: Partial<Env> = {}) {
   const pending: Promise<unknown>[] = [];
+  const snapshots: object[] = [structuredClone(state)];
   const data = new Map<string, unknown>([["state", state]]);
   const alarms: number[] = [];
   let ready: Promise<unknown> = Promise.resolve();
@@ -15,7 +16,10 @@ function fakeRun(state: object, overrides: Partial<Env> = {}) {
       get: async (key: string) => data.get(key),
       list: async ({ prefix }: { prefix: string }) =>
         new Map([...data].filter(([key]) => key.startsWith(prefix))),
-      put: async (key: string, value: unknown) => void data.set(key, value),
+      put: async (key: string, value: unknown) => {
+        data.set(key, value);
+        if (key === "state") snapshots.push(structuredClone(value as object));
+      },
       setAlarm: async (at: number) => void alarms.push(at),
     },
     waitUntil: (promise: Promise<unknown>) => void pending.push(promise),
@@ -35,6 +39,7 @@ function fakeRun(state: object, overrides: Partial<Env> = {}) {
     run,
     alarms,
     state: () => data.get("state") as any,
+    persisted: () => structuredClone(snapshots.at(-1)) as any,
     ready,
     flush: () => Promise.all(pending),
   };
@@ -56,7 +61,6 @@ const variant = (id: string, pod: "fork" | "copy" = "fork") => ({
   pod,
   sandboxId: pod === "fork" ? `sb${Number(id.slice(1)) + 1}` : "sb1",
   dir: pod === "fork" ? "/home/daytona/app" : `/home/daytona/variants/${id}`,
-  previewUrl: `https://3000-${id}.daytona.test`,
   status: "ready",
   snapshot: "abc",
 });
@@ -114,7 +118,7 @@ const baseState = (startedAt: string, phase: string, tasks: Task[]) => ({
   evidence: [],
   tasks,
   sandboxId: "sb1",
-  previewUrl: "https://3000-sb1.daytona.test",
+  previewReady: true,
   spec: {
     url: "https://example.com/",
     goal: "",
@@ -578,8 +582,12 @@ describe("Run", () => {
             expire();
           return Response.json({ exitCode: 0, result: "abc" });
         }
+        if (
+          boundary === "fork_preview" &&
+          input.endsWith("/process/session/preview/exec")
+        )
+          expire();
         if (input.includes("/signed-preview-url")) {
-          if (boundary === "fork_preview") expire();
           return Response.json({ url: "https://3000-sb2.daytona.test" });
         }
         return Response.json({});
@@ -604,7 +612,7 @@ describe("Run", () => {
       if (boundary === "fork_start")
         expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
       if (boundary === "fork_preview")
-        expect(calls).toContain("POST https://daytona.test/sandbox/sb2/stop");
+        expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
     },
   );
 
@@ -649,7 +657,7 @@ describe("Run", () => {
     },
   );
 
-  it("tracks and stops a main sandbox that finishes starting after the deadline", async () => {
+  it("cleans up a main sandbox that finishes starting after the deadline", async () => {
     vi.useFakeTimers();
     const started = Date.now();
     let stopped = false;
@@ -681,7 +689,7 @@ describe("Run", () => {
       expired: true,
       stoppingSandboxIds: [],
     });
-    expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+    expect(calls).toContain("DELETE https://daytona.test/sandbox/sb1");
     expect(calls.some((c) => c.includes("/process/session"))).toBe(false);
   });
 
@@ -1034,5 +1042,391 @@ describe("Run", () => {
     expect(state().phase).toBe("done");
     expect(state().variants[0].status).toBe("failed");
     await expect(run.promote("v1")).rejects.toThrow("not ready");
+  });
+
+  it.each(["fork_start", "fork_preview", "main_start", "main_setup"])(
+    "keeps allocated ownership and retries failed cleanup after %s",
+    async (stage) => {
+      const main = stage.startsWith("main");
+      let forks = 1;
+      let orphanStops = 0;
+      const stopped = new Set<string>();
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        if (input === "https://api.openai.com/v1/responses")
+          return Response.json({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((n) => ({
+                title: `Variant ${n}`,
+                change: "Layout",
+                explanation: "Alternative layout",
+              })),
+            }),
+          });
+        if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
+          return Response.json({ id: main ? "sb2" : `sb${++forks}` });
+        if (init.method === "DELETE")
+          return new Response("delete unavailable", { status: 503 });
+        if (input.endsWith("/stop")) {
+          if (input.endsWith("/sb2/stop") && ++orphanStops === 1)
+            return new Response("stop unavailable", { status: 503 });
+          stopped.add(input.slice(0, -5));
+        }
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+          return Response.json({
+            id: input.split("/").pop(),
+            state: stopped.has(input)
+              ? "stopped"
+              : input.endsWith("sb2") && stage.endsWith("start")
+                ? "error"
+                : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return Response.json({ url: "https://toolbox.test" });
+        if (
+          stage === "fork_preview" &&
+          input.includes("/sb2/process/session/preview/exec")
+        )
+          return new Response("preview unavailable", { status: 503 });
+        if (input.endsWith("/process/execute"))
+          return Response.json({
+            exitCode: stage === "main_setup" ? 1 : 0,
+            result: "abc",
+          });
+        return Response.json({ cmdId: "command" });
+      });
+      const { run, state, persisted, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          main ? "building" : "variants",
+          [],
+        ),
+        sandboxId: main ? undefined : "sb1",
+        pending: main ? "build_setup" : "variants",
+      });
+      await ready;
+      await run.alarm();
+      expect(persisted().sandboxIds).toContain("sb2");
+      expect(persisted().stoppingSandboxIds).toContain("sb2");
+      if (main) expect(state().sandboxId).toBeUndefined();
+      else expect(state().forkUnavailable).toBeFalsy();
+      await run.stop();
+      const restored = fakeRun(persisted());
+      await restored.ready;
+      await restored.run.alarm();
+      expect(restored.persisted().stoppingSandboxIds).toContain("sb2");
+      expect(restored.state().expired).toBeUndefined();
+      await restored.run.alarm();
+      expect(restored.persisted().stoppingSandboxIds).toEqual([]);
+      expect(orphanStops).toBe(2);
+      expect(stopped.has("https://daytona.test/sandbox/sb2")).toBe(true);
+    },
+  );
+
+  it("claims Stop before awaiting worker cleanup", async () => {
+    const entered = deferred();
+    const release = deferred();
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      entered.resolve();
+      await release.promise;
+      return Response.json({ exitCode: 0, result: "" });
+    });
+    const { run, state, persisted, ready } = fakeRun(
+      baseState(new Date().toISOString(), "done", []),
+    );
+    await ready;
+    const stopping = run.stop();
+    await entered.promise;
+    expect(state().phase).toBe("stopped");
+    expect(persisted().phase).toBe("stopped");
+    await expect(run.makeVariants()).rejects.toThrow("was stopped");
+    release.resolve();
+    await stopping;
+  });
+
+  it.each([
+    "ideas",
+    "main_create",
+    "fork_start",
+    "main_preview",
+    "worker_session",
+    "review",
+    "plan",
+    "final",
+    "promotion",
+  ])(
+    "never resumes allocation, dispatch or completion after Stop during %s",
+    async (stage) => {
+      const entered = deferred();
+      const release = deferred();
+      let paused = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        const name =
+          input === "https://api.openai.com/v1/responses"
+            ? JSON.parse(init.body as string).text.format.name
+            : "";
+        const command = input.endsWith("/process/execute")
+          ? (JSON.parse(init.body as string).command as string)
+          : "";
+        const shouldPause =
+          stage === "ideas"
+            ? name === "variants"
+            : stage === "main_create"
+              ? input === "https://daytona.test/sandbox"
+              : stage === "fork_start"
+                ? input === "https://daytona.test/sandbox/sb2"
+                : ["worker_session", "main_preview"].includes(stage)
+                  ? input.endsWith("/process/session")
+                  : stage === "promotion"
+                    ? command.includes("git fetch")
+                    : name ===
+                      (stage === "final"
+                        ? "verify_final"
+                        : stage === "plan"
+                          ? "plan"
+                          : "review");
+        if (!paused && shouldPause) {
+          paused = true;
+          entered.resolve();
+          await release.promise;
+        }
+        if (input === "https://api.openai.com/v1/responses")
+          return Response.json({
+            output_text: JSON.stringify(
+              name === "variants"
+                ? {
+                    variants: [1, 2, 3].map((n) => ({
+                      title: `Variant ${n}`,
+                      change: "Layout",
+                      explanation: "Alternative layout",
+                    })),
+                  }
+                : name === "plan"
+                  ? { tasks: [] }
+                  : name === "review"
+                    ? { verdict: "approve", reason: "Accepted", findings: [] }
+                    : { pass: true, summary: "Verified", findings: [] },
+            ),
+          });
+        if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
+          return Response.json({ id: "sb2" });
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+          return Response.json({
+            id: input.split("/").pop(),
+            state: "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return Response.json({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return Response.json({
+            exitCode: 0,
+            result: command.includes("cat /home/daytona/logs/") ? "0" : "diff",
+          });
+        return Response.json({ cmdId: "command" });
+      });
+      const initial = baseState(
+        new Date().toISOString(),
+        ["ideas", "fork_start"].includes(stage)
+          ? "variants"
+          : stage === "promotion"
+            ? "done"
+            : stage === "plan"
+              ? "inspecting"
+              : "building",
+        stage === "worker_session"
+          ? [task("t1", "queued")]
+          : stage === "review"
+            ? [task("t1", "building")]
+            : stage === "promotion"
+              ? [verifiedVariantTask("v1")]
+              : [],
+      );
+      const { run, state, ready } = fakeRun({
+        ...initial,
+        sandboxId: ["main_create", "main_preview"].includes(stage)
+          ? undefined
+          : "sb1",
+        pending: ["ideas", "fork_start"].includes(stage)
+          ? "variants"
+          : ["main_create", "main_preview"].includes(stage)
+            ? "build_setup"
+            : stage === "plan"
+              ? "inspect"
+              : undefined,
+        variants: stage === "promotion" ? [variant("v1", "copy")] : undefined,
+      });
+      await ready;
+      const work = (
+        stage === "promotion" ? run.promote("v1") : run.alarm()
+      ).catch((e) => e);
+      await entered.promise;
+      await run.stop();
+      const stopIndex = calls.length;
+      release.resolve();
+      await work;
+      expect(state().phase).toBe("stopped");
+      const later = calls.slice(stopIndex);
+      expect(
+        later.filter(
+          (call) =>
+            call === "POST https://daytona.test/sandbox" ||
+            call.endsWith("/fork") ||
+            /POST .*\/process\/session\/[^/]+\/exec$/.test(call),
+        ),
+      ).toEqual([]);
+      const phases = (await run.events(0)).filter((e) => e.type === "phase");
+      expect(phases.at(-1)?.data).toMatchObject({ phase: "stopped" });
+      if (stage === "main_create")
+        expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+      if (stage === "worker_session" || stage === "review")
+        expect(state().tasks[0].status).toBe("stopped");
+    },
+  );
+
+  it.each([undefined, "v1"])(
+    "persists the required fix before Agent Memory reporting fails (%s)",
+    async (variantId) => {
+      mockFetch({ pass: false, summary: "Needs repair", findings: [] });
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+        if (input.startsWith("https://memory.test"))
+          throw new Error("memory unavailable");
+        return provider(input, init);
+      });
+      const { run, persisted, ready } = fakeRun(
+        {
+          ...baseState(new Date().toISOString(), "done", [
+            { ...task("t1", "in_review"), variant: variantId },
+          ]),
+          variants: variantId
+            ? [{ ...variant("v1", "copy"), status: "building" }]
+            : undefined,
+        },
+        { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+      );
+      await ready;
+      await expect(run.override("t1", "approve", "Accept")).rejects.toThrow(
+        "memory unavailable",
+      );
+      const restored = fakeRun(persisted());
+      await restored.ready;
+      expect((await restored.run.getState()).tasks).toMatchObject([
+        { id: "t1", status: "merged", verification: false },
+        { id: "t1-fix", status: "queued", fixFor: "t1", variant: variantId },
+      ]);
+      expect((await restored.run.getState()).phase).toBe(
+        variantId ? "variants" : "building",
+      );
+    },
+  );
+
+  it("keeps signed variant capabilities out of durable data, prompts, webhooks and traces", async () => {
+    const signed = "https://private-preview.test/?token=capability-secret";
+    const outbound: string[] = [];
+    const records: RunRecord[] = [];
+    const signedRequests: string[] = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input.includes("/signed-preview-url")) {
+        signedRequests.push(input);
+        return Response.json({ url: signed });
+      }
+      if (input === signed) return new Response("<main>Preview HTML</main>");
+      if (typeof init.body === "string") outbound.push(init.body);
+      if (init.body instanceof FormData)
+        outbound.push(await ((init.body.get("file") as Blob)?.text() ?? ""));
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      if (input.endsWith("/process/execute"))
+        return Response.json({ exitCode: 0, result: "abc" });
+      if (input === "https://api.openai.com/v1/responses") {
+        const name = JSON.parse(init.body as string).text.format.name;
+        return Response.json({
+          output_text: JSON.stringify(
+            name === "variants"
+              ? {
+                  variants: [1, 2, 3].map((n) => ({
+                    title: `Variant ${n}`,
+                    change: "Layout",
+                    explanation: "Alternative layout",
+                  })),
+                }
+              : name === "orchestrator_turn"
+                ? {
+                    reply: "Follow up",
+                    spec: { pages: [], flows: [], openQuestions: [] },
+                    userApproved: true,
+                  }
+                : name === "plan"
+                  ? { tasks: [] }
+                  : { pass: true, summary: "Verified", findings: [] },
+          ),
+        });
+      }
+      return Response.json({ cmdId: "command" });
+    });
+    const { run, persisted, flush, ready } = fakeRun(
+      {
+        ...baseState(new Date().toISOString(), "variants", []),
+        pending: "variants",
+        forkUnavailable: true,
+      },
+      {
+        RECORDS: {
+          async record(input) {
+            records.push(structuredClone(input));
+          },
+        },
+        EVENTS_WEBHOOK_URL: "https://webhook.test",
+        ARIZE_API_KEY: "test",
+        ARIZE_SPACE_ID: "test",
+      },
+    );
+    await ready;
+    await run.alarm();
+    expect(signedRequests).toEqual([]);
+    for (const id of ["v1", "v2", "v3"])
+      await run.override(id, "approve", "Accept");
+    await run.alarm();
+    expect(await run.previewLink(undefined, "v1")).toBe(signed);
+    expect(signedRequests.at(-1)).toContain("/ports/3001/");
+    await run.promote("v1");
+    await run.message("Approve a follow-up");
+    await run.alarm();
+    await flush();
+    const serialized = JSON.stringify({
+      state: persisted(),
+      events: await run.events(0),
+      records,
+      outbound,
+    });
+    expect(serialized).not.toContain(signed);
+    expect(serialized).not.toContain("capability-secret");
+    expect(
+      persisted().variants.every((v: object) => !("previewUrl" in v)),
+    ).toBe(true);
+  });
+
+  it("preserves existing preview availability while dropping legacy capability fields from saved state", async () => {
+    const legacy = "https://legacy-preview.test/?token=old-capability";
+    vi.stubGlobal("fetch", async () =>
+      Response.json({ url: "https://fresh-preview.test/" }),
+    );
+    const { run, persisted, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
+      previewReady: undefined,
+      previewUrl: legacy,
+      variants: [{ ...variant("v1", "copy"), previewUrl: legacy }],
+    });
+    await ready;
+    expect(JSON.stringify(persisted())).not.toContain(legacy);
+    expect(await run.previewLink()).toBe("https://fresh-preview.test/");
+    expect(await run.previewLink(undefined, "v1")).toBe(
+      "https://fresh-preview.test/",
+    );
   });
 });

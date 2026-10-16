@@ -76,15 +76,13 @@ const Variant = z.object({
   title: z.string(),
   explanation: z.string(),
   pod: z.enum(["fork", "copy"]),
-  previewUrl: z.string(),
   status: z.enum(["building", "ready", "failed", "promoted"]),
 });
-export type VariantView = Omit<z.infer<typeof Variant>, "previewUrl"> & {
-  previewUrl?: string;
-};
+export type VariantView = z.infer<typeof Variant>;
+
+const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 const EVIDENCE_PATH = /^\/runs\/[\w-]+\/evidence\/[\w-]+$/;
-const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 export type RunView = {
   phase?: string;
@@ -269,12 +267,9 @@ export function runView(
       case "variant": {
         const variant = Variant.safeParse(data);
         if (!variant.success) break;
-        const { previewUrl, ...v } = variant.data;
+        const v = variant.data;
         view.variants = view.variants.filter((x) => x.id !== v.id);
-        view.variants.push({
-          ...v,
-          previewUrl: isWebLink(previewUrl) ? previewUrl : undefined,
-        });
+        view.variants.push(v);
         view.variants.sort((a, b) => a.id.localeCompare(b.id));
         break;
       }

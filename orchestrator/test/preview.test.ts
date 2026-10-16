@@ -1,16 +1,24 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
+import orchestrator from "../src/index";
+import type { Env } from "../src/types";
 import { handleOrchestrator } from "../../src/worker/orchestrator/front";
 import { fetchPreviewLink, signIn } from "../../src/web/workspace/runClient";
 
 it("obtains preview links only after signing in through the session API", async () => {
   const forwarded: string[] = [];
   const url = "https://3000-signed.proxy.daytona.works/";
+  const previewLink = vi.fn(
+    async (_seconds?: number, _variant?: string) => url,
+  );
+  const runs = { idFromName: (id: string) => id, get: () => ({ previewLink }) };
   const env = {
     OPERATOR_TOKEN: "operator-secret",
     ORCHESTRATOR: {
-      async fetch(input: string) {
+      async fetch(input: string, init: RequestInit = {}) {
         forwarded.push(input);
-        return Response.json({ url });
+        return orchestrator.fetch(new Request(input, init), {
+          RUNS: runs,
+        } as unknown as Env);
       },
     } as unknown as Fetcher,
   };
@@ -28,7 +36,11 @@ it("obtains preview links only after signing in through the session API", async 
     if (setCookie) cookie = setCookie.split(";")[0]!;
     return response;
   }) as typeof fetch;
-  expect(await fetchPreviewLink("r1", fetchImpl)).toMatchObject({
+  expect(await fetchPreviewLink("r1", undefined, fetchImpl)).toMatchObject({
+    ok: false,
+    error: "operator_token",
+  });
+  expect(await fetchPreviewLink("r1", "v1", fetchImpl)).toMatchObject({
     ok: false,
     error: "operator_token",
   });
@@ -37,9 +49,30 @@ it("obtains preview links only after signing in through the session API", async 
     ok: true,
     value: undefined,
   });
-  expect(await fetchPreviewLink("r1", fetchImpl)).toEqual({
+  expect(await fetchPreviewLink("r1", undefined, fetchImpl)).toEqual({
     ok: true,
     value: url,
   });
-  expect(forwarded).toEqual(["https://orchestrator/runs/r1/preview"]);
+  expect(await fetchPreviewLink("r1", "v1", fetchImpl)).toEqual({
+    ok: true,
+    value: url,
+  });
+  expect(previewLink.mock.calls).toEqual([
+    [undefined, undefined],
+    [undefined, "v1"],
+  ]);
+  expect(forwarded).toEqual([
+    "https://orchestrator/runs/r1/preview",
+    "https://orchestrator/runs/r1/preview?variant=v1",
+  ]);
+  expect(await fetchPreviewLink("r1", "../bad", fetchImpl)).toMatchObject({
+    ok: false,
+    error: "failed",
+  });
+  env.OPERATOR_TOKEN = "rotated";
+  expect(await fetchPreviewLink("r1", "v1", fetchImpl)).toMatchObject({
+    ok: false,
+    error: "operator_token",
+  });
+  expect(previewLink).toHaveBeenCalledTimes(2);
 });

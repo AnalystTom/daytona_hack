@@ -12,7 +12,7 @@ function setup(token = SECRET) {
     async fetch(input: string, init: RequestInit = {}) {
       const request = new Request(input, init);
       seen.push(request);
-      return request.url.endsWith("/preview")
+      return new URL(request.url).pathname.endsWith("/preview")
         ? Response.json({ url: "https://3000-signed.proxy.daytona.works" })
         : Response.json({ id: "r1", phase: "brief" });
     },
@@ -51,6 +51,7 @@ const READS = [
   "/api/v1/runs/r1/events?since=0",
   "/api/v1/runs/r1/evidence/ev_001",
   "/api/v1/runs/r1/preview",
+  "/api/v1/runs/r1/preview?variant=v1",
 ];
 const WRITES: [string, unknown][] = [
   ["/api/v1/runs", { url: "https://example.com", goal: "copy it" }],

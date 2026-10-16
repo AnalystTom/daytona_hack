@@ -73,9 +73,12 @@ export default {
           await run.events(parseInt(url.searchParams.get("since") || "0", 10)),
         );
       if (req.method === "GET" && action === "preview") {
-        const url = await run.previewLink();
-        return url
-          ? json({ url })
+        const link = await run.previewLink(
+          undefined,
+          url.searchParams.get("variant") ?? undefined,
+        );
+        const response = link
+          ? json({ url: link })
           : json(
               {
                 error:
@@ -83,6 +86,8 @@ export default {
               },
               404,
             );
+        response.headers.set("Cache-Control", "no-store");
+        return response;
       }
       if (req.method === "GET" && action === "evidence") {
         const blob = await run.evidenceBlob(parts[3]);
@@ -118,8 +123,8 @@ const ROUTES = [
   "POST /gateway/remember {runId, text, observedAt?} / POST /gateway/recall {runId, query} (Bearer GATEWAY_TOKEN)",
   "POST /sandboxes/:id/captain {text} / GET /sandboxes/:id/screen (Bearer OPERATOR_TOKEN, from the backend)",
   "POST /runs {url, goal} -> run state (first look + first chat reply)",
-  "GET  /runs/:id -> state {phase, spec, chat, evidence, tasks, previewUrl}",
-  "GET  /runs/:id/preview -> {url}: a 30-minute signed link to the private sandbox preview",
+  "GET  /runs/:id -> state {phase, spec, chat, evidence, tasks, previewReady}",
+  "GET  /runs/:id/preview?variant=v1 (optional) -> {url}: a 30-minute signed link to the private sandbox preview",
   "GET  /runs/:id/events?since=N -> [{seq, ts, type, data}]",
   "GET  /runs/:id/evidence/:evId -> screenshot png",
   "POST /runs/:id/messages {text}",

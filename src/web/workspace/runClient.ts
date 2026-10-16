@@ -197,11 +197,12 @@ const PreviewLink = z.object({ url: z.url({ protocol: /^https$/ }) });
 // A short-lived signed link to the run's private preview.
 export function fetchPreviewLink(
   runId: string,
+  variantId?: string,
   fetchImpl: typeof fetch = fetch,
 ) {
   return call(
     "GET",
-    runPath(runId, "preview"),
+    `${runPath(runId, "preview")}${variantId === undefined ? "" : `?variant=${encodeURIComponent(variantId)}`}`,
     undefined,
     async (r) => PreviewLink.parse(await r.json()).url,
     fetchImpl,

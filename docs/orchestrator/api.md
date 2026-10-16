@@ -11,7 +11,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | Method and path | Body | Does |
 |---|---|---|
 | `POST /runs` | `{url, goal}` | Creates a run, takes a first look (HTML, routes, screenshot if Anchor is set), returns state with the first chat reply |
-| `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewUrl, error}` |
+| `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewReady, error}` |
 | `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | Screenshot PNG for an evidence card |
@@ -34,7 +34,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 Each run is limited to 2 hours from its creation. At the limit the orchestrator stops the workers and every sandbox of the run,
 emits `phase {phase: "stopped", reason: "time_limit"}`, and refuses further actions. Sandboxes also auto-stop after 60 idle minutes.
-Failed sandbox shutdowns stay pending and are retried by alarms until Daytona confirms they stopped.
+Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pending and is retried by alarms until Daytona confirms shutdown, including sandboxes that never finished starting. Stop claims its terminal phase before external cleanup; in-flight setup and workers cannot resume the run.
 
 ## Events
 
@@ -51,7 +51,7 @@ Failed sandbox shutdowns stay pending and are retried by alarms until Daytona co
 | `preview` | `{sandboxId?, mergedTask?, promoted?}` | The integration branch's preview changed (Daytona port 3000, private); fetch `GET /runs/:id/preview` for a signed link |
 | `phase` | `{phase, ...}` | Header state; enable Start build on `planned` |
 | `verification` | `{target, taskId?, pass, summary, findings, model}` | GPT verifier verdict on the plan, a merged task, or the final rebuild |
-| `variant` | `{id, title, change, explanation, pod: "fork"\|"copy", previewUrl, snapshot, status}` | Variant card on the Preview tab; `status` is `building`, `ready`, `failed` or `promoted` |
+| `variant` | `{id, title, change, explanation, pod: "fork"\|"copy", snapshot, status}` | Variant card on the Preview tab; `status` is `building`, `ready`, `failed` or `promoted` |
 | `error` | `{message}` | Inline error state |
 
 ## How a build runs
@@ -63,7 +63,7 @@ Failed sandbox shutdowns stay pending and are retried by alarms until Daytona co
 - A task is dispatched when all its dependencies are merged, up to `MAX_WORKERS` at once. The Durable Object alarm polls every 10 s.
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
-- If the verifier fails a merged task, the orchestrator opens one fix task `<id>-fix` on top of it and keeps building; nothing is rolled back.
+- If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it before reporting to Agent Memory and keeps building; nothing is rolled back.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
 - Events remain in the run's Durable Object event log. External SurrealDB run records (run, events, tasks, steering, approvals)
   use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
@@ -78,7 +78,7 @@ A pod is a Daytona fork of the run sandbox where the account allows it, otherwis
 Promoting a copy merges it into `main`; promoting a fork makes it the run's sandbox and stops the other pods.
 A variant becomes `ready` only when all its tasks are merged and verification passes, including any required fix task.
 A failed review, failed fix verification, or unavailable verifier prevents promotion; existing `ready` status alone is insufficient.
-Variant previews also stay private: their event URLs are signed for two hours, and the run deadline still shuts the sandboxes down.
+Variant previews use the same operator-guarded `GET /runs/:id/preview?variant=v1` endpoint as the rebuild. Signed links last 30 minutes and remain only in the requesting client; state, events, projections, model inputs and traces contain no preview capabilities. The run deadline still shuts the sandboxes down.
 Promotion returns to the brief so the user can describe the next changes and approve a follow-up plan.
 Starting that plan reuses the promoted sandbox and its merged files instead of creating a new sandbox.
 

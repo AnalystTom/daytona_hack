@@ -26,11 +26,14 @@ export class Daytona {
     return (text ? JSON.parse(text) : {}) as T;
   }
 
-  async create(opts: {
-    env?: Record<string, string>;
-    snapshot?: string;
-    labels?: Record<string, string>;
-  }) {
+  async create(
+    opts: {
+      env?: Record<string, string>;
+      snapshot?: string;
+      labels?: Record<string, string>;
+    },
+    allocated: (id: string) => Promise<void>,
+  ) {
     const sb = await this.call(`${this.env.DAYTONA_API_URL}/sandbox`, {
       method: "POST",
       body: JSON.stringify({
@@ -42,11 +45,12 @@ export class Daytona {
         autoStopInterval: 60, // the 2-hour run limit also stops active sandboxes
       }),
     });
+    await allocated(sb.id);
     return this.started(sb.id);
   }
 
   /** Daytona's experimental fork: a new sandbox with an identical filesystem. Throws where the account lacks it. */
-  async fork(id: string) {
+  async fork(id: string, allocated: (id: string) => Promise<void>) {
     const sb = await this.call(
       `${this.env.DAYTONA_API_URL}/sandbox/${id}/fork`,
       {
@@ -54,12 +58,8 @@ export class Daytona {
         body: JSON.stringify({}),
       },
     );
-    try {
-      return await this.started(sb.id);
-    } catch (e) {
-      await this.remove(sb.id).catch(() => {});
-      throw e;
-    }
+    await allocated(sb.id);
+    return this.started(sb.id);
   }
 
   private async started(id: string) {
@@ -99,13 +99,6 @@ export class Daytona {
       await sleep(2000);
     }
     throw new Error(`sandbox ${id} did not stop`);
-  }
-
-  async previewUrl(id: string, port: number): Promise<string> {
-    const r = await this.call(
-      `${this.env.DAYTONA_API_URL}/sandbox/${id}/ports/${port}/preview-url`,
-    );
-    return r.url;
   }
 
   /** A preview link that works without headers until it expires. */
@@ -160,13 +153,20 @@ export class Daytona {
   }
 
   /** Start a long command in its own session; returns immediately. */
-  async startAsync(id: string, sessionId: string, command: string) {
+  async startAsync(
+    id: string,
+    sessionId: string,
+    command: string,
+    live: () => void,
+  ) {
     const base = await this.tb(id);
+    live();
     await fetch(`${base}/process/session`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ sessionId }),
     });
+    live();
     const r = await this.call<{ cmdId: string }>(
       `${base}/process/session/${sessionId}/exec`,
       {

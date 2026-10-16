@@ -116,7 +116,6 @@ export interface Variant {
   pod: "fork" | "copy"; // Daytona fork when the account allows it, otherwise a copy in the run sandbox
   sandboxId: string;
   dir: string; // its repo inside that sandbox
-  previewUrl: string;
   snapshot: string; // the main commit it started from
   status: "building" | "ready" | "failed" | "promoted";
 }
