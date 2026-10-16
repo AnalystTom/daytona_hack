@@ -53,6 +53,20 @@ describe("recordRunEvent", () => {
     expect(records?.approvals).toHaveLength(1);
   });
 
+  it("gives each steering record of a UUID run its own id that SurrealDB keeps as a string", async () => {
+    const store = new MemoryRunStore();
+    const uuidRun = { ...run, id: "6ab3fca5-1c2d-4e5f-8a9b-8546ef50d8fa" };
+    const at = (seq: number, type: string, data: unknown) => ({
+      run: uuidRun,
+      event: { seq, ts: `2026-10-16T12:00:0${seq}.000Z`, type, data },
+    });
+    await recordRunEvent(store, at(2, "chat", { role: "user", text: "Go" }));
+    await recordRunEvent(store, at(5, "phase", { phase: "stopped" }));
+
+    const ids = store.runs.get(uuidRun.id)?.steering.map((s) => s.id);
+    expect(ids).toEqual([`e2_${uuidRun.id}`, `e5_${uuidRun.id}`]);
+  });
+
   it("rejects a malformed record", async () => {
     await expect(
       recordRunEvent(new MemoryRunStore(), { run, event: { seq: 0 } }),
