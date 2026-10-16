@@ -106,7 +106,11 @@ describe("parseBrief", () => {
 
   it.each([
     ["wikipedia.com", "https://other.org/page", "https://wikipedia.com"],
-    ["www.wikipedia.com", "https://other.org/page", "https://www.wikipedia.com"],
+    [
+      "www.wikipedia.com",
+      "https://other.org/page",
+      "https://www.wikipedia.com",
+    ],
     ["https://other.org/page", "wikipedia.com", "https://other.org/page"],
   ])("selects the first address %s before %s", (first, second, url) => {
     expect(parseBrief(`${first} ${second}`)).toEqual({ url, goal: second });
