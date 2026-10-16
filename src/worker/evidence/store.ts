@@ -35,7 +35,7 @@ const key = (table: string, id: string, pattern: RegExp) => {
 const chunkKey = (id: string, index: number) =>
   key("evidence_chunk", `${id}_${index}`, /^ev_[0-9a-f-]{36}_\d+$/);
 
-const toBase64 = (bytes: Uint8Array) => {
+export const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));

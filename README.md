@@ -22,7 +22,7 @@ In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sa
 
 ## Workspace
 
-Open `/workspace` for an empty session. The header's session menu offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
+**Start a project** opens `/workspace`, which shows the saved example run (also at `/workspace/example` and first in the session menu) until a session is started. **Start your own** opens an empty session. The header's session menu offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
 
 The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
 
@@ -35,6 +35,18 @@ Use **Spec** or **Build** to work on the canvas:
 
 **Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
 
+### Example run
+
+The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
+
+Save or replace it with one command, after the Worker is deployed:
+
+```sh
+OPERATOR_TOKEN=... npm run example:save -- [runId]
+```
+
+`runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Runs that have not finished are refused. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it.
+
 ## Scripts
 
 | Script | What it does |
@@ -46,6 +58,7 @@ Use **Spec** or **Build** to work on the canvas:
 | `npm run format` | Checks formatting with Biome (`npx biome format --write .` fixes it) |
 | `npm test` | Runs the Vitest tests |
 | `npm run deploy` | Builds, then runs `wrangler deploy` |
+| `npm run example:save -- [runId]` | Saves a finished run as the public example (needs `OPERATOR_TOKEN`) |
 
 ## Worker bindings
 

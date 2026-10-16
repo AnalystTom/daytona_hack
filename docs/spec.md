@@ -28,7 +28,7 @@ The landing page introduces Reversy, explains the workflow and leads into chat.
 
 Rules:
 
-- Every **Start a project** button opens Entry A. There is no separate questionnaire or duplicate brief entry.
+- Every **Start a project** button opens `/workspace`, which shows a saved, read-only example run with a **Start your own** action that opens an empty session. There is no separate questionnaire or duplicate brief entry.
 - A starter link opens Entry A with an editable draft. Choosing a starter never begins capture or a build; a missing URL or file is asked for in chat.
 - The page stays honest: the workspace preview is labelled as a concept until real app media replaces it, and there are no invented users, testimonials, scores, results or speed claims.
 
