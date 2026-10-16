@@ -10,10 +10,19 @@
   border: 0;
   background: #08090b;
   color: var(--parchment);
+  opacity: 1;
+  transition: opacity 700ms ease-in-out;
 }
 
 .intro::backdrop {
   background: #08090b;
+  opacity: 1;
+  transition: opacity 700ms ease-in-out;
+}
+
+.intro-leaving,
+.intro-leaving::backdrop {
+  opacity: 0;
 }
 
 .intro-video,
@@ -26,6 +35,12 @@
 
 .intro-video {
   object-fit: contain;
+}
+
+@media (orientation: portrait) {
+  .intro-video-mobile {
+    object-fit: cover;
+  }
 }
 
 .intro button {
