@@ -8,6 +8,7 @@ export interface Env {
   ORCHESTRATOR_MODEL: string;
   VERIFIER_MODEL?: string;
   WORKER_MODEL: string;
+  WORKER_EFFORT?: string;
   MAX_WORKERS: string;
   SPECTRON_URL?: string;
   SPECTRON_CONTEXT_ID?: string;

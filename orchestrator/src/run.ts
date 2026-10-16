@@ -733,7 +733,7 @@ Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the t
       .slice(0, 2)
       .map((e) => `-i /home/daytona/${e.path}`)
       .join(" ");
-    const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
+    const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=${this.env.WORKER_EFFORT || "high"} "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
     t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
     t.status = "building";
     t.attempts += 1;
