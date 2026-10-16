@@ -291,10 +291,45 @@ it.each([
   ["differs", "34", "$0.34 billion", "not_found"],
   ["differs", "34", "$1,034 billion", "not_found"],
   ["differs", "34", "-34 billion", "not_found"],
-  ["matches", "35", "$35 billion", "matches"],
-  ["differs", "34", "$34 billion", "differs"],
-  ["matches", "35", "Investment: 35.", "matches"],
-  ["differs", "34", "Investment: 34, compared with last year.", "differs"],
+  ["matches", "35", "$35 billion", "not_found"],
+  ["differs", "34", "$34 billion", "not_found"],
+  ["matches", "35", "Investment: 35.", "not_found"],
+  ["differs", "34", "Investment: 34, compared with last year.", "not_found"],
+  ["matches", "35", "$35 million", "not_found"],
+  ["differs", "$35 million", "$35 million", "differs"],
+  ["matches", "$35 billion", "$35 billion", "matches"],
+  ["matches", "$35 bn", "$35 billion", "matches"],
+  ["matches", "$35 billions", "$35 bn", "matches"],
+  ["matches", "35 billion", "$35 billion", "not_found"],
+  ["differs", "$35 bn", "$35 billion", "not_found"],
+  ["differs", "$34 bn", "$34 billion", "differs"],
+  ["matches", "$0.035 trillion", "$35 billion", "matches"],
+  ["matches", "$35,000 million", "$35 billion", "matches"],
+  ["differs", "$35,000 million", "$35 billion", "not_found"],
+  ["matches", "35", "$35 billion and $35 million", "not_found"],
+  ["differs", "35", "$35 million and $35 billion", "not_found"],
+  ["matches", "35", "€35 billion", "not_found"],
+  ["differs", "34", "€34 billion", "not_found"],
+  ["matches", "35", "35 billion", "not_found"],
+  ["differs", "34", "34 billion", "not_found"],
+  ["matches", "35", "$35 bazillion", "not_found"],
+  ["differs", "34", "$34 widgets", "not_found"],
+  ["matches", "35", "$35 billion CAD", "not_found"],
+  ["differs", "34", "CAD $34 billion", "not_found"],
+  ["matches", "$35 billion", "$135 billion", "not_found"],
+  ["differs", "$34 billion", "$134 billion", "not_found"],
+  ["matches", "$35 billion", "$350 billion", "not_found"],
+  ["matches", "$35 billion", "$35.5 billion", "not_found"],
+  ["matches", "$35 billion", "$0.35 billion", "not_found"],
+  ["matches", "$35 billion", "$1,035 billion", "not_found"],
+  ["matches", "$35 billion", "-$35 billion", "not_found"],
+  ["differs", "$34 billion", "$340 billion", "not_found"],
+  ["differs", "$34 billion", "$34.5 billion", "not_found"],
+  ["differs", "$34 billion", "$0.34 billion", "not_found"],
+  ["differs", "$34 billion", "$1,034 billion", "not_found"],
+  ["differs", "$34 billion", "-$34 billion", "not_found"],
+  ["matches", "$35 billion", "$35 billion CAD", "not_found"],
+  ["differs", "$34 billion", "CAD $34 billion", "not_found"],
 ])(
   "validates complete numeric occurrences for %s: %s in %s",
   async (status, value, quote, expected) => {
@@ -330,6 +365,114 @@ it.each([
     expect(
       report.traces.find((t) => t.figureId === "chart1_f0_1")?.status,
     ).toBe(expected);
+    if (expected !== "not_found") {
+      expect(
+        report.traces.find((t) => t.figureId === "chart1_f0_1")?.value,
+      ).toBe(quote);
+    }
+    const input = JSON.parse(vi.mocked(llmJson).mock.calls.at(-1)![1].input);
+    expect(
+      input.figures.find((f: { id: string }) => f.id === "chart1_f0_1"),
+    ).toMatchObject({ value: "35", unit: "$ billions" });
+  },
+);
+
+it.each([
+  ["$ billions", "matches"],
+  ["$ bn", "matches"],
+  ["$ millions", "not_found"],
+  ["€ billions", "not_found"],
+  ["unknown", "not_found"],
+])("compares against observed chart units: %s", async (unit, expected) => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async (url: string) =>
+        new Response(
+          url.endsWith("/chart")
+            ? chart.replace('"$ billions"', JSON.stringify(unit))
+            : "<p>$35 billion</p>",
+        ),
+    ),
+  );
+  vi.mocked(llmJson).mockResolvedValueOnce({
+    sources: [],
+    traces: [
+      {
+        figureId: "chart1_f0_1",
+        url: "https://independent.example/research",
+        status: "matches",
+        value: "$35 billion",
+        quote: "$35 billion",
+        reason: "Claim",
+      },
+    ],
+  });
+  const report = await dissect(env, "run", {
+    html: html.replace(
+      "<p>That",
+      '<iframe src="https://www.goldmansachs.com/chart"></iframe><p>That',
+    ),
+    url: "https://www.goldmansachs.com/article",
+    capturedAt: "2026-10-16T19:00:00.000Z",
+    hash: "hash",
+  });
+  expect(report.traces.find((t) => t.figureId === "chart1_f0_1")?.status).toBe(
+    expected,
+  );
+});
+
+it.each([
+  ["matches", "$1,000 billion", "$1,000 billion", "matches"],
+  ["differs", "$1,000 billion", "$1,000 billion", "not_found"],
+  ["matches", "$1 trillion", "$1 million", "not_found"],
+  ["differs", "$1 million", "$1 million", "differs"],
+  ["matches", "$1 trillion", "$11 trillion", "not_found"],
+  [
+    "matches",
+    "$1.000000000000000000001 trillion",
+    "$1.000000000000000000001 trillion",
+    "not_found",
+  ],
+  [
+    "differs",
+    "$1.000000000000000000001 trillion",
+    "$1.000000000000000000001 trillion",
+    "differs",
+  ],
+  ["matches", "1.8%", "1.8%", "matches", "article_f6"],
+  ["differs", "1.9%", "1.9%", "differs", "article_f6"],
+  ["matches", "180 bps", "180 bps", "not_found", "article_f6"],
+  ["differs", "180 bps", "180 bps", "not_found", "article_f6"],
+])(
+  "compares article quantities for %s: %s in %s",
+  async (status, value, quote, expected, figureId = "article_f1") => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(`<p>${quote}</p>`)),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [],
+      traces: [
+        {
+          figureId,
+          url: "https://independent.example/research",
+          status,
+          value,
+          quote,
+          reason: "Claim",
+        },
+      ],
+    });
+    const report = await dissect(env, "run", {
+      html,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(report.traces.find((t) => t.figureId === figureId)?.status).toBe(
+      expected,
+    );
   },
 );
 
