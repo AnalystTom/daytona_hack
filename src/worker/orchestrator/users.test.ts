@@ -1,68 +1,11 @@
 import { assert, describe, expect, it, vi } from "vitest";
 import { AUD, accessJwt, certs, TEAM } from "./access-fixtures";
 import { handleOrchestrator, type OrchestratorEnv } from "./front";
-import type { Owners, RunOwner } from "./owners";
+import { memoryOwners } from "./owners-memory";
+import { SESSION_COOKIE } from "./session";
 import { StoreError } from "../store/types";
 
 const SITE = "https://reversy.test";
-
-// The SurrealDB owner store's behaviour, in memory.
-function memoryOwners(): Owners {
-  const runs: (RunOwner & {
-    active: boolean;
-    revision: number;
-    busy: boolean;
-  })[] = [];
-  const counts = new Map<string, number>();
-  return {
-    async get(runId) {
-      const run = runs.find((r) => r.runId === runId);
-      return run ? { ...run } : null;
-    },
-    async list(owner, since) {
-      return runs
-        .filter((r) => r.owner === owner && r.createdAt > since)
-        .map((r) => ({ ...r }))
-        .reverse();
-    },
-    async finish(runId, owner) {
-      const run = runs.find((r) => r.runId === runId && r.owner === owner);
-      if (run) run.busy = false;
-    },
-    async reserve(run, maxActive, perDay, ended) {
-      for (const r of runs) {
-        if (
-          r.owner === run.owner &&
-          !r.busy &&
-          ended.some(
-            (old) =>
-              old.runId === r.runId && (old.revision ?? 0) === r.revision,
-          )
-        )
-          r.active = false;
-      }
-      const existing = runs.find((r) => r.runId === run.runId);
-      if (existing && existing.owner !== run.owner)
-        throw new Error("Run owner mismatch");
-      const active = runs.filter(
-        (r) => r.owner === run.owner && r.active && r.runId !== run.runId,
-      );
-      if (active.length >= maxActive || existing?.busy)
-        return "active_run_limit";
-      if (existing) {
-        existing.active = true;
-        existing.busy = true;
-        existing.revision++;
-      } else {
-        const key = `${run.owner} ${new Date(run.createdAt).toISOString().slice(0, 10)}`;
-        if ((counts.get(key) ?? 0) >= perDay) return "daily_run_limit";
-        counts.set(key, (counts.get(key) ?? 0) + 1);
-        runs.push({ ...run, active: true, revision: 0, busy: false });
-      }
-      return undefined;
-    },
-  };
-}
 
 // A stand-in orchestrator that keeps each run's phase; it never starts anything real.
 function setup(
@@ -123,7 +66,10 @@ function setup(
     path: string,
     json?: unknown,
   ) => {
-    const headers: Record<string, string> = { origin: SITE };
+    const headers: Record<string, string> = {
+      origin: SITE,
+      "cf-connecting-ip": "203.0.113.1",
+    };
     if (email === "operator") headers.authorization = "Bearer operator-secret";
     else if (email) {
       headers["cf-access-jwt-assertion"] = await accessJwt({ email });
@@ -191,6 +137,33 @@ describe("in-memory admission contract", () => {
 });
 
 describe("Cloudflare Access users", () => {
+  it("cannot start paid work without a client IP even with valid Access identity", async () => {
+    const { env, owners, calls } = setup();
+    const response = await handleOrchestrator(
+      new Request(`${SITE}/api/v1/runs`, {
+        method: "POST",
+        headers: {
+          origin: SITE,
+          "cf-access-jwt-assertion": await accessJwt({
+            email: "ada@example.com",
+          }),
+        },
+        body: JSON.stringify({
+          url: "https://example.com",
+          goal: "Rebuild it",
+        }),
+      }),
+      env,
+      { owners, fetcher: certs },
+    );
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({
+      code: "client_ip_required",
+    });
+    expect(calls).toHaveLength(0);
+    expect(await owners.list("ada@example.com", 0)).toEqual([]);
+  });
+
   it("need a valid sign-in: no token box, no JWT means 401", async () => {
     const { as, calls } = setup();
     const missing = await as(null, "GET", "/api/v1/runs/r1/events");
@@ -684,24 +657,9 @@ describe("Cloudflare Access users", () => {
     expect(rows.map((row) => row.id).sort()).toEqual(ids.sort());
   });
 
-  it("disables bearer, old cookies, session creation and the operator proxy in Access mode", async () => {
+  it("disables bearer, visitor cookies and the operator proxy in Access mode", async () => {
     const { as, env, calls } = setup();
-    const fallback = {
-      ...env,
-      ACCESS_TEAM_DOMAIN: undefined,
-      ACCESS_AUD: undefined,
-    };
-    const login = await handleOrchestrator(
-      new Request(`${SITE}/api/v1/session`, {
-        method: "POST",
-        headers: { origin: SITE },
-        body: JSON.stringify({ token: "operator-secret" }),
-      }),
-      fallback,
-    );
-    assert(login);
-    const cookie = login.headers.get("set-cookie")?.split(";")[0];
-    assert(cookie);
+    const cookie = `${SESSION_COOKIE}=${crypto.randomUUID()}.${"0".repeat(64)}`;
     const headerCases: HeadersInit[] = [
       { authorization: "Bearer operator-secret" },
       { cookie },
@@ -714,13 +672,6 @@ describe("Cloudflare Access users", () => {
       expect(response?.status).toBe(401);
       expect(await response?.json()).toMatchObject({ code: "access_required" });
     }
-    expect(
-      (
-        await as("operator", "POST", "/api/v1/session", {
-          token: "operator-secret",
-        })
-      ).status,
-    ).toBe(401);
     expect(
       (await as("operator", "GET", "/api/v1/orchestrator/runs/r1")).status,
     ).toBe(404);
@@ -794,16 +745,14 @@ describe("Cloudflare Access users", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("behaves as before when Access is not set up", async () => {
+  it("treats everyone as an anonymous visitor when Access is not set up", async () => {
     const { as, calls } = setup({
       ACCESS_TEAM_DOMAIN: undefined,
       ACCESS_AUD: undefined,
     });
     const response = await as("ada@example.com", "GET", "/api/v1/runs/r1");
-    expect(response.status).toBe(401);
-    expect(await response.json()).toMatchObject({
-      message: expect.stringContaining("operator token"),
-    });
+    // An Access identity is ignored without Access bindings: this is a new visitor with no runs.
+    expect(response.status).toBe(404);
     expect(calls).toHaveLength(0);
     expect(
       (

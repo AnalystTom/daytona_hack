@@ -24,11 +24,7 @@ export function PreviewView({
     void fetchPreviewLink(runId).then(async (result) => {
       if (!live) return;
       setLink(result);
-      if (
-        !result.ok &&
-        ["operator_token", "access_required"].includes(result.error)
-      )
-        onRefused(result);
+      if (!result.ok && result.error === "access_required") onRefused(result);
       if (!result.ok && result.error === "not_found") {
         const owned = await fetchRun(runId);
         if (live && !owned.ok && owned.error === "not_found") onRefused(owned);

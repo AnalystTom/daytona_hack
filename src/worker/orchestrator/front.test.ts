@@ -129,17 +129,11 @@ describe("run routes", () => {
     expect(await call("/api/health")).toBeNull();
   });
 
-  it("creates a run with the operator token and a checked URL", async () => {
+  it("creates a run with a checked URL", async () => {
     const { env, seen } = setup(() =>
       Response.json({ id: "r1" }, { status: 201 }),
     );
     const goal = "Rebuild the landing page";
-    const anonymous = await call(
-      "/api/v1/runs",
-      { method: "POST", json: { url: "https://example.com", goal } },
-      env,
-    );
-    expect(anonymous?.status).toBe(401);
     const local = await call(
       "/api/v1/runs",
       {
@@ -170,7 +164,7 @@ describe("run routes", () => {
     });
   });
 
-  it("guards every action that steers a run", async () => {
+  it("refuses every action that steers a run unless it comes from our own origin", async () => {
     const { env, seen } = setup();
     for (const action of [
       "messages",
@@ -187,7 +181,7 @@ describe("run routes", () => {
         { method: "POST", json: {} },
         env,
       );
-      expect(response?.status).toBe(401);
+      expect(response?.status).toBe(403);
     }
     expect(seen).toHaveLength(0);
   });
@@ -243,14 +237,14 @@ describe("run routes", () => {
     ]);
   });
 
-  it("needs the operator token to read state, events and evidence", async () => {
+  it("refuses a wrong token and cannot name an owner without a store", async () => {
     const { env, seen } = setup();
     for (const path of [
       "/api/v1/runs/r1",
       "/api/v1/runs/r1/events?since=0",
       "/api/v1/runs/r1/evidence/ev_001",
     ]) {
-      expect((await call(path, {}, env))?.status).toBe(401);
+      expect((await call(path, {}, env))?.status).toBe(503);
       expect(
         (await call(path, { headers: { authorization: "Bearer nope" } }, env))
           ?.status,
