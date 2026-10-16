@@ -1,5 +1,30 @@
 import { GOLDMAN_URL } from "./report";
 
+export const uncertainQuantityExamples = [
+  { quote: "Loss was (USD 35 billion).", value: "35 billion", unit: "billion" },
+  { quote: "Loss was -USD 35 billion.", value: "35 billion", unit: "billion" },
+  { quote: "Loss was - USD 35 billion.", value: "35 billion", unit: "billion" },
+  { quote: "Loss was (35 billion USD).", value: "35 billion", unit: "billion" },
+  { quote: "Investment was CHF 1'019 billion.", value: "1", unit: "number" },
+  {
+    quote: "Investment was CHF 1’019 billion.",
+    value: "019 billion",
+    unit: "billion",
+  },
+  {
+    quote: "Investment was CHF 1 019 billion.",
+    value: "019 billion",
+    unit: "billion",
+  },
+  { quote: "Investment was CHF 1 · 019 billion.", value: "1", unit: "number" },
+  { quote: "Cost is 2026 dollars.", value: "2026", unit: "year" },
+  {
+    quote: "Investment reaches 35 billion dollars.",
+    value: "35 billion",
+    unit: "billion",
+  },
+];
+
 // Test-only data; no production module imports this file.
 export const reportContractExample = {
   runId: "test-run",

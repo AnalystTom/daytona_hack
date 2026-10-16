@@ -8,6 +8,7 @@ import {
 } from "./dissection";
 import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
+import { uncertainQuantityExamples } from "../../src/shared/report.test-data";
 
 vi.mock("./services", async (original) => ({
   ...(await original<typeof import("./services")>()),
@@ -28,6 +29,29 @@ _Flourish_visualisation_id = 29875854;</script>`;
 const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 
 describe("observed report figures", () => {
+  it.each(uncertainQuantityExamples)(
+    "keeps unsupported currency notation whole: $quote",
+    ({ quote }) => {
+      const article = extractFigures(`<p>${quote}</p>`);
+      for (const heading of ["title", "subtitle"]) {
+        const headlines = extractChart(
+          chart
+            .replace("layout.title", `layout.${heading}`)
+            .replace("$1.019 trillion", quote),
+          "chart1",
+        ).filter((f) => f.group !== "investment_breakdown");
+        for (const figures of [article, headlines]) {
+          expect(figures).toHaveLength(1);
+          expect(figures[0]).toMatchObject({
+            value: "",
+            unit: "",
+            status: "not_observed",
+          });
+          expect(figures[0]?.quote).toContain(quote);
+        }
+      }
+    },
+  );
   it.each([
     "-2.5%",
     "−2.5%",
@@ -138,14 +162,14 @@ describe("observed report figures", () => {
       "0.9%",
       "2026",
       "2.5%",
-      "1.3%",
+      "",
       "2027",
       "2.8%",
-      "1.4%",
+      "",
       "2028",
     ]);
     for (const figure of figures) {
-      expect(figure.status).toBe("observed");
+      expect(figure.status).toBe(figure.value ? "observed" : "not_observed");
       expect(figure.sourceId).toBe("article");
       expect(
         cleanText(html.slice(figure.location.start, figure.location.end)),
@@ -421,7 +445,7 @@ it.each([
     "AI investment is $35 billion [cad] in 2026 and will rise.",
     "not_found",
   ],
-  ["2026", originalQuote, "matches", "article_f2"],
+  ["2026", originalQuote, "not_found", "article_f2"],
   [
     "2026",
     "AI investment is $35 billion in 12026 and will rise.",
@@ -525,9 +549,9 @@ it.each(["$", "£", ""])(
       hash: "hash",
     });
     expect(report.figures[0]).toMatchObject({
-      value: `${currency}35 billion`,
+      value: currency ? `${currency}35 billion` : "",
       quote,
-      status: "observed",
+      status: currency ? "observed" : "not_observed",
     });
     expect(report.traces[0]).toMatchObject({
       status: "not_found",
@@ -545,7 +569,7 @@ it.each(["$", "£", ""])(
 );
 
 it("accepts an independently fetched source for both source and figure provenance", async () => {
-  const quote = "Research investment in 2026";
+  const quote = "Research investment is €35 billion";
   const url = "https://www.goldmansachs.com/original-report?document=2026";
   vi.stubGlobal(
     "fetch",
@@ -566,7 +590,7 @@ it("accepts an independently fetched source for both source and figure provenanc
         figureId: "article_f1",
         url,
         quote,
-        value: "2026",
+        value: "€35 billion",
         status: "matches",
         reason: "Observed value",
       },
@@ -583,9 +607,52 @@ it("accepts an independently fetched source for both source and figure provenanc
       .slice(1)
       .every((s) => s.status === "traced_online" && s.url === url),
   ).toBe(true);
-  expect(report.traces[0]).toMatchObject({ status: "matches", value: "2026" });
+  expect(report.traces[0]).toMatchObject({
+    status: "matches",
+    value: "€35 billion",
+  });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+it.each(uncertainQuantityExamples)(
+  "keeps new uncertain comparisons unverified: $quote",
+  async ({ quote, value }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(`<p>${quote}</p>`)),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [],
+      traces: [
+        {
+          figureId: "article_f1",
+          url: "https://independent.example/research",
+          status: "matches",
+          value,
+          quote,
+        },
+      ],
+    });
+    const report = await dissect(env, "run", {
+      html: `<p>${quote}</p>`,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(report.figures).toHaveLength(1);
+    expect(report.figures[0]).toMatchObject({
+      value: "",
+      quote,
+      status: "not_observed",
+    });
+    expect(report.traces[0]).toMatchObject({
+      status: "not_found",
+      value: "",
+      quote,
+      completePassage: true,
+    });
+  },
+);
 
 it.each(["h1", "h2", "p", "li", "figcaption", "td", "th", "blockquote"])(
   "compares and retains the full fetched %s passage when the model clips a qualifier",

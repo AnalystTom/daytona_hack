@@ -39,35 +39,86 @@ export const ReportFigure = z.object({
 });
 export type ReportFigure = z.infer<typeof ReportFigure>;
 
+const currencyCodes = "USD|CAD|AUD|NZD|HKD|SGD|GBP|EUR|JPY|CNY|CHF|INR";
+const currencyToken = new RegExp(`^(?:${currencyCodes})$`, "i");
+const scaleToken =
+  /^(?:%|trillion|billion|million|thousand|bn|bps|[kmbt]|dollars|pounds|euros)$/i;
+const scalar = new RegExp(
+  `^(?:(?<prefix>${currencyCodes})\\s*)?(?<sign>[+−–-]?)(?:\\s*(?<symbol>[$€£])\\s*(?<innerSign>[+−–-]?))?\\s*(?:(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+)\\s*(?<scale>%|trillion|billion|million|thousand|bn|bps)?(?:\\s*(?<suffix>${currencyCodes}))?$`,
+  "i",
+);
+const currencyContext = (token: string) => {
+  const word = token.replace(/^[\p{P}\p{S}]+|[\p{P}\p{S}]+$/gu, "");
+  return (
+    currencyToken.test(word) ||
+    /^[A-Z]{3}$/.test(word) ||
+    /^[\p{P}\p{S}]+$/u.test(token) ||
+    /^[\p{P}\p{S}]+[A-Za-z]{3}[\p{P}\p{S}]*$/u.test(token)
+  );
+};
+
 export function reportQuantities(quote: string) {
-  return [
-    ...quote.matchAll(
-      /(?:[+−–—\p{Sc}-]\s*){0,2}(?:\d|\.\d)[\p{L}\p{N}\p{Sc}_.,%+−–—/-]*(?:\s+(?:[+−–—-]\s*)?(?:\d|\.\d)[\p{L}\p{N}\p{Sc}_.,%+−–—/-]*)*(?:\s*(?:%|(?:trillion|billion|million|thousand|bn|bps|[kmbt])\b))?/giu,
-    ),
-  ].map((match) => {
-    const value = match[0].trim().replace(/[.,]$/, "");
-    const start = match.index + match[0].indexOf(value);
-    const before = quote.slice(0, start);
-    const after = quote.slice(start + value.length);
-    const parsed =
-      /^(?:[+−–-]\s*[$€£]?\s*|[$€£]\s*[+−–-]?\s*)?(?:(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)\s*(%|trillion|billion|million|thousand|bn|bps)?$/i.exec(
-        value,
-      );
+  const tokens = [...quote.matchAll(/\S+/gu)];
+  const quantities: {
+    value: string;
+    unit: string;
+    currency: string;
+    status: "observed" | "not_observed";
+  }[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (!/\d/.test(tokens[i]![0])) continue;
+    let first = i;
+    while (first > 0 && currencyContext(tokens[first - 1]![0])) first--;
+    let last = i;
+    while (last + 1 < tokens.length) {
+      const next = tokens[last + 1]![0];
+      const word = next.replace(/[.,;:!?)]+$/, "");
+      if (
+        /^[+−–—\p{Sc}]*\.?\d/u.test(next) ||
+        scaleToken.test(word) ||
+        currencyContext(word)
+      )
+        last++;
+      else if (
+        /^[\p{P}\p{S}]+$/u.test(next) &&
+        /\d/.test(tokens[last + 2]?.[0] ?? "")
+      )
+        last += 2;
+      else break;
+    }
+    const end = tokens[last]!;
+    const value = quote
+      .slice(tokens[first]!.index, end.index + end[0].length)
+      .replace(/[.,;:!?]+$/, "");
+    const parsed = scalar.exec(value)?.groups;
+    const prefix = parsed?.prefix?.toUpperCase();
+    const suffix = parsed?.suffix?.toUpperCase();
+    const symbol = parsed?.symbol;
+    const currency = prefix ?? suffix ?? (symbol === "€" ? "EUR" : "");
     const observed =
       !!parsed &&
-      !/[\p{L}\p{N}\p{Sc}_.,+−–—/-]$/u.test(before) &&
-      !/[+−–—\p{Sc}/-]$/u.test(before.trimEnd()) &&
-      !/^[\p{L}\p{N}\p{Sc}_%+−–—/-]/u.test(after) &&
-      !(before.trimEnd().endsWith("(") && after.trimStart().startsWith(")"));
-    const scale =
-      parsed?.[1] ?? (/^(19|20)\d\d$/.test(value) ? "year" : "number");
-    const currency = value.match(/[$€£]/)?.[0];
-    return {
+      !(parsed.sign && parsed.innerSign) &&
+      !(prefix && suffix && prefix !== suffix) &&
+      (!symbol ||
+        !currency ||
+        (symbol === "€"
+          ? currency === "EUR"
+          : symbol === "£"
+            ? currency === "GBP"
+            : /^(USD|CAD|AUD|NZD|HKD|SGD)$/.test(currency)));
+    const unit = [symbol ?? prefix ?? suffix, parsed?.scale ?? "number"]
+      .filter(Boolean)
+      .join(" ");
+    quantities.push({
       value: observed ? value : "",
-      unit: observed ? (currency ? `${currency} ${scale}` : scale) : "",
-      status: observed ? ("observed" as const) : ("not_observed" as const),
-    };
-  });
+      unit: observed ? unit : "",
+      currency:
+        observed && !/^(%|bps)$/i.test(parsed?.scale ?? "") ? currency : "",
+      status: observed ? "observed" : "not_observed",
+    });
+    i = last;
+  }
+  return quantities;
 }
 
 export function exactQuoteEvidence(
@@ -78,37 +129,28 @@ export function exactQuoteEvidence(
   const value = text(figure.value);
   if (
     !trace.completePassage ||
-    !value ||
     figure.status !== "observed" ||
+    !value ||
     text(trace.value) !== value ||
     text(trace.quote) !== text(figure.quote)
   )
     return false;
-  const quantities = reportQuantities(text(figure.quote)).filter(
-    (quantity) =>
-      quantity.status === "observed" &&
-      quantity.value === value &&
-      quantity.unit === figure.unit,
+  const evidence = (quote: string) =>
+    reportQuantities(text(quote)).filter(
+      (quantity) =>
+        quantity.status === "observed" &&
+        !!quantity.currency &&
+        quantity.value === value &&
+        quantity.unit === figure.unit &&
+        !/[-−–]/.test(quantity.value),
+    );
+  const article = evidence(figure.quote);
+  const source = evidence(trace.quote);
+  return (
+    article.length === 1 &&
+    source.length === 1 &&
+    article[0]!.currency === source[0]!.currency
   );
-  if (quantities.length !== 1 || figure.unit === "number") return false;
-  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  if (["year", "%", "bps"].includes(figure.unit)) return true;
-  const codes = "USD|CAD|AUD|NZD|HKD|SGD|GBP|EUR|JPY|CNY|CHF|INR";
-  const prefix = new RegExp(
-    `\\b(${codes})\\s+${escaped}(?![\\p{L}\\p{N}_])`,
-    "u",
-  ).exec(text(trace.quote))?.[1];
-  const suffix = new RegExp(
-    `(?<![\\p{L}\\p{N}_])${escaped}\\s+(${codes})\\b`,
-    "u",
-  ).exec(text(trace.quote))?.[1];
-  if (prefix && suffix && prefix !== suffix) return false;
-  const currency = prefix ?? suffix;
-  if (value.includes("€")) return !currency || currency === "EUR";
-  if (!currency) return false;
-  if (value.includes("£")) return currency === "GBP";
-  if (value.includes("$")) return /^(USD|CAD|AUD|NZD|HKD|SGD)$/.test(currency);
-  return true;
 }
 export const ReportSource = z.object({
   id: z.string().min(1),

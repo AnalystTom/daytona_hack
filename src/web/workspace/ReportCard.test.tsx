@@ -1,11 +1,53 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { assert, describe, expect, it } from "vitest";
 import { ReportDissection } from "../../shared/report";
-import { reportContractExample } from "../../shared/report.test-data";
+import {
+  reportContractExample,
+  uncertainQuantityExamples,
+} from "../../shared/report.test-data";
 import { runView } from "./orchestrator";
 import { ReportCard } from "./ReportCard";
 
 describe("report canvas data", () => {
+  it.each(uncertainQuantityExamples)(
+    "rechecks legacy matches and retains both uncertain quotes: $quote",
+    ({ quote, value, unit }) => {
+      const report = ReportDissection.parse({
+        ...reportContractExample,
+        figures: [{ ...reportContractExample.figures[0], quote, value, unit }],
+        sources: [
+          { ...reportContractExample.sources[0], quote },
+          {
+            ...reportContractExample.sources[0],
+            id: "independent",
+            status: "traced_online",
+            quote,
+            url: "https://independent.example/research",
+            quoteUrl: "https://independent.example/research",
+          },
+        ],
+        traces: [
+          {
+            figureId: "f1",
+            sourceId: "independent",
+            status: "matches",
+            value,
+            quote,
+            completePassage: true,
+            reason: "Legacy comparison",
+          },
+        ],
+      });
+      const html = renderToStaticMarkup(
+        <ReportCard report={report} evidence={[]} />,
+      );
+      expect(html).toContain("Unverified online");
+      expect(html).not.toContain("Exact source quote match");
+      expect(
+        html.split(renderToStaticMarkup(<>{quote}</>)).length - 1,
+      ).toBeGreaterThanOrEqual(2);
+    },
+  );
   it("renders received figures, honest source availability and persisted record identity", () => {
     const report = ReportDissection.parse(reportContractExample);
     const view = runView(report.runId, [
