@@ -175,6 +175,9 @@ Nothing reaches into the sandbox except through the Cloudflare app.
 
 ## 10. Records
 
+The agent system runs and executes code on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
+
+
 - **SurrealDB** stores runs, evidence records, features, tasks, pull requests, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task). It is also Agent Memory: observations and decisions with their sources, which Firstmate reads back when planning or revising.
 - **Arize** holds one trace per run across inspection, planning, every task, every review and every verification.
 
@@ -183,5 +186,4 @@ Nothing reaches into the sandbox except through the Cloudflare app.
 1. Test `gpt-6.1-sol` through Codex with the OpenAI API key inside the Daytona sandbox.
 2. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
 3. Check that no-mistakes works against Forgejo.
-4. Where screenshot and recording files live: the sandbox volume with SurrealDB holding references, or a Cloudflare R2 bucket.
-5. Firstmate as the chat agent (recommended, one fewer agent) or a separate, faster chat agent in front of it.
+4. Firstmate as the chat agent (recommended, one fewer agent) or a separate, faster chat agent in front of it.
