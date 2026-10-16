@@ -73,4 +73,41 @@ describe("BuildBoard", () => {
     expect(html).toContain("Hero spacing off");
     expect(html).toContain("Builder will rework the hero");
   });
+
+  it("falls back to the default next action when a task fails after review", () => {
+    // Test fixture only.
+    const base = {
+      schemaVersion: 1 as const,
+      runId: "run_1",
+      taskId: "task_hero",
+      timestamp: "2026-10-16T12:00:00Z",
+      type: "task.state_changed",
+      artifactRefs: [],
+    };
+    const html = renderToStaticMarkup(
+      <BuildBoard
+        onStopBuild={noop}
+        events={[
+          {
+            ...base,
+            eventId: "evt_1",
+            sequence: 1,
+            state: "in_review",
+            message: "",
+            detail: { nextAction: "Builder will rework the hero" },
+          },
+          {
+            ...base,
+            eventId: "evt_2",
+            sequence: 2,
+            state: "failed",
+            message: "Rejected twice, giving up",
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain("Rejected twice, giving up");
+    expect(html).toContain("Reply in chat to decide what happens next.");
+    expect(html).not.toContain("Builder will rework the hero");
+  });
 });

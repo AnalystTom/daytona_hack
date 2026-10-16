@@ -105,6 +105,29 @@ describe("deriveBoard", () => {
     expect(board.tasks[0]?.log).toHaveLength(2);
   });
 
+  it("drops the previous next action when the task fails", () => {
+    const board = deriveBoard([
+      event({
+        sequence: 1,
+        state: "in_review",
+        detail: {
+          nextAction: "Builder will rework the hero",
+          review: { verdict: "rejected", reason: "Hero spacing off" },
+        },
+      }),
+      event({
+        sequence: 2,
+        state: "failed",
+        message: "Rejected twice, giving up",
+      }),
+    ]);
+    expect(board.tasks[0]).toMatchObject({
+      state: "failed",
+      reason: "Rejected twice, giving up",
+    });
+    expect(board.tasks[0]?.nextAction).toBeUndefined();
+  });
+
   it("lets an explicit detail reason replace the failure reason", () => {
     const board = deriveBoard([
       event({ sequence: 1, state: "failed", message: "Tests failed twice" }),

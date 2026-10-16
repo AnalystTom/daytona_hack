@@ -78,19 +78,15 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
 
     const state = TaskState.safeParse(event.state);
     if (state.success) {
-      const changed = task.state !== state.data;
-      task.state = state.data;
-      if (isColumn(state.data)) {
-        task.column = state.data;
-        if (changed) {
-          task.reason = undefined;
-          task.nextAction = undefined;
-          if (state.data === "building") task.review = undefined;
-        }
-      } else {
-        task.column ??= "queued";
-        if (changed && event.message) task.reason = event.message;
+      if (task.state !== state.data) {
+        task.reason = undefined;
+        task.nextAction = undefined;
+        if (state.data === "building") task.review = undefined;
+        if (!isColumn(state.data) && event.message) task.reason = event.message;
       }
+      task.state = state.data;
+      if (isColumn(state.data)) task.column = state.data;
+      else task.column ??= "queued";
     }
 
     const detail = TaskDetail.safeParse(event.detail);
