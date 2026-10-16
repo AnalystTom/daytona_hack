@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { SpecCanvas } from "../../shared/workspace";
 import type { Override } from "../build/BuildBoard";
+import { navigate } from "../router";
 import { BuildView } from "./BuildView";
+import { Canvas } from "./Canvas";
 import { ChatPanel } from "./ChatPanel";
-import { askForUrl, type ChatEntry, deliver, takeIncomingBrief } from "./chat";
+import {
+  askForUrl,
+  type ChatEntry,
+  deliver,
+  parseBrief,
+  takeIncomingBrief,
+} from "./chat";
 import type { WorkspaceFixture } from "./fixtures";
 import { Mark } from "./Mark";
 import { chatEntries, type OrchestratorEvent, runView } from "./orchestrator";
@@ -17,6 +25,14 @@ import {
   signIn,
   startSignIn,
 } from "./runClient";
+import { SessionSwitcher } from "./SessionSwitcher";
+import {
+  type Layout,
+  loadLayout,
+  phaseLabel,
+  rememberSession,
+  saveLayout,
+} from "./sessions";
 import { SpecView } from "./SpecView";
 import "./workspace.css";
 
@@ -27,17 +43,6 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "preview", label: "Preview" },
 ];
 
-const PHASES: Record<string, string> = {
-  brief: "Agreeing the spec",
-  inspecting: "Inspecting the site",
-  awaiting_sign_in: "Waiting for sign-in",
-  planning: "Planning tasks",
-  planned: "Plan ready",
-  building: "Building",
-  done: "Build finished",
-  stopped: "Stopped",
-  failed: "Run failed",
-};
 const POLL_MS = 2000;
 // A finished run changes only when someone acts on it, so it is checked less often.
 const IDLE_POLL_MS = 15000;
@@ -45,12 +50,38 @@ const EVENTS_TOKEN_NOTICE = "events-token";
 
 const idle = (phase?: string) =>
   phase === "done" || phase === "stopped" || phase === "failed";
+// Phases with work under way, shown on the Build view until tasks exist.
+const WORKING = ["inspecting", "planning", "planned", "building"];
 
-export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
+// One session's workspace: `runId` reopens that run's session, none starts an empty one.
+export function Workspace({
+  fixture,
+  runId: routeRunId,
+}: {
+  fixture?: WorkspaceFixture;
+  runId?: string;
+}) {
   const [view, setView] = useState<View>("spec");
   const [entries, setEntries] = useState<ChatEntry[]>(fixture?.entries ?? []);
   const [pending, setPending] = useState(false);
-  const [runId, setRunId] = useState<string>();
+  // The run this session opened with; the URL gains a run ID later when a new session creates one.
+  const [initialRunId] = useState(routeRunId);
+  const [runId, setRunId] = useState(routeRunId);
+  // The brief's URL, until the run's own spec names the target.
+  const [briefTarget, setBriefTarget] = useState<string>();
+  const [layout, setLayout] = useState<Layout>(() =>
+    initialRunId ? loadLayout(initialRunId) : {},
+  );
+  const layoutChanged = useRef(false);
+  // A run created after the user has switched sessions must not take over that session's URL.
+  const mounted = useRef(true);
+  useEffect(() => {
+    // StrictMode runs this twice in development, so the mount sets it again.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [events, setEvents] = useState<OrchestratorEvent[]>([]);
   const [offline, setOffline] = useState(false);
   // Set from the Start build click until the next event, so a second click cannot race the phase change.
@@ -67,12 +98,31 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
   };
   const canBuild = runId !== undefined && run.phase === "planned" && !starting;
   const signingIn = runId !== undefined && run.phase === "awaiting_sign_in";
+  const target = run.draftSpec?.url ?? briefTarget;
+
+  // Lists this run among the browser's sessions, with its latest target and phase.
+  useEffect(() => {
+    if (runId && !fixture) rememberSession({ runId, target, phase: run.phase });
+  }, [runId, target, run.phase, fixture]);
+
+  // Card positions are kept per session once there is a run to keep them under.
+  useEffect(() => {
+    if (runId && layoutChanged.current) saveLayout(runId, layout);
+  }, [runId, layout]);
+
+  const onLayout = (update: (layout: Layout) => Layout) => {
+    layoutChanged.current = true;
+    setLayout(update);
+  };
 
   // Follows the run's events from the orchestrator.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: initialRunId never changes
   useEffect(() => {
     if (!runId) return;
     let since = 0;
     let live = true;
+    // A reopened session has no chat yet, so its first batch brings the user's messages too.
+    let withUser = runId === initialRunId;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let busy = false;
     const poll = async () => {
@@ -98,7 +148,9 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           since = Math.max(...fresh.map((event) => event.seq));
           setEvents((list) => [...list, ...fresh]);
           setStarting(false);
-          setEntries((list) => [...list, ...chatEntries(fresh)]);
+          const lines = chatEntries(fresh, { withUser });
+          withUser = false;
+          setEntries((list) => [...list, ...lines]);
         }
       }
       timer = setTimeout(poll, idle(phase.current) ? IDLE_POLL_MS : POLL_MS);
@@ -178,6 +230,15 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     if (result.runId && runId === undefined) {
       briefParts.current = [];
       setRunId(result.runId);
+      setBriefTarget(parseBrief(message)?.url);
+      // The run's ID goes in the URL so a refresh or a shared link reopens this session.
+      const state = window.history.state;
+      if (mounted.current)
+        navigate(
+          `/workspace/${result.runId}`,
+          { ...state, session: state?.session ?? "new" },
+          { replace: true },
+        );
     }
     const { error } = result;
     if (error) {
@@ -252,6 +313,9 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
             <Mark />
             <span>Reversy</span>
           </a>
+          {!fixture && (
+            <SessionSwitcher current={runId ? { runId, target } : undefined} />
+          )}
           <nav className="ws-views" aria-label="Canvas view">
             {VIEWS.map(({ id, label }) => (
               <button
@@ -274,7 +338,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           <div className="ws-run">
             {run.phase && (
               <span className="ws-phase" role="status">
-                {PHASES[run.phase] ?? run.phase}
+                {phaseLabel(run.phase)}
               </span>
             )}
             {signingIn && runId && (
@@ -321,17 +385,27 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           className="ws-canvas"
           aria-label={`${VIEWS.find((v) => v.id === view)?.label} canvas`}
         >
-          {view === "spec" ? (
-            <SpecView canvas={canvas} />
-          ) : view === "preview" && runId ? (
+          {view === "preview" && runId ? (
+            // The preview's iframe stays outside the canvas so it is never panned or zoomed.
             <PreviewView runId={runId} onRefused={(e) => addNotice(e)} />
           ) : (
-            <BuildView
-              draftSpec={canvas.draftSpec}
-              events={run.board}
-              onStopBuild={() => runId && void act(runAction(runId, "stop"))}
-              onOverride={onOverride}
-            />
+            <Canvas key={view} layout={layout} onLayout={onLayout}>
+              {view === "spec" ? (
+                <SpecView canvas={canvas} />
+              ) : (
+                <BuildView
+                  draftSpec={canvas.draftSpec}
+                  events={run.board}
+                  status={
+                    run.phase && WORKING.includes(run.phase)
+                      ? phaseLabel(run.phase)
+                      : undefined
+                  }
+                  onStopBuild={() => runId && void act(runAction(runId, "stop"))}
+                  onOverride={onOverride}
+                />
+              )}
+            </Canvas>
           )}
         </main>
       </div>

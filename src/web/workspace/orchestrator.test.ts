@@ -134,6 +134,17 @@ describe("chatEntries", () => {
       { kind: "agent", id: "run-24", text: "Task t02 failed review twice." },
     ]);
   });
+
+  it("brings back the user's messages for a reopened session", () => {
+    const lines = chatEntries(events, { withUser: true });
+    expect(lines.filter((line) => line.kind === "user")).not.toHaveLength(0);
+    expect(lines.find((line) => line.kind === "user")).toMatchObject({
+      delivery: "sent",
+    });
+    expect(lines.filter((line) => line.kind !== "user")).toEqual(
+      chatEntries(events),
+    );
+  });
 });
 
 describe("runView", () => {

@@ -16,10 +16,25 @@ export function usePath() {
   return useSyncExternalStore(subscribe, () => window.location.pathname);
 }
 
-/** Pushes a history entry. Throws if `state` cannot be stored (for example too large to clone). */
-export function navigate(to: string, state: unknown = null) {
-  window.history.pushState(state, "", to);
-  window.scrollTo({ top: 0, behavior: "instant" });
+/** The `session` field of the current history entry's state, re-read like the path. */
+export function useHistorySession() {
+  return useSyncExternalStore(subscribe, () => {
+    const session: unknown = window.history.state?.session;
+    return typeof session === "string" ? session : undefined;
+  });
+}
+
+/** Pushes a history entry, or replaces the current one. Throws if `state` cannot be stored (for example too large to clone). */
+export function navigate(
+  to: string,
+  state: unknown = null,
+  { replace = false } = {},
+) {
+  if (replace) window.history.replaceState(state, "", to);
+  else {
+    window.history.pushState(state, "", to);
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
   window.dispatchEvent(new Event(changeEvent));
 }
 
