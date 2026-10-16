@@ -904,6 +904,8 @@ export class Run extends DurableObject<Env> {
           typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
         );
         signal.throwIfAborted();
+        if (e.kind === "screenshot")
+          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
       }
       this.s.evidence.push(e);
       await this.emit("evidence", e, signal);

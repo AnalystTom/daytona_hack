@@ -8,7 +8,7 @@ import { reportContractExample } from "../../src/shared/report.test-data";
 import { captureReport } from "./report-capture";
 import { dissect } from "./dissection";
 import { latestReport, saveEdit, saveReport } from "./report-store";
-import { inspectPage } from "./inspect";
+import { capture } from "./inspect";
 import { llmJson } from "./services";
 import { Run } from "./run";
 import type { Env } from "./types";
@@ -28,7 +28,7 @@ vi.mock("./report-capture", () => ({
 vi.mock("./dissection", () => ({ dissect: vi.fn() }));
 vi.mock("./inspect", async (original) => ({
   ...(await original<typeof import("./inspect")>()),
-  inspectPage: vi.fn(),
+  capture: vi.fn(),
 }));
 vi.mock("./report-store", () => ({
   saveReport: vi.fn(),
@@ -39,6 +39,7 @@ vi.mock("./services", () => ({
   remember: vi.fn(),
   recall: vi.fn(),
   llmJson: vi.fn(),
+  pageHtml: async () => ({ html: "", tool: "fetch" }),
   tracing: {},
 }));
 vi.mock("./tracing", () => ({
@@ -234,7 +235,7 @@ it.each([
   "Show forecast numbers and figures",
 ])("keeps the normal reconstruction journey for %s", async (goal) => {
   const { run } = createRun();
-  vi.mocked(inspectPage).mockResolvedValueOnce({ evidence: [], blobs: {} });
+  vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
   vi.mocked(llmJson).mockResolvedValueOnce({
     reply: "Review the scope",
     spec: {},
@@ -255,7 +256,7 @@ it.each([
 
 it("requires scope approval for explicit report mode and then dissects without building", async () => {
   const { run } = createRun();
-  vi.mocked(inspectPage).mockResolvedValueOnce({ evidence: [], blobs: {} });
+  vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
   vi.mocked(llmJson).mockResolvedValueOnce({
     reply: "Review the report scope",
     spec: {},

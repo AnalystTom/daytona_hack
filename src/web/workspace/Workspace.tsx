@@ -467,19 +467,19 @@ export function Workspace({
                       Goldman Sachs report
                     </button>
                   )}
-              <SpecView
-                canvas={canvas}
-                onSaveReport={async (figureId, edit) => {
-                  if (!runId) return false;
-                  const result = await saveReportEdit(runId, figureId, edit);
-                  if (!result.ok) {
-                    addNotice(result);
-                    return false;
-                  }
-                  pollSoon.current?.();
-                  return true;
-                }}
-              />
+                  <SpecView
+                    canvas={canvas}
+                    onSaveReport={async (figureId, edit) => {
+                      if (!runId) return false;
+                      const result = await saveReportEdit(runId, figureId, edit);
+                      if (!result.ok) {
+                        addNotice(result);
+                        return false;
+                      }
+                      pollSoon.current?.();
+                      return true;
+                    }}
+                  />
                 </>
               ) : (
                 <BuildView
