@@ -134,4 +134,38 @@ describe("Run", () => {
     });
     expect(state().phase).toBe("building");
   });
+
+  it("removes a fork whose preview fails and falls back to a copy, keeping forks enabled", async () => {
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === "https://daytona.test/sandbox/sb1/fork")
+        return Response.json({ id: "sb2" });
+      if (input === "https://daytona.test/sandbox/sb2")
+        return Response.json({ id: "sb2", state: "started" });
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      if (input.startsWith("https://toolbox.test/sb2/process/session/"))
+        return new Response("no session", { status: 500 });
+      if (input.endsWith("/process/execute"))
+        return Response.json({ exitCode: 0, result: "" });
+      if (input.endsWith("/preview-url"))
+        return Response.json({ url: "https://3001-sb1.daytona.test" });
+      return Response.json({});
+    });
+    const { run, state, ready } = fakeRun(
+      baseState(new Date().toISOString(), "variants", []),
+    );
+    await ready;
+    const pod = await (
+      run as unknown as {
+        startPod(
+          id: string,
+          n: number,
+        ): Promise<{ pod: string; sandboxId: string }>;
+      }
+    ).startPod("v1", 1);
+    expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+    expect(pod).toMatchObject({ pod: "copy", sandboxId: "sb1" });
+    expect(state().forkUnavailable).toBeFalsy();
+  });
 });
