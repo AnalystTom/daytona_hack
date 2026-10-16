@@ -118,7 +118,7 @@ describe("run scope", () => {
         task("t01", ["server/server.js"]),
         task(
           "t02",
-          ["server/routes/articles.js", "server/mock/articles.json"],
+          ["server/routes/articles.js", "server/mock/article.html"],
           ["t01"],
         ),
         task("t03", ["sections/hero.html", "styles/hero.css"], ["t01"]),

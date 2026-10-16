@@ -67,12 +67,12 @@ export function previewCommand(scope: Scope, app: string) {
 const FRONTEND_FILE =
   /^(index\.html|sections\/|styles\/|assets\/|app\/)|\.(html?|css|jsx|tsx)$/;
 
-/** Tasks a backend-only run must not build: any that owns frontend files. */
+/** Tasks a backend-only run must not build: any that owns frontend files outside server/ (mock HTML bodies are fine). */
 export function offScope(scope: Scope, tasks: Pick<Task, "id" | "owns">[]) {
   if (scope !== "backend") return [];
+  const frontend = (o: string) =>
+    !o.startsWith("server/") && FRONTEND_FILE.test(o);
   return tasks
-    .filter((t) =>
-      t.owns.some((o) => FRONTEND_FILE.test(o.replace(/^\.?\//, ""))),
-    )
+    .filter((t) => t.owns.some((o) => frontend(o.replace(/^\.?\//, ""))))
     .map((t) => t.id);
 }

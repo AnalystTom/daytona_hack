@@ -623,6 +623,7 @@ export class Run extends DurableObject<Env> {
       },
     });
     signal?.throwIfAborted();
+    if (this.s.spec.approved) out.spec.scope = this.s.spec.scope; // a running plan keeps its scope
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
     await this.emit("spec", this.s.spec, signal);
