@@ -2,12 +2,7 @@
 
 export type Brief = { text: string; files: File[] };
 
-export type StarterId =
-  | "daytona"
-  | "landing-page"
-  | "interaction"
-  | "screenshots"
-  | "inspect";
+export type StarterId = "daytona" | "landing-page" | "interaction" | "inspect";
 
 export type Starter = {
   id: StarterId;
@@ -34,12 +29,6 @@ export const starters: Record<StarterId, Starter> = {
     title: "Recreate one interaction",
     hint: "Add a URL and describe the behavior",
     draft: "Recreate one interaction from ",
-  },
-  screenshots: {
-    id: "screenshots",
-    title: "Work from screenshots",
-    hint: "Attach the screens you want to recreate",
-    draft: "Rebuild the screens in the attached screenshots. ",
   },
   inspect: {
     id: "inspect",
@@ -75,6 +64,9 @@ export function initialBrief(historyState: unknown, search: string): Brief {
     id && Object.hasOwn(starters, id) ? starters[id as StarterId] : undefined;
   return { text: starter?.draft ?? "", files: [] };
 }
+
+// Shown on both surfaces but not selectable until attachments reach the workspace.
+export const screenshotsSoon = { title: "Work from screenshots" };
 
 export function canSend(brief: Brief) {
   return brief.text.trim() !== "";

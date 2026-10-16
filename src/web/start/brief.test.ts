@@ -25,6 +25,7 @@ describe("initialBrief", () => {
   it("ignores unknown or inherited starter ids", () => {
     expect(initialBrief(null, "?starter=nope").text).toBe("");
     expect(initialBrief(null, "?starter=toString").text).toBe("");
+    expect(initialBrief(null, "?starter=screenshots").text).toBe("");
   });
 
   it("restores the brief kept on the history entry over the starter", () => {

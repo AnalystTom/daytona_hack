@@ -1,6 +1,6 @@
 import { followLink } from "../router";
 import type { StarterId } from "../start/brief";
-import { starters } from "../start/brief";
+import { screenshotsSoon, starters } from "../start/brief";
 import { Icon, type IconName } from "./icons";
 import "./landing.css";
 
@@ -45,7 +45,6 @@ const steps: { icon: IconName; tone: string; title: string; body: string }[] = [
 const starterLinks: { id: StarterId; icon: IconName; tone: string }[] = [
   { id: "landing-page", icon: "link", tone: "pistachio" },
   { id: "interaction", icon: "click", tone: "persimmon" },
-  { id: "screenshots", icon: "image", tone: "aubergine" },
 ];
 
 export function Landing() {
@@ -128,6 +127,15 @@ export function Landing() {
                 </a>
               </li>
             ))}
+            <li>
+              <div className="starter-soon" aria-disabled="true">
+                <span className="tile tile-aubergine">
+                  <Icon name="image" />
+                </span>
+                <span className="starter-title">{screenshotsSoon.title}</span>
+                <span className="soon-label">Coming soon</span>
+              </div>
+            </li>
           </ul>
         </section>
 

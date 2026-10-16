@@ -274,7 +274,8 @@ html {
   list-style: none;
 }
 
-.starter-links a {
+.starter-links a,
+.starter-links .starter-soon {
   display: flex;
   font-size: 1.125rem;
   align-items: center;
@@ -289,6 +290,14 @@ html {
 
 .starter-links a:hover {
   border-color: var(--aubergine);
+}
+
+.starter-links .starter-soon {
+  color: var(--muted);
+}
+
+.soon-label {
+  font-size: 0.875rem;
 }
 
 .starter-links .starter-title {

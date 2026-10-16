@@ -194,7 +194,8 @@
   list-style: none;
 }
 
-.start-starters button {
+.start-starters button,
+.start-starters .starter-soon {
   display: flex;
   align-items: center;
   gap: 0.85rem;
@@ -211,6 +212,11 @@
 
 .start-starters button:hover {
   border-color: var(--aubergine);
+}
+
+.start-starters .starter-soon {
+  color: var(--muted);
+  cursor: default;
 }
 
 .start-starters .starter-title,

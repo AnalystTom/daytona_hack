@@ -10,6 +10,7 @@ import {
   initialBrief,
   keepBrief,
   type Starter,
+  screenshotsSoon,
   starters,
 } from "./brief";
 import "./start.css";
@@ -17,7 +18,6 @@ import "./start.css";
 const starterButtons: { starter: Starter; icon: IconName; tone: string }[] = [
   { starter: starters.daytona, icon: "link", tone: "pistachio" },
   { starter: starters.interaction, icon: "click", tone: "persimmon" },
-  { starter: starters.screenshots, icon: "image", tone: "aubergine" },
   { starter: starters.inspect, icon: "search", tone: "pistachio" },
 ];
 
@@ -179,6 +179,17 @@ export function Start() {
                 </button>
               </li>
             ))}
+            <li>
+              <div className="starter-soon" aria-disabled="true">
+                <span className="tile tile-aubergine">
+                  <Icon name="image" />
+                </span>
+                <span>
+                  <span className="starter-title">{screenshotsSoon.title}</span>
+                  <span className="starter-hint">Coming soon</span>
+                </span>
+              </div>
+            </li>
           </ul>
           <p className="start-note">
             Choose a starter or write your own brief.
