@@ -38,7 +38,7 @@ describe("run sandbox lifecycle", () => {
       id: "sb1",
       command: "/opt/reversy/sandbox/save-env.sh",
       envs: {
-        REVERSY_BOOT: "1",
+        REVERSY_BOOT: "running",
         REVERSY_RUN_ID: "run-1",
         REVERSY_API_URL: "https://reversy.test",
         BRIDGE_TOKEN: "bridge-test",
@@ -172,6 +172,32 @@ describe("run sandbox lifecycle", () => {
     };
     calls.length = 0;
     expect((await startRunSandbox(deps, env)).boot).toBe("ready");
+    expect(calls).toEqual(["session sb1 /opt/reversy/sandbox/boot.sh"]);
+  });
+
+  it("marks a boot that could not start failed, so the next start retries it", async () => {
+    const { deps, calls } = fakeDaytona();
+    await startRunSandbox(deps, env);
+    let status = "failed";
+    const exec = deps.daytona.exec;
+    deps.daytona.exec = async (id, command, options) => {
+      if (command.endsWith("status.sh")) {
+        return { exitCode: 0, result: `${status}\n` };
+      }
+      if (options?.envs?.REVERSY_BOOT) status = options.envs.REVERSY_BOOT;
+      return exec(id, command, options);
+    };
+    const session = deps.daytona.startSessionCommand;
+    deps.daytona.startSessionCommand = async () => {
+      deps.daytona.startSessionCommand = session;
+      throw new DaytonaError("toolbox unavailable", 503);
+    };
+    await expect(startRunSandbox(deps, env)).rejects.toThrow(
+      "toolbox unavailable",
+    );
+    expect(status).toBe("failed");
+    calls.length = 0;
+    expect((await startRunSandbox(deps, env)).boot).toBe("running");
     expect(calls).toEqual(["session sb1 /opt/reversy/sandbox/boot.sh"]);
   });
 

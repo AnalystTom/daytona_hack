@@ -92,10 +92,11 @@ export async function findRunSandbox(deps: Deps, runId: string) {
 
 // Hands the run's secrets to the sandbox through the toolbox, so they never sit in
 // Daytona's sandbox metadata, marks the boot running, then starts boot.sh in its own session.
+// A boot.sh that never started is marked failed, so the next start retries it.
 async function boot(deps: Deps, id: string, env: RunEnv, podId?: string) {
   const saved = await deps.daytona.exec(id, `${SCRIPTS}/save-env.sh`, {
     envs: {
-      REVERSY_BOOT: "1",
+      REVERSY_BOOT: "running",
       REVERSY_RUN_ID: env.runId,
       REVERSY_API_URL: env.apiUrl,
       BRIDGE_TOKEN: env.bridgeToken,
@@ -109,11 +110,18 @@ async function boot(deps: Deps, id: string, env: RunEnv, podId?: string) {
       502,
     );
   }
-  await deps.daytona.startSessionCommand(
-    id,
-    `reversy-boot-${Date.now()}`,
-    `${SCRIPTS}/boot.sh`,
-  );
+  try {
+    await deps.daytona.startSessionCommand(
+      id,
+      `reversy-boot-${Date.now()}`,
+      `${SCRIPTS}/boot.sh`,
+    );
+  } catch (error) {
+    await deps.daytona
+      .exec(id, `${SCRIPTS}/save-env.sh`, { envs: { REVERSY_BOOT: "failed" } })
+      .catch(() => {});
+    throw error;
+  }
 }
 
 export async function startRunSandbox(

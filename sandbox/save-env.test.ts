@@ -18,7 +18,10 @@ describe("save-env.sh", () => {
     run("save-env.sh", home, { REVERSY_POD_ID: "sb2" });
     expect(run("status.sh", home).split("\n")[0]).toBe("failed");
 
-    run("save-env.sh", home, { REVERSY_BOOT: "1", REVERSY_RUN_ID: "run-1" });
+    run("save-env.sh", home, {
+      REVERSY_BOOT: "running",
+      REVERSY_RUN_ID: "run-1",
+    });
     expect(run("status.sh", home).split("\n")[0]).toBe("running");
     expect(
       readFileSync(join(home, ".reversy", "env", "REVERSY_RUN_ID"), "utf8"),
