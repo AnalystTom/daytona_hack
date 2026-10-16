@@ -18,6 +18,7 @@ npm run dev
 ```
 
 `npm run dev` serves the front end and the Worker together through the Cloudflare Vite plugin.
+The workspace is at `/workspace`; `/workspace?fixture=spec` shows it with labelled sample data for design review.
 
 ## Scripts
 
