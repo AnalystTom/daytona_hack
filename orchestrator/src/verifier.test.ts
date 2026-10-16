@@ -20,7 +20,10 @@ const ev = (id: string, page: string, status: Evidence["status"]) =>
 const evidence = [
   ev("ev_001", "/api/articles", "observed"),
   ev("ev_002", "/api/search", "observed"),
-  ev("ev_003", "/api/guessed", "inferred"),
+  {
+    ...ev("ev_003", "/api/articles", "inferred"),
+    routes: ["/api/v1/articles?id=1"],
+  },
 ];
 
 const spec = (scope: Spec["scope"]) =>
@@ -68,6 +71,7 @@ describe("backend verification", () => {
 
     expect(requests).toEqual([
       { url: `${PREVIEW}api/articles`, method: "GET" },
+      { url: `${PREVIEW}api/v1/articles?id=1`, method: "GET" },
     ]);
     expect(inputs[0].previewHtml).toBe("");
     expect(inputs[0].routes).toEqual([
@@ -76,6 +80,12 @@ describe("backend verification", () => {
         status: 200,
         contentType: "application/json",
         shape: { items: [{ id: "number", title: "string" }], total: "number" },
+      },
+      {
+        path: "/api/v1/articles?id=1",
+        status: 404,
+        contentType: "application/json",
+        shape: { error: "string" },
       },
     ]);
   });
@@ -87,6 +97,7 @@ describe("backend verification", () => {
     expect(requests.map((r) => r.url)).toEqual([
       `${PREVIEW}api/articles`,
       `${PREVIEW}api/search`,
+      `${PREVIEW}api/v1/articles?id=1`,
     ]);
     expect(inputs[0].routes).toContainEqual({
       path: "/api/search",
@@ -102,6 +113,7 @@ describe("backend verification", () => {
     expect(requests.map((r) => r.url)).toEqual([
       PREVIEW,
       `${PREVIEW}api/articles`,
+      `${PREVIEW}api/v1/articles?id=1`,
     ]);
   });
 

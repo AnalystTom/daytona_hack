@@ -348,6 +348,10 @@ export async function inspectBackend(
       limits:
         "API URLs referenced in the HTML were not called; embedded JSON shows keys and types only",
       summary: `${facts.endpoints.length} API URLs referenced, ${facts.data.length} embedded data blocks, ${facts.scripts.length} script bundles`,
+      routes: facts.endpoints
+        .map((u) => new URL(u))
+        .filter((u) => u.origin === origin)
+        .map((u) => u.pathname + u.search),
     },
     JSON.stringify(facts, null, 1),
   );

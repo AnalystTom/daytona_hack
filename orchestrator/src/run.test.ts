@@ -158,6 +158,7 @@ describe("run scope", () => {
         kind: "network",
         status: "inferred",
         summary: expect.stringContaining("1 API URLs referenced"),
+        routes: ["/api/v1/articles?id=1"],
       }),
     );
     expect(after).toContainEqual(

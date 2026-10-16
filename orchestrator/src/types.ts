@@ -52,6 +52,7 @@ export interface Evidence {
   summary: string;
   path?: string; // where it lives in the sandbox evidence store
   url?: string; // where the UI can load it (screenshots and recordings)
+  routes?: string[]; // same-site API paths the evidence references, for the verifier to probe
 }
 
 export interface Spec {

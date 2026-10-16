@@ -54,13 +54,16 @@ const MAX_ROUTES = 10;
 const PROBE_BYTES = 100_000;
 const PROBE_MS = 5000;
 
-/** Observed routes behind the given evidence: the back-end pages a rebuild must answer. */
+/** Routes behind the given evidence: observed page GETs plus the same-site API paths they reference. */
 function routesOf(evidence: Evidence[]) {
   return [
     ...new Set(
       evidence
-        .filter((e) => e.kind === "network" && e.status === "observed")
-        .map((e) => e.page),
+        .filter((e) => e.kind === "network")
+        .flatMap((e) => [
+          ...(e.status === "observed" ? [e.page] : []),
+          ...(e.routes ?? []),
+        ]),
     ),
   ].slice(0, MAX_ROUTES);
 }
