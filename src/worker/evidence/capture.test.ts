@@ -179,6 +179,26 @@ describe("captureRun (fixture Anchor responses)", () => {
     expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
   });
 
+  it("keeps an off-scope URL's query string out of the event message", async () => {
+    fakeAnchor({
+      "https://example.com/pricing":
+        "https://idp.test/login?code=secret#state=x",
+    });
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    const stopped = items.find((i) => i.pageOrState === "/pricing");
+    expect(stopped?.limitations[0]).toContain(
+      "https://idp.test/login?code=secret#state=x",
+    );
+    expect(events[1]?.message).toBe(
+      "/pricing: Redirected to https://idp.test/login, outside the approved scope; capture stopped for this page.",
+    );
+    expect(events.some((e) => e.message.includes("secret"))).toBe(false);
+  });
+
   it("stops a page that redirects to an unapproved path on the same origin", async () => {
     fakeAnchor({ "https://example.com/pricing": "https://example.com/login" });
     const { deps: d } = deps(memoryStore().store);

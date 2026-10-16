@@ -167,7 +167,16 @@ export async function captureRun(
     const skip = async (reason: string) => {
       ids.push(await notObserved(pending.shift() as Expected, reason));
     };
+    // `stopped` goes into the gated evidence; `shown` into the run's event stream.
     let stopped: string | undefined;
+    let shown: string | undefined;
+    const leave = (verb: string, finalUrl: string) => {
+      outOfScope.push(finalUrl);
+      const reason = (target: string) =>
+        `${verb} ${target}, outside the approved scope; capture stopped for this page.`;
+      stopped = reason(finalUrl);
+      shown = reason(finalUrl.split(/[?#]/)[0] as string);
+    };
 
     try {
       const facts = await anchor.runSnippet<anchor.PageFacts>(
@@ -176,8 +185,7 @@ export async function captureRun(
         anchor.navigateSnippet(url, scope.origin, full),
       );
       if (!inScope(facts.finalUrl, scope)) {
-        outOfScope.push(facts.finalUrl);
-        stopped = `Redirected to ${facts.finalUrl}, outside the approved scope; capture stopped for this page.`;
+        leave("Redirected to", facts.finalUrl);
       } else {
         if (full) {
           if (signedIn) await skip(signedInSkipped);
@@ -205,8 +213,7 @@ export async function captureRun(
             png: string;
           }>(key, sessionId, anchor.screenshotSnippet(viewport));
           if (!inScope(shot.finalUrl, scope)) {
-            outOfScope.push(shot.finalUrl);
-            stopped = `Page moved to ${shot.finalUrl}, outside the approved scope; capture stopped for this page.`;
+            leave("Page moved to", shot.finalUrl);
             break;
           }
           await take("image/png", fromBase64(shot.png), [
@@ -217,14 +224,14 @@ export async function captureRun(
     } catch (error) {
       // Only browser failures become not_observed; storage failures must fail the capture.
       if (!(error instanceof anchor.AnchorError)) throw error;
-      stopped = `Capture failed: ${error.message}`;
+      stopped = shown = `Capture failed: ${error.message}`;
     }
 
     while (pending.length) await skip(stopped ?? "");
     await deps.emit({
       type: stopped ? "evidence.page_stopped" : "evidence.page_captured",
       state: "capturing",
-      message: stopped ? `${path}: ${stopped}` : `Captured ${path}`,
+      message: stopped ? `${path}: ${shown}` : `Captured ${path}`,
       artifactRefs: ids,
     });
   };
