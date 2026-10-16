@@ -226,12 +226,13 @@ export class Run extends DurableObject<Env> {
   }
 
   /** Phase 1: create the run, take a first look, open the conversation. */
-  async start(id: string, entered: string, goal: string) {
+  async start(id: string, entered: string, goal: string, startedAt = Date.now()) {
+    if (this.s) throw new Error("This run already exists.");
     let url = entered;
     const signal = this.inspection.signal;
     this.s = {
       id,
-      startedAt: Date.now(),
+      startedAt,
       phase: "brief",
       chat: [],
       evidence: [],
@@ -251,6 +252,7 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
+    await this.beforeWork();
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
     if (signal.aborted) return this.s;
@@ -314,7 +316,7 @@ export class Run extends DurableObject<Env> {
       notes.push(`No screenshot: the capture failed: ${message}`);
     }
     if (signal.aborted) return this.s;
-    const { html } = await pageHtml(this.env, url);
+    const { html } = await pageHtml(this.env, url, this.beforeWork);
     if (signal.aborted) return this.s;
     const routes = routesFrom(html, url);
     await this.emit(
@@ -341,9 +343,7 @@ export class Run extends DurableObject<Env> {
 
   /** Chat: the orchestrator refines the spec with the user. */
   async message(text: string) {
-    // Chat calls the model directly, outside the alarm loop that stops an over-time run.
-    const overTime = this.overTime();
-    if (overTime) throw new Error(`This run ${overTime}; start a new one.`);
+    await this.beforeWork();
     await this.addChat("user", text);
     await this.converse();
     return this.s;
@@ -351,6 +351,7 @@ export class Run extends DurableObject<Env> {
 
   /** User approved the spec in chat or via button: inspect fully, then plan. */
   async approveSpec() {
+    await this.beforeWork();
     const signal = this.inspection.signal;
     signal.throwIfAborted();
     if (this.s.phase !== "brief")
@@ -415,6 +416,7 @@ export class Run extends DurableObject<Env> {
 
   /** Start build: needs an approved spec and a plan. */
   async startBuild() {
+    await this.beforeWork();
     if (this.s.phase !== "planned")
       throw new Error(
         "No build started: tasks appear after the spec is approved.",
@@ -459,6 +461,7 @@ export class Run extends DurableObject<Env> {
     verdict: "approve" | "reject",
     reason: string,
   ) {
+    await this.beforeWork();
     const t = this.task(taskId);
     t.review = {
       verdict,
@@ -480,22 +483,26 @@ export class Run extends DurableObject<Env> {
   private overTime() {
     const set = Number(this.env.RUN_MAX_MINUTES);
     const minutes = Number.isInteger(set) && set > 0 ? set : 120;
-    return this.s.startedAt && Date.now() - this.s.startedAt > minutes * 60_000
+    return this.s.startedAt !== undefined &&
+      Date.now() - this.s.startedAt >= minutes * 60_000
       ? `reached its ${minutes}-minute limit`
       : undefined;
   }
 
+  private beforeWork = async () => {
+    if (this.s.phase === "stopped")
+      throw new Error("This run is stopped; start a new one.");
+    const overTime = this.overTime();
+    if (!overTime) return;
+    this.s.error = `Stopped: ${overTime}.`;
+    await this.stop();
+    throw new Error(this.s.error);
+  };
+
   // ---------- alarm loop ----------
   async alarm() {
-    // Runs spend money while they work, so one that outlives its time limit is stopped.
-    const overTime = this.overTime();
-    if (overTime) {
-      this.s.error = `Stopped: ${overTime}.`;
-      await this.emit("error", { message: this.s.error });
-      await this.stop();
-      return;
-    }
     try {
+      await this.beforeWork();
       const pending = this.s.pending;
       if (
         pending === "inspect" ||
@@ -519,7 +526,7 @@ export class Run extends DurableObject<Env> {
             () => this.setupSandbox(),
           );
         } catch (e) {
-          this.s.phase = "planned"; // let the user press Start build again
+          if (this.s.phase !== "stopped") this.s.phase = "planned";
           if (this.s.sandboxId)
             await this.daytona.remove(this.s.sandboxId).catch(() => {});
           this.s.sandboxId = undefined;
@@ -579,6 +586,7 @@ export class Run extends DurableObject<Env> {
       this.env,
       this.memScope(),
       this.s.chat.at(-1)?.text || this.s.spec.goal,
+      this.beforeWork,
     );
     signal?.throwIfAborted();
     const out = await llmJson<{
@@ -586,6 +594,7 @@ export class Run extends DurableObject<Env> {
       spec: Omit<Spec, "approved" | "revision" | "url" | "goal">;
       userApproved: boolean;
     }>(this.env, {
+      beforeCall: this.beforeWork,
       name: "orchestrator_turn",
       effort: "medium",
       instructions: CHAT_INSTRUCTIONS,
@@ -678,6 +687,8 @@ export class Run extends DurableObject<Env> {
             this.env,
             this.memScope(),
             `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
+            undefined,
+            this.beforeWork,
           );
         }
       },
@@ -808,6 +819,7 @@ export class Run extends DurableObject<Env> {
     const plan = await llmJson<{
       tasks: Omit<Task, "status" | "attempts" | "branch">[];
     }>(this.env, {
+      beforeCall: this.beforeWork,
       name: "plan",
       instructions: `You are Reversy's orchestrator. You never write code. Split the approved spec (scope: ${scope}) into small tasks, one worker each.
 Architecture every task must respect (it keeps parallel work conflict-free):
@@ -885,6 +897,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Plan for ${this.s.spec.url}: ${this.s.tasks.map((t) => `${t.id} ${t.title} (evidence ${t.evidence.join(",")})`).join("; ")}`,
+      undefined,
+      this.beforeWork,
     );
     signal.throwIfAborted();
     const pv = await verifyPlan(
@@ -892,6 +906,7 @@ ${DATA_INSTRUCTIONS}`,
       this.s.spec,
       this.s.evidence,
       this.s.tasks,
+      this.beforeWork,
     );
     await this.verified(pv, signal);
     await this.addChat(
@@ -920,6 +935,7 @@ ${DATA_INSTRUCTIONS}`,
 
   // ---------- phase 4: build ----------
   private async setupSandbox() {
+    await this.beforeWork();
     const sb = await this.daytona.create({
       snapshot: this.env.DAYTONA_SNAPSHOT || undefined,
       env: { OPENAI_API_KEY: this.env.OPENAI_API_KEY },
@@ -953,10 +969,12 @@ ${DATA_INSTRUCTIONS}`,
       JSON.stringify(this.s.spec, null, 1),
     );
     await this.daytona.must(id, `chmod -R a-w ${EV}`); // workers read evidence, never change it
+    await this.beforeWork();
     await this.daytona.startAsync(
       id,
       "preview",
       previewCommand(this.s.spec.scope, APP),
+      this.beforeWork,
     );
     this.s.previewUrl = await this.daytona.previewUrl(id, 3000);
     await this.save();
@@ -966,6 +984,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Build started in Daytona sandbox ${id}; preview ${this.s.previewUrl}`,
+      undefined,
+      this.beforeWork,
     );
   }
 
@@ -984,6 +1004,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Verifier on ${v.taskId || v.target}: ${v.pass ? "pass" : "fail"} — ${v.summary}`,
+      undefined,
+      this.beforeWork,
     );
     if (!v.pass) {
       // a failure goes back to the orchestrator as steering and shows on the canvas
@@ -1051,12 +1073,6 @@ ${DATA_INSTRUCTIONS}`,
         ),
     );
     if (open.length === 0 || open.length === blocked.length) {
-      this.s.phase = "done";
-      await this.emit("phase", {
-        phase: "done",
-        merged: this.s.tasks.filter((t) => t.status === "merged").length,
-        failed: this.s.tasks.filter((t) => t.status === "failed").length,
-      });
       const original = await this.originalHtml();
       const fv = await verifyFinal(
         this.env,
@@ -1065,8 +1081,15 @@ ${DATA_INSTRUCTIONS}`,
         this.s.tasks,
         await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
         original,
+        this.beforeWork,
       );
       await this.verified(fv);
+      this.s.phase = "done";
+      await this.emit("phase", {
+        phase: "done",
+        merged: this.s.tasks.filter((t) => t.status === "merged").length,
+        failed: this.s.tasks.filter((t) => t.status === "failed").length,
+      });
       await this.addChat(
         "assistant",
         `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is in the app.`,
@@ -1123,7 +1146,13 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .map((e) => `-i /home/daytona/${e.path}`)
       .join(" ");
     const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
-    t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
+    await this.beforeWork();
+    t.cmdId = await this.daytona.startAsync(
+      id,
+      `w-${t.id}-${t.attempts}`,
+      cmd,
+      this.beforeWork,
+    );
     t.status = "building";
     t.attempts += 1;
     this.s.error = undefined;
@@ -1183,6 +1212,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       };
     } else {
       verdict = await llmJson<NonNullable<Task["review"]>>(this.env, {
+        beforeCall: this.beforeWork,
         name: "review",
         instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.
 ${DATA_INSTRUCTIONS}`,
@@ -1216,6 +1246,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Review of ${t.id} (${t.title}) attempt ${t.attempts}: ${verdict.verdict} — ${verdict.reason}`,
+      undefined,
+      this.beforeWork,
     );
     if (verdict.verdict === "approve") {
       await this.merge(t);
@@ -1237,6 +1269,7 @@ ${DATA_INSTRUCTIONS}`,
   }
 
   private async merge(t: Task) {
+    await this.beforeWork();
     const id = this.s.sandboxId!;
     const r = await this.daytona.exec(
       id,
@@ -1268,6 +1301,7 @@ ${DATA_INSTRUCTIONS}`,
         this.s.evidence,
         t,
         await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
+        this.beforeWork,
       ),
     );
   }

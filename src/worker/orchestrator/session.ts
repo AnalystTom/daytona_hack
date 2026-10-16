@@ -31,7 +31,7 @@ const sign = (secret: string, expires: number) =>
 // POST /api/v1/session swaps the operator token for a signed HttpOnly cookie; DELETE signs out.
 export async function handleSession(
   request: Request,
-  env: { OPERATOR_TOKEN?: string },
+  env: { OPERATOR_TOKEN?: string } & AccessEnv,
 ): Promise<Response> {
   try {
     if (request.headers.get("origin") !== new URL(request.url).origin) {
@@ -40,6 +40,13 @@ export async function handleSession(
     if (request.method === "DELETE") return session("", 0);
     if (request.method !== "POST") {
       throw new Failure(405, "method_not_allowed", "Use POST or DELETE.");
+    }
+    if (accessConfig(env)) {
+      throw new Failure(
+        401,
+        "access_required",
+        "Reload the page to sign in through Cloudflare Access.",
+      );
     }
     if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
     const { token } = await readJson(request, SessionRequest);
@@ -62,12 +69,6 @@ const session = (value: string, maxAge: number) =>
     },
   });
 
-// Run routes take the operator token as a bearer (scripts), a Cloudflare Access sign-in, or the
-// session cookie (this site's pages). Returns the Access user's email, or undefined for the operator.
-// The operator token is the fallback until Access is live: its run-route paths are the bearer and
-// cookie branches here, plus handleSession above, so removing it later touches only this file.
-// A request from another site is refused outright; a cookie (ours or Access's) only counts on a
-// request that names our origin when it changes something.
 export async function checkCaller(
   request: Request,
   env: { OPERATOR_TOKEN?: string } & AccessEnv,
@@ -76,25 +77,28 @@ export async function checkCaller(
   const origin = request.headers.get("origin");
   const own = origin === new URL(request.url).origin;
   if (origin !== null && !own) throw foreignOrigin();
-  if (request.headers.has("authorization")) {
-    await checkToken(request, env, "OPERATOR_TOKEN");
-    return undefined;
-  }
   const access = accessConfig(env);
-  const jwt = request.headers.get(ACCESS_HEADER);
   let email: string | undefined;
-  if (access && jwt) {
-    email = await verifyAccessJwt(jwt, access, fetcher);
-  } else {
-    if (!env.OPERATOR_TOKEN && !access) throw notConfigured(["OPERATOR_TOKEN"]);
-    const secret = env.OPERATOR_TOKEN;
-    if (!secret || !(await validSession(request, secret))) {
+  if (access) {
+    const jwt = request.headers.get(ACCESS_HEADER);
+    if (!jwt) {
       throw new Failure(
         401,
-        "unauthorized",
-        access
-          ? "Sign in through Cloudflare Access to use runs."
-          : "Sign in with the operator token to use runs.",
+        "access_required",
+        "Reload the page to sign in through Cloudflare Access.",
+      );
+    }
+    email = await verifyAccessJwt(jwt, access, fetcher);
+  } else if (request.headers.has("authorization")) {
+    await checkToken(request, env, "OPERATOR_TOKEN");
+    return undefined;
+  } else {
+    if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
+    if (!(await validSession(request, env.OPERATOR_TOKEN))) {
+      throw new Failure(
+        401,
+        "operator_token_required",
+        "Sign in with the operator token to use runs.",
       );
     }
   }

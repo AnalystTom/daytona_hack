@@ -236,25 +236,47 @@ describe.each(stores)("%s run store", (_name, makeStore) => {
 });
 
 describe.skipIf(!surreal)("surreal run owners", () => {
-  it("records owners, lists them newest first and counts starts per day", async () => {
+  it("atomically admits starts and persists ownership and daily charges", async () => {
     const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
-    const [a, b] = [crypto.randomUUID(), crypto.randomUUID()];
-    expect(await owners.get(a)).toBeNull();
-    await owners.claim(a, "ada@example.com", 1000);
-    await owners.claim(b, "ada@example.com", 2000);
-    expect(await owners.get(a)).toEqual({
-      runId: a,
-      owner: "ada@example.com",
-      createdAt: 1000,
-    });
+    const owner = `${crypto.randomUUID()}@example.com`;
+    const a = { runId: crypto.randomUUID(), owner, createdAt: Date.now() };
+    const b = { ...a, runId: crypto.randomUUID() };
+    const results = await Promise.all([
+      owners.reserve(a, 1, 2, []),
+      owners.reserve(b, 1, 2, []),
+    ]);
+    expect(results.filter((r) => r === undefined)).toHaveLength(1);
+    expect(results.filter((r) => r === "active_run_limit")).toHaveLength(1);
+    const first = results[0] === undefined ? a : b;
+    expect(await owners.get(first.runId)).toMatchObject(first);
+    expect(await owners.list(owner, 0)).toHaveLength(1);
+    const second = { ...a, runId: crypto.randomUUID() };
+    expect(await owners.reserve(second, 1, 2, [first.runId])).toBeUndefined();
     expect(
-      (await owners.list("ada@example.com", 0)).map((r) => r.runId),
-    ).toEqual([b, a]);
-    expect(await owners.list("ada@example.com", 1500)).toHaveLength(1);
-    expect(await owners.list("bob@example.com", 0)).toEqual([]);
-    expect(await owners.count("ada@example.com", "2026-10-16", 1)).toBe(1);
-    expect(await owners.count("ada@example.com", "2026-10-16", 1)).toBe(2);
-    expect(await owners.count("ada@example.com", "2026-10-16", -1)).toBe(1);
-    expect(await owners.count("ada@example.com", "2026-10-17", 1)).toBe(1);
+      await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 2, [
+        second.runId,
+      ]),
+    ).toBe("daily_run_limit");
+    expect(await owners.list(owner, 0)).toHaveLength(2);
+    expect(
+      await owners.reserve(
+        {
+          ...a,
+          runId: crypto.randomUUID(),
+          createdAt: a.createdAt + 86_400_000,
+        },
+        1,
+        2,
+        [],
+      ),
+    ).toBe("active_run_limit");
+    expect(
+      await owners.reserve(
+        { ...a, runId: crypto.randomUUID(), owner: "other@example.com" },
+        1,
+        2,
+        [],
+      ),
+    ).toBeUndefined();
   });
 });

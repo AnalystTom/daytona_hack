@@ -57,6 +57,23 @@ describe("SurrealRunStore over HTTP", () => {
     await expect(store.getRun("r1")).rejects.toBeInstanceOf(StoreError);
   });
 
+  it("preserves the cause of an aborted transaction for conflict handling", async () => {
+    const { store } = storeAnswering(() =>
+      Response.json({
+        result: [
+          {
+            status: "ERR",
+            result: "The query was not executed due to a failed transaction",
+          },
+          { status: "ERR", result: "Transaction conflict" },
+        ],
+      }),
+    );
+    await expect(
+      store.query("BEGIN TRANSACTION; COMMIT TRANSACTION;"),
+    ).rejects.toThrow("Transaction conflict");
+  });
+
   describe("appendEvents", () => {
     const event = (eventId: string): EventEnvelope => ({
       schemaVersion: 1,

@@ -121,13 +121,20 @@ export class Daytona {
   }
 
   /** Start a long command in its own session; returns immediately. */
-  async startAsync(id: string, sessionId: string, command: string) {
+  async startAsync(
+    id: string,
+    sessionId: string,
+    command: string,
+    beforeWork?: () => Promise<void>,
+  ) {
     const base = await this.tb(id);
+    await beforeWork?.();
     await fetch(`${base}/process/session`, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify({ sessionId }),
     });
+    await beforeWork?.();
     const r = await this.call<{ cmdId: string }>(
       `${base}/process/session/${sessionId}/exec`,
       {

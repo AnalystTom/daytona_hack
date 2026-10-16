@@ -19,7 +19,11 @@ const keyCache = new Map<string, Keys>();
 const REFETCH_MS = 60_000;
 
 const refused = (why: string) =>
-  new Failure(401, "unauthorized", `Your Cloudflare Access sign-in ${why}.`);
+  new Failure(
+    401,
+    "access_required",
+    `Your Cloudflare Access sign-in ${why}. Reload the page to sign in again.`,
+  );
 
 // Returns the configured team domain and audience, or null when Access is not set up.
 export function accessConfig(env: AccessEnv) {

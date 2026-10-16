@@ -6,11 +6,13 @@ Code is written only inside Daytona sandboxes, by Codex workers. Everything else
 
 Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no public address.
 
+The front door supplies `id` and `startedAt` after atomically reserving ownership and limits; the timestamp is the admission time, so delayed starts cannot extend their deadline. Operator fallback callers may omit both. An existing run cannot be started again.
+
 ## Routes
 
 | Method and path | Body | Does |
 |---|---|---|
-| `POST /runs` | `{url, goal}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
+| `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
 | `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewUrl, error}` |
 | `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |

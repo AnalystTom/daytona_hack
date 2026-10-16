@@ -23,7 +23,11 @@ export function PreviewView({
     void fetchPreviewLink(runId).then((result) => {
       if (!live) return;
       setLink(result);
-      if (!result.ok && result.error === "operator_token") onRefused(result);
+      if (
+        !result.ok &&
+        ["operator_token", "access_required"].includes(result.error)
+      )
+        onRefused(result);
     });
     return () => {
       live = false;

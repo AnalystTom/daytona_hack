@@ -110,8 +110,11 @@ export class SurrealRunStore implements RunStore {
     };
     if (body.error) throw new StoreError(`SurrealDB: ${body.error.message}`);
     const results = body.result ?? [];
-    const failed = results.find((r) => r.status !== "OK");
-    if (failed) throw new StoreError(`SurrealDB: ${String(failed.result)}`);
+    const failed = results.filter((r) => r.status !== "OK");
+    if (failed.length)
+      throw new StoreError(
+        `SurrealDB: ${failed.map((r) => String(r.result)).join("; ")}`,
+      );
     return results.map((r) => r.result);
   }
 

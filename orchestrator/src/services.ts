@@ -12,6 +12,7 @@ export async function llmJson<T>(
     input: string;
     schema: object;
     name: string;
+    beforeCall?: () => Promise<void>;
     effort?: string;
     model?: string;
   },
@@ -40,11 +41,13 @@ async function llmCall<T>(
     input: string;
     schema: object;
     name: string;
+    beforeCall?: () => Promise<void>;
     effort?: string;
   },
   model: string,
   set?: (a: Record<string, string | number>) => void,
 ): Promise<T> {
+  await opts.beforeCall?.();
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
@@ -90,6 +93,7 @@ export async function remember(
   scope: string,
   text: string,
   observedAt?: string,
+  beforeWork?: () => Promise<void>,
 ) {
   if (!env.SPECTRON_URL) return;
   const base = `${env.SPECTRON_URL.replace(/\/$/, "")}/api/v1/${env.SPECTRON_CONTEXT_ID}`;
@@ -99,12 +103,14 @@ export async function remember(
   };
   const parts = scope.split("/");
   for (let i = 2; i <= parts.length; i++) {
+    await beforeWork?.();
     await fetch(`${base}/scopes`, {
       method: "POST",
       headers,
       body: JSON.stringify({ path: parts.slice(0, i).join("/") }),
     });
   }
+  await beforeWork?.();
   const res = await fetch(`${base}/facts`, {
     method: "POST",
     headers,
@@ -127,9 +133,11 @@ export async function recall(
   env: Env,
   scope: string,
   query: string,
+  beforeWork?: () => Promise<void>,
 ): Promise<string> {
   if (!env.SPECTRON_URL) return "";
   const base = `${env.SPECTRON_URL.replace(/\/$/, "")}/api/v1/${env.SPECTRON_CONTEXT_ID}`;
+  await beforeWork?.();
   const res = await fetch(`${base}/context`, {
     method: "POST",
     headers: {
@@ -145,8 +153,10 @@ export async function recall(
 export async function pageHtml(
   env: Env,
   url: string,
+  beforeWork?: () => Promise<void>,
 ): Promise<{ html: string; tool: "anchor" | "fetch" }> {
   if (env.ANCHORBROWSER_API_KEY) {
+    await beforeWork?.();
     const res = await fetch(
       "https://api.anchorbrowser.io/v1/tools/fetch/webpage",
       {
@@ -160,6 +170,7 @@ export async function pageHtml(
     );
     if (res.ok) return { html: await res.text(), tool: "anchor" };
   }
+  await beforeWork?.();
   const res = await fetch(url, {
     headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
   });

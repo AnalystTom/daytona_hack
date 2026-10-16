@@ -2,12 +2,9 @@ import { z } from "zod";
 import { OrchestratorEvent } from "./orchestrator";
 
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
-// Runs spend money and hold the target's data, so every call needs the operator session cookie,
-// which only the server can read (POST /api/v1/session sets it).
-
 export type RunCallError = {
   ok: false;
-  error: "not_connected" | "operator_token" | "not_found" | "failed";
+  error: "not_connected" | "operator_token" | "not_found" | "access_required" | "failed";
   detail: string;
 };
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
@@ -78,6 +75,21 @@ async function call<T>(
   const reason = ErrorBody.safeParse(json);
   const detail = reason.success ? reason.data : `HTTP ${response.status}`;
   if (response.status === 401) {
+    if (
+      !(
+        typeof json === "object" &&
+        json !== null &&
+        "code" in json &&
+        (json.code === "operator_token_required" ||
+          (path === "/api/v1/session" && json.code === "unauthorized"))
+      )
+    ) {
+      return {
+        ok: false,
+        error: "access_required",
+        detail: "Reload this page to sign in again.",
+      };
+    }
     return {
       ok: false,
       error: "operator_token",

@@ -13,6 +13,7 @@ const NOTICE_TITLE = {
   not_connected: "Not connected",
   operator_token: "Operator token needed",
   not_found: "Not found",
+  access_required: "Sign-in needed",
   failed: "Request failed",
   run_error: "Run error",
 } as const;
@@ -67,6 +68,11 @@ function Entry({
             <p>
               <strong>{NOTICE_TITLE[entry.error]}.</strong> {entry.detail}
             </p>
+            {entry.error === "access_required" && (
+              <a className="link-button" href="/workspace">
+                Sign in again
+              </a>
+            )}
             {entry.error === "operator_token" && (
               <TokenForm onSave={(token) => onSaveToken(token, entry.id)} />
             )}

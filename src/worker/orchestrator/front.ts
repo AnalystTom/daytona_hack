@@ -9,7 +9,7 @@ import {
 } from "../runs/api";
 import { checkTargetUrl } from "../runs/url";
 import { resolveStore, type StoreEnv } from "../store";
-import type { AccessEnv } from "./access";
+import { accessConfig, type AccessEnv } from "./access";
 import { type Owners, surrealOwners } from "./owners";
 import { checkCaller, handleSession } from "./session";
 
@@ -57,7 +57,10 @@ export async function handleOrchestrator(
   if (!operator && !run) return null;
   try {
     // Operator testing stays bearer-only: the orchestrator's /sandboxes routes check the bearer too.
-    if (operator) await checkToken(request, env, "OPERATOR_TOKEN");
+    if (operator) {
+      if (accessConfig(env)) throw notFound();
+      await checkToken(request, env, "OPERATOR_TOKEN");
+    }
     const user = operator
       ? undefined
       : await checkCaller(request, env, deps.fetcher);
@@ -149,51 +152,55 @@ async function userRunRoute(
   }
   if (request.method !== "POST") throw notFound();
 
+  const { url: target, goal } = await readJson(request, CreateRunRequest);
+  const checked = checkTargetUrl(target);
+  if ("error" in checked) throw new Failure(400, "invalid_url", checked.error);
   const now = Date.now();
   const maxMinutes = limit(env.RUN_MAX_MINUTES, 120);
-  const recent = await owners.list(user, now - maxMinutes * 60_000);
-  let active = 0;
+  const recent = await owners.list(user, 0);
+  const ended: string[] = [];
   for (const owned of recent) {
     const reply = await forward(orchestrator, "GET", `/runs/${owned.runId}`);
-    // A run id the orchestrator never saw answers 200 with an empty body.
     const { phase } = JSON.parse((await reply.text()) || "{}") as {
       phase?: string;
     };
-    if (phase && !ENDED.includes(phase)) active++;
+    if (phase && ENDED.includes(phase)) ended.push(owned.runId);
+    else if (now - owned.createdAt >= maxMinutes * 60_000) {
+      if (phase)
+        await forward(orchestrator, "POST", `/runs/${owned.runId}/stop`, {});
+      ended.push(owned.runId);
+    }
   }
-  const maxActive = limit(env.ACTIVE_RUNS, 1);
-  if (active >= maxActive) {
+  const id = crypto.randomUUID();
+  const refusal = await owners.reserve(
+    { runId: id, owner: user, createdAt: now },
+    limit(env.ACTIVE_RUNS, 1),
+    limit(env.RUNS_PER_DAY, 3),
+    ended,
+  );
+  if (refusal) {
     throw new Failure(
       429,
-      "active_run_limit",
-      `You can have ${maxActive} run${maxActive === 1 ? "" : "s"} going at a time. Stop one or let it finish before starting another.`,
+      refusal,
+      refusal === "active_run_limit"
+        ? "Stop an active run or let it finish before starting another."
+        : "You have reached today's run limit. Try again tomorrow (UTC).",
     );
   }
-  // shortcut: two starts at the same instant can both pass the active check (the daily count
-  // still holds); a per-user lock would close that if it matters.
-  const day = new Date(now).toISOString().slice(0, 10);
-  const perDay = limit(env.RUNS_PER_DAY, 3);
-  if ((await owners.count(user, day, 1)) > perDay) {
-    await owners.count(user, day, -1);
-    throw new Failure(
-      429,
-      "daily_run_limit",
-      `You have started ${perDay} run${perDay === 1 ? "" : "s"} today, the daily limit. Try again tomorrow (UTC).`,
-    );
-  }
-  let created: Response;
   try {
-    created = await runRoute(request, orchestrator, url, undefined, action);
+    return await forward(orchestrator, "POST", "/runs", {
+      id,
+      startedAt: now,
+      url: checked.url,
+      goal,
+    });
   } catch (error) {
-    await owners.count(user, day, -1);
-    throw error;
+    throw new Failure(
+      502,
+      "orchestrator_error",
+      `Run ${id} could not finish starting. It remains in your run history and counts toward your limits. ${error instanceof Error ? error.message : "The run service could not be reached."}`,
+    );
   }
-  const { id } = (await created.clone().json()) as { id?: unknown };
-  if (typeof id !== "string") {
-    throw new Failure(502, "orchestrator_error", "The run has no id.");
-  }
-  await owners.claim(id, user, now);
-  return created;
 }
 
 async function runRoute(

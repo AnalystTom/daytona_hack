@@ -7,30 +7,38 @@ const SITE = "https://reversy.test";
 
 // The SurrealDB owner store's behaviour, in memory.
 function memoryOwners(): Owners {
-  const runs: RunOwner[] = [];
+  const runs: (RunOwner & { active: boolean })[] = [];
   const counts = new Map<string, number>();
   return {
     async get(runId) {
       return runs.find((r) => r.runId === runId) ?? null;
-    },
-    async claim(runId, owner, createdAt) {
-      runs.push({ runId, owner, createdAt });
     },
     async list(owner, since) {
       return runs
         .filter((r) => r.owner === owner && r.createdAt > since)
         .reverse();
     },
-    async count(owner, day, by) {
-      const key = `${owner} ${day}`;
-      counts.set(key, (counts.get(key) ?? 0) + by);
-      return counts.get(key) as number;
+    async reserve(run, maxActive, perDay, ended) {
+      const active = runs.filter(
+        (r) => r.owner === run.owner && r.active && !ended.includes(r.runId),
+      );
+      if (active.length >= maxActive) return "active_run_limit";
+      const key = `${run.owner} ${new Date(run.createdAt).toISOString().slice(0, 10)}`;
+      if ((counts.get(key) ?? 0) >= perDay) return "daily_run_limit";
+      for (const r of runs)
+        if (r.owner === run.owner && ended.includes(r.runId)) r.active = false;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+      runs.push({ ...run, active: true });
+      return undefined;
     },
   };
 }
 
 // A stand-in orchestrator that keeps each run's phase; it never starts anything real.
-function setup(vars: Partial<OrchestratorEnv> = {}) {
+function setup(
+  vars: Partial<OrchestratorEnv> = {},
+  onStart?: (id: string) => Promise<Response | void>,
+) {
   const phases = new Map<string, string>();
   const calls: string[] = [];
   const fetcher = {
@@ -39,9 +47,13 @@ function setup(vars: Partial<OrchestratorEnv> = {}) {
       const path = new URL(request.url).pathname;
       calls.push(`${request.method} ${path}`);
       if (request.method === "POST" && path === "/runs") {
-        const id = `r${phases.size + 1}`;
+        const body = (await request.json()) as { id?: string };
+        const id = body.id ?? crypto.randomUUID();
         phases.set(id, "brief");
-        return Response.json({ id, phase: "brief" }, { status: 201 });
+        const failure = await onStart?.(id);
+        return (
+          failure ?? Response.json({ id, phase: "brief" }, { status: 201 })
+        );
       }
       const [, , id = "", action] = path.split("/");
       if (!phases.has(id)) return new Response("");
@@ -85,7 +97,7 @@ function setup(vars: Partial<OrchestratorEnv> = {}) {
       url: "https://example.com",
       goal: "Rebuild it",
     });
-  return { as, start, phases, calls };
+  return { as, start, phases, calls, env, owners };
 }
 
 describe("Cloudflare Access users", () => {
@@ -103,24 +115,29 @@ describe("Cloudflare Access users", () => {
     const { as, start } = setup();
     const created = await start("ada@example.com");
     expect(created.status).toBe(201);
-    expect(await created.json()).toMatchObject({ id: "r1" });
-    const read = await as("ada@example.com", "GET", "/api/v1/runs/r1");
+    const { id } = (await created.json()) as { id: string };
+    const read = await as("ada@example.com", "GET", `/api/v1/runs/${id}`);
     expect(read.status).toBe(200);
     const list = await as("ada@example.com", "GET", "/api/v1/runs");
-    expect(await list.json()).toEqual([
-      { id: "r1", createdAt: expect.any(String) },
-    ]);
+    expect(await list.json()).toEqual([{ id, createdAt: expect.any(String) }]);
   });
 
   it("cannot see or touch another user's run", async () => {
     const { as, start, calls } = setup();
-    await start("ada@example.com");
+    const { id } = (await (await start("ada@example.com")).json()) as {
+      id: string;
+    };
     const before = calls.length;
     for (const [method, path] of [
-      ["GET", "/api/v1/runs/r1"],
-      ["GET", "/api/v1/runs/r1/events?since=0"],
-      ["GET", "/api/v1/runs/r1/preview"],
-      ["POST", "/api/v1/runs/r1/stop"],
+      ["GET", `/api/v1/runs/${id}`],
+      ["GET", `/api/v1/runs/${id}/events?since=0`],
+      ["GET", `/api/v1/runs/${id}/preview`],
+      ["GET", `/api/v1/runs/${id}/evidence/ev_1`],
+      ["POST", `/api/v1/runs/${id}/messages`],
+      ["POST", `/api/v1/runs/${id}/override`],
+      ["POST", `/api/v1/runs/${id}/build`],
+      ["POST", `/api/v1/runs/${id}/approve`],
+      ["POST", `/api/v1/runs/${id}/stop`],
     ] as const) {
       const response = await as("bob@example.com", method, path);
       expect(response.status).toBe(404);
@@ -133,14 +150,16 @@ describe("Cloudflare Access users", () => {
 
   it("can have one active run at a time by default", async () => {
     const { as, start } = setup();
-    expect((await start("ada@example.com")).status).toBe(201);
+    const first = await start("ada@example.com");
+    expect(first.status).toBe(201);
+    const { id } = (await first.json()) as { id: string };
     const second = await start("ada@example.com");
     expect(second.status).toBe(429);
     expect(await second.json()).toMatchObject({ code: "active_run_limit" });
     // Another user is not held back by Ada's run.
     expect((await start("bob@example.com")).status).toBe(201);
     // Once Ada's run stops she can start another.
-    await as("ada@example.com", "POST", "/api/v1/runs/r1/stop");
+    await as("ada@example.com", "POST", `/api/v1/runs/${id}/stop`);
     expect((await start("ada@example.com")).status).toBe(201);
   });
 
@@ -186,20 +205,109 @@ describe("Cloudflare Access users", () => {
     }
   });
 
-  it("leaves the operator token working, without limits or ownership", async () => {
-    const { as, start } = setup();
-    await start("ada@example.com");
-    expect((await as("operator", "GET", "/api/v1/runs/r1")).status).toBe(200);
-    const brief = { url: "https://example.com", goal: "Rebuild it" };
-    for (let i = 0; i < 5; i++) {
-      expect((await as("operator", "POST", "/api/v1/runs", brief)).status).toBe(
-        201,
-      );
-    }
-    // Runs the operator starts belong to no Access user.
-    expect((await as("ada@example.com", "GET", "/api/v1/runs/r2")).status).toBe(
-      404,
+  it("disables bearer, old cookies, session creation and the operator proxy in Access mode", async () => {
+    const { as, env, calls } = setup();
+    const fallback = {
+      ...env,
+      ACCESS_TEAM_DOMAIN: undefined,
+      ACCESS_AUD: undefined,
+    };
+    const login = await handleOrchestrator(
+      new Request(`${SITE}/api/v1/session`, {
+        method: "POST",
+        headers: { origin: SITE },
+        body: JSON.stringify({ token: "operator-secret" }),
+      }),
+      fallback,
     );
+    const cookie = login!.headers.get("set-cookie")!.split(";")[0]!;
+    for (const headers of [
+      { authorization: "Bearer operator-secret" },
+      { cookie },
+    ]) {
+      const response = await handleOrchestrator(
+        new Request(`${SITE}/api/v1/runs/r1`, { headers }),
+        env,
+      );
+      expect(response?.status).toBe(401);
+      expect(await response?.json()).toMatchObject({ code: "access_required" });
+    }
+    expect(
+      (
+        await as("operator", "POST", "/api/v1/session", {
+          token: "operator-secret",
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await as("operator", "GET", "/api/v1/orchestrator/runs/r1")).status,
+    ).toBe(404);
+    expect(calls).toHaveLength(0);
+  });
+
+  it("reserves one active slot while two starts overlap, including across midnight", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-16T23:59:59Z"));
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const blocked = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const { start, calls } = setup({}, async () => {
+        entered();
+        await blocked;
+      });
+      const first = start("ada@example.com");
+      await started;
+      vi.setSystemTime(new Date("2026-10-17T00:00:01Z"));
+      const second = await start("ada@example.com");
+      release();
+      expect((await first).status).toBe(201);
+      expect(second.status).toBe(429);
+      expect(await second.json()).toMatchObject({ code: "active_run_limit" });
+      expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps paid failures owned, stoppable and charged against the daily allowance", async () => {
+    let paid = 0;
+    const { start, as, owners } = setup({ RUNS_PER_DAY: "1" }, async (id) => {
+      expect((await owners.get(id))?.owner).toBe("ada@example.com");
+      paid++;
+      return Response.json(
+        { error: "model failed after capture" },
+        { status: 500 },
+      );
+    });
+    expect((await start("ada@example.com")).status).toBe(502);
+    const list = await as("ada@example.com", "GET", "/api/v1/runs");
+    const rows = (await list.json()) as { id: string }[];
+    const id = rows[0]!.id;
+    expect(
+      (await as("ada@example.com", "GET", `/api/v1/runs/${id}`)).status,
+    ).toBe(200);
+    expect(
+      (await as("ada@example.com", "POST", `/api/v1/runs/${id}/stop`)).status,
+    ).toBe(200);
+    const second = await start("ada@example.com");
+    expect(second.status).toBe(429);
+    expect(await second.json()).toMatchObject({ code: "daily_run_limit" });
+    expect(paid).toBe(1);
+  });
+
+  it("does not call a paid start if durable admission fails", async () => {
+    const { start, owners, calls } = setup();
+    owners.reserve = async () => {
+      throw new Error("storage unavailable");
+    };
+    expect((await start("ada@example.com")).status).toBe(500);
+    expect(calls).toHaveLength(0);
   });
 
   it("behaves as before when Access is not set up", async () => {
@@ -213,5 +321,13 @@ describe("Cloudflare Access users", () => {
       message: expect.stringContaining("operator token"),
     });
     expect(calls).toHaveLength(0);
+    expect(
+      (
+        await as("operator", "POST", "/api/v1/runs", {
+          url: "https://example.com",
+          goal: "Rebuild",
+        })
+      ).status,
+    ).toBe(201);
   });
 });

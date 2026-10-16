@@ -11,12 +11,13 @@ export interface RunOwner {
 
 export interface Owners {
   get(runId: string): Promise<RunOwner | null>;
-  claim(runId: string, owner: string, createdAt: number): Promise<void>;
-  // The owner's runs created after `since` (epoch ms), newest first.
   list(owner: string, since: number): Promise<RunOwner[]>;
-  // Adds `by` to the owner's run count for `day` and returns the new count. One record per
-  // owner and day, so two concurrent starts conflict instead of both slipping under the limit.
-  count(owner: string, day: string, by: 1 | -1): Promise<number>;
+  reserve(
+    run: RunOwner,
+    maxActive: number,
+    perDay: number,
+    ended: string[],
+  ): Promise<"active_run_limit" | "daily_run_limit" | undefined>;
 }
 
 const fields = "record::id(id) AS runId, owner, createdAt";
@@ -30,12 +31,6 @@ export function surrealOwners(db: SurrealRunStore): Owners {
       );
       return (row as RunOwner | null) ?? null;
     },
-    async claim(runId, owner, createdAt) {
-      await db.query(
-        "CREATE type::record('run_owner', $runId) CONTENT { owner: $owner, createdAt: $createdAt } RETURN NONE",
-        { runId, owner, createdAt },
-      );
-    },
     async list(owner, since) {
       const [rows] = await db.query(
         `SELECT ${fields} FROM run_owner WHERE owner = $owner AND createdAt > $since ORDER BY createdAt DESC`,
@@ -43,12 +38,38 @@ export function surrealOwners(db: SurrealRunStore): Owners {
       );
       return (rows as RunOwner[] | null) ?? [];
     },
-    async count(owner, day, by) {
-      const [runs] = await db.query(
-        "UPSERT ONLY type::record('run_quota', [$owner, $day]) SET runs = (runs ?? 0) + $by RETURN VALUE runs",
-        { owner, day, by },
-      );
-      return Number(runs);
+    async reserve(run, maxActive, perDay, ended) {
+      const day = new Date(run.createdAt).toISOString().slice(0, 10);
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const results = await db.query(
+            `
+BEGIN TRANSACTION;
+UPSERT type::record('run_quota', $owner) SET revision = (revision ?? 0) + 1 RETURN NONE;
+UPDATE run_owner SET active = false WHERE owner = $owner AND record::id(id) IN $ended RETURN NONE;
+LET $active = array::len((SELECT VALUE id FROM run_owner WHERE owner = $owner AND (active ?? true) = true));
+LET $runs = (SELECT VALUE runs FROM ONLY type::record('run_quota', [$owner, $day])) ?? 0;
+LET $refusal = IF $active >= $maxActive { 'active_run_limit' } ELSE IF $runs >= $perDay { 'daily_run_limit' } ELSE { NONE };
+IF $refusal = NONE {
+UPSERT type::record('run_quota', [$owner, $day]) SET runs = $runs + 1 RETURN NONE;
+CREATE type::record('run_owner', $runId) CONTENT { owner: $owner, createdAt: $createdAt, active: true } RETURN NONE;
+};
+RETURN $refusal;
+COMMIT TRANSACTION;`,
+            { ...run, day, maxActive, perDay, ended },
+          );
+          return (results.at(-2) ?? undefined) as
+            | "active_run_limit"
+            | "daily_run_limit"
+            | undefined;
+        } catch (error) {
+          const message = String(error);
+          if (!message.includes("conflict") || attempt === 7) throw error;
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.random() * 20 * (attempt + 1)),
+          );
+        }
+      }
     },
   };
 }
