@@ -200,7 +200,7 @@ export function PreviewView({
                     ? "Fork of the merged rebuild"
                     : "Copy of the merged rebuild"}
                 </p>
-                {v.status !== "failed" && (
+                {(v.status === "ready" || v.status === "promoted") && (
                   <VariantPreview
                     key={`${runId}:${v.id}:${attempt}:${promotedId}`}
                     runId={runId}
