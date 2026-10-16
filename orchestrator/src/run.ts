@@ -746,8 +746,7 @@ export class Run extends DurableObject<Env> {
         return;
       }
       signal.throwIfAborted();
-      stopped =
-        result.status === "captured" ? stoppedPages(result.items) : [];
+      stopped = result.status === "captured" ? stoppedPages(result.items) : [];
     }
     if (step !== "plan" && (scope === "backend" || scope === "both")) {
       const { scope } = captureScope(

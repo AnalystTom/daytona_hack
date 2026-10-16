@@ -70,7 +70,7 @@ The verifier has its own instructions and runs outside the sandbox, so it stays 
 ### Phase 2: Inspect (evidence)
 
 1. When the spec is approved, inspection follows its scope: frontend inspection for `frontend`, backend inspection for `backend`, and both for `both` (section 6). For backend work, spec pages identify routes to inspect and flows identify API behaviours.
-2. On a page that needs an account, inspection stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
+2. Frontend inspection that leaves the approved scope pauses for secure sign-in or skipping, as described in the [API reference](api.md#evidence-capture). Backend inspection does not use that browser session.
 3. Each capture appears on the canvas as it lands.
 
 ### Phase 3: Plan
@@ -123,7 +123,7 @@ Anchor captures browser evidence, through our evidence capture, and SurrealDB st
 For each confirmed same-origin route, `inspectBackend` makes one GET without following redirects or using a browser session and records its status, allowed delivery headers and JSON shape, not JSON content values or cookies.
 Observed request paths preserve their query strings. HTML references supply inferred API URLs, shipped script URLs and embedded JSON shapes; the referenced APIs and client JavaScript calls are not observed.
 HTML attribute references are decoded once before resolving URLs; script text retains its raw string contents.
-`robots.txt` and `sitemap.xml` supply listed routes only.
+`robots.txt` and `sitemap.xml` supply listed routes only; sitemap XML references are decoded once, while robots.txt values remain literal.
 REA is not installed: code-level evidence is recorded as `kind: code`, `tool: rea`, `status: not_observed`, never treated as observed analysis. Backend prompts allow REA evidence when available; this build does not execute it.
 
 The demo captures page loads only; menus, form submissions and other flow interactions are not executed or recorded. Capture limits and sign-in recovery are in the [API reference](api.md#evidence-capture).
@@ -192,6 +192,7 @@ A failed or stopped task stays on the board with its reason and next action.
 - Input: the agreed spec, the relevant evidence, and the output being checked (the plan, or a merged task with its live preview).
 - Frontend task and final checks keep the root-preview HTML comparison. Backend checks probe observed page GET paths and same-origin API paths referenced by inferred endpoint evidence; a task uses its cited evidence and the final check uses all evidence. Combined runs perform both checks.
 - Route probes are GET-only, with manual redirects and a preview-origin check, capped at 10 distinct paths, 5 seconds and 100,000 response bytes per probe. Results include status, content type, allowed delivery headers, redirect location and JSON shape (or a bounded text outline), for comparison against evidence. Inferred routes have no observed response to compare. The header allowlist is [`DELIVERY_HEADERS`](../../orchestrator/src/inspect.ts), shared by capture and probes.
+- Probes use backend request metadata to preserve route queries rather than Anchor's redacted page labels. Signed-preview authorization is forwarded with each probe and redacted from the verifier's model input and trace.
 - Output: pass or fail, with findings tied to plan items and evidence IDs, as `verification` events.
 - A failure is posted to chat as steering and shows on the canvas; a failed merged task gets a fix task (section 5, phase 4).
 

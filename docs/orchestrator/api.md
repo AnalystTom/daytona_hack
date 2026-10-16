@@ -21,7 +21,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | `POST /runs/:id/sign-in/resume` | | After sign-in: captures the stopped pages in that session, then plans (async; watch events) |
 | `POST /runs/:id/sign-in/skip` | | Plans without the stopped pages (async) |
 | `POST /runs/:id/build` | | Start build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." |
-| `POST /runs/:id/stop` | | Stops the run: cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
+| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -32,7 +32,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 ## Phases
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
-`inspecting` pauses in `awaiting_sign_in` when a page leaves the approved scope (usually a redirect to sign in), until the user signs in and resumes, or skips.
+Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
 
 ## Events
 
