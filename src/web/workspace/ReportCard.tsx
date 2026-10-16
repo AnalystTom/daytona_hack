@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { CanvasEvidence } from "../../shared/workspace";
-import type { ReportDissection, ReportFigure } from "../../shared/report";
+import {
+  exactQuoteEvidence,
+  type ReportDissection,
+  type ReportFigure,
+} from "../../shared/report";
 import { useEvidenceSrc } from "./useEvidenceSrc";
 
 const sourceStatus = {
@@ -9,11 +13,13 @@ const sourceStatus = {
   named_not_found: "Source named but not found",
   not_observed: "Not observed",
 };
-const traceStatus = {
-  matches: "Value matches",
-  differs: "Value differs",
-  not_found: "Original value not found online",
-};
+const traceStatus = (
+  figure: ReportFigure,
+  trace?: ReportDissection["traces"][number],
+) =>
+  trace?.status === "matches" && exactQuoteEvidence(figure, trace)
+    ? "Exact source quote match"
+    : "Unverified online";
 const sourceLink = (url: string, quote: string) =>
   `${url.split("#")[0]}#:~:text=${encodeURIComponent(quote.slice(0, 200))}`;
 
@@ -113,6 +119,12 @@ export function ReportCard({
                               : f.status === "inferred"
                                 ? "Inferred"
                                 : "Observed"}
+                            <small>
+                              {traceStatus(
+                                f,
+                                report.traces.find((t) => t.figureId === f.id),
+                              )}
+                            </small>
                           </td>
                         </tr>
                       ))}
@@ -172,14 +184,15 @@ export function ReportCard({
               )}
               {trace && (
                 <div className="report-trace">
-                  <h4>{traceStatus[trace.status]}</h4>
+                  <h4>{traceStatus(figure, trace)}</h4>
                   <p>{trace.reason}</p>
-                  {trace.quote && <blockquote>{trace.quote}</blockquote>}
-                  {trace.status === "differs" && (
-                    <p>
-                      Original source value: {trace.value}; article value:{" "}
-                      {figure.value}
-                    </p>
+                  {trace.quote ? (
+                    <>
+                      <p>Independently captured source quote</p>
+                      <blockquote>{trace.quote}</blockquote>
+                    </>
+                  ) : (
+                    <p>Source quotation not observed.</p>
                   )}
                   {originalSource?.url && (
                     <a
@@ -280,12 +293,6 @@ export function ReportCard({
             Each figure and source has a linked report_figure or report_source
             record. Changes are stored in report_edit.
           </p>
-          <a
-            download={`report-${report.runId}.json`}
-            href={`data:application/json;charset=utf-8,${encodeURIComponent(JSON.stringify(report, null, 2))}`}
-          >
-            Download dissection JSON
-          </a>
         </details>
       </div>
     </article>

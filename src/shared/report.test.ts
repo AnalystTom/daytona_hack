@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ReportDissection } from "./report";
+import { exactQuoteEvidence, ReportDissection } from "./report";
 
 import { reportContractExample } from "./report.test-data";
 
@@ -52,3 +52,19 @@ it("rejects observed sources without a capture hash and exceeded research budget
     }).success,
   ).toBe(false);
 });
+
+it.each([
+  ["2026", "year", "2026 will rise", true],
+  ["2026", "year", "12026 will rise", false],
+  ["2026", "year", "2026.5 will rise", false],
+  ["35", "$ billions", "35", false],
+  ["35", "number", "35 widgets", false],
+])(
+  "requires complete values and explicit units in exact quote evidence",
+  (value, unit, quote, expected) => {
+    const figure = ReportDissection.parse(reportContractExample).figures[0];
+    expect(
+      exactQuoteEvidence({ ...figure, value, unit, quote }, { value, quote }),
+    ).toBe(expected);
+  },
+);
