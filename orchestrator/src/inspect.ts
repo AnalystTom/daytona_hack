@@ -322,7 +322,9 @@ export function backendFacts(html: string, base: string) {
 export async function inspectBackend(
   url: string,
   startId: number,
+  signal?: AbortSignal,
 ): Promise<Capture> {
+  signal?.throwIfAborted();
   const target = new URL(url);
   const page = target.pathname + target.search;
   const origin = target.origin;
@@ -351,8 +353,11 @@ export async function inspectBackend(
     const res = await fetch(url, {
       headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
       redirect: "manual",
+      signal,
     });
+    signal?.throwIfAborted();
     html = await res.text();
+    signal?.throwIfAborted();
     const headers = Object.fromEntries(
       [...res.headers].filter(([k]) => DELIVERY_HEADERS.test(k)),
     );
@@ -367,6 +372,7 @@ export async function inspectBackend(
         kind: "network",
         tool: "fetch",
         status: "observed",
+        routes: [page],
         response: { status: res.status, headers, shape },
         limits:
           "one GET from Cloudflare without a browser session; calls made by client JavaScript were not observed",
@@ -379,6 +385,7 @@ export async function inspectBackend(
       ),
     );
   } catch (e) {
+    signal?.throwIfAborted();
     await add({
       kind: "network",
       tool: "fetch",
@@ -388,6 +395,7 @@ export async function inspectBackend(
     });
   }
 
+  signal?.throwIfAborted();
   const facts = backendFacts(html, url);
   await add(
     {
@@ -406,9 +414,12 @@ export async function inspectBackend(
   );
 
   for (const file of ["/robots.txt", "/sitemap.xml"]) {
+    signal?.throwIfAborted();
     try {
-      const res = await fetch(origin + file, { redirect: "manual" });
+      const res = await fetch(origin + file, { redirect: "manual", signal });
+      signal?.throwIfAborted();
       const body = res.ok ? (await res.text()).slice(0, 200_000) : "";
+      signal?.throwIfAborted();
       const routes = [
         ...new Set(
           [
@@ -428,7 +439,9 @@ export async function inspectBackend(
         },
         res.ok ? JSON.stringify({ file, routes }, null, 1) : undefined,
       );
-    } catch {}
+    } catch {
+      signal?.throwIfAborted();
+    }
   }
 
   // shortcut: REA is not installed in the sandbox yet, so code-level evidence is recorded as not observed; capture it once REA runs there.
@@ -440,5 +453,6 @@ export async function inspectBackend(
       "REA analysis of shipped JavaScript bundles is not available in this build",
     summary: `REA analysis of ${facts.scripts.length} script bundles not run`,
   });
+  signal?.throwIfAborted();
   return { evidence, blobs };
 }

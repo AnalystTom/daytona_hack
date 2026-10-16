@@ -63,10 +63,7 @@ function routesOf(evidence: Evidence[]) {
     ...new Set(
       evidence
         .filter((e) => e.kind === "network")
-        .flatMap((e) => [
-          ...(e.status === "observed" ? [e.page] : []),
-          ...(e.routes ?? []),
-        ]),
+        .flatMap((e) => e.routes ?? []),
     ),
   ].slice(0, MAX_ROUTES);
 }

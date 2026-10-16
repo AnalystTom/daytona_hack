@@ -624,6 +624,7 @@ describe("Run inspection cancellation and recovery", () => {
     const events = structuredClone(ctx.events());
     release.resolve();
     await inspection;
+    expect(requests).toEqual(["https://example.com/"]);
     expect(await run.getState()).toEqual(stopped);
     expect((await run.getState()).phase).toBe("stopped");
     expect(ctx.events()).toEqual(events);

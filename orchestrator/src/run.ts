@@ -761,6 +761,7 @@ export class Run extends DurableObject<Env> {
         const cap = await inspectBackend(
           scope.origin + path,
           this.s.evidence.length + 1,
+          signal,
         );
         signal.throwIfAborted();
         await this.storeEvidence(cap.evidence, cap.blobs);

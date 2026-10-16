@@ -1,5 +1,5 @@
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
-import { inspectBackend } from "./inspect";
+import { inspectBackend, toEvidence } from "./inspect";
 import type { Env, Evidence, Spec, Task } from "./types";
 import { verifyFinal, verifyTask } from "./verifier";
 
@@ -12,6 +12,7 @@ const ev = (id: string, page: string, status: Evidence["status"]) =>
     kind: "network",
     tool: "fetch",
     status,
+    ...(status === "observed" ? { routes: [page] } : {}),
     capturedAt: "",
     hash: "",
     summary: `GET ${page} -> 200 application/json`,
@@ -94,6 +95,51 @@ const env = { ORCHESTRATOR_MODEL: "m" } as Env;
 afterEach(() => vi.unstubAllGlobals());
 
 describe("backend verification", () => {
+  it("keeps all ten observed queries when combined capture adds redacted network labels", async () => {
+    const { requests, inputs } = stub();
+    const captured: Evidence[] = [];
+    for (let id = 1; id <= 10; id++) {
+      const url = `https://site.example/api/articles?id=${id}`;
+      captured.push(
+        toEvidence({
+          id: `anchor_${id}`,
+          runId: "run-1",
+          kind: "network",
+          label: "observed",
+          pageOrState: `/api/articles?id=${id}`,
+          url,
+          tool: "anchor",
+          capturedAt: "",
+          contentHash: "",
+          limitations: [],
+          contentType: "application/json",
+          byteLength: 0,
+        }),
+      );
+      const capture = await inspectBackend(url, captured.length + 1);
+      captured.push(...capture.evidence);
+    }
+    expect(
+      captured.filter((e) => e.tool === "anchor").map((e) => e.page),
+    ).toEqual(Array(10).fill("/api/articles"));
+    const queryTask = { ...task, evidence: captured.map((e) => e.id) };
+    requests.length = 0;
+    await verifyTask(env, spec("both"), captured, queryTask, PREVIEW);
+    await verifyFinal(env, spec("both"), captured, [queryTask], PREVIEW);
+    const expected = Array.from({ length: 10 }, (_, i) => ({
+      url: `${PREVIEW}api/articles?id=${i + 1}`,
+      method: "GET",
+    }));
+    expect(requests.filter((r) => r.url !== PREVIEW)).toEqual([
+      ...expected,
+      ...expected,
+    ]);
+    for (const input of inputs)
+      expect((input.routes as { path: string }[]).map((r) => r.path)).toEqual(
+        expected.map((r) => new URL(r.url).pathname + new URL(r.url).search),
+      );
+  });
+
   it.each(["backend", "both"] as const)(
     "probes decoded HTML endpoints and unchanged script endpoints for %s",
     async (scope) => {

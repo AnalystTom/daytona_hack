@@ -78,7 +78,10 @@ describe("backend crawl routes", () => {
 </urlset>`);
       return new Response("");
     });
-    const { evidence, blobs } = await inspectBackend("https://site.example/", 1);
+    const { evidence, blobs } = await inspectBackend(
+      "https://site.example/",
+      1,
+    );
     const crawlFiles = Object.fromEntries(
       evidence
         .filter((e) => e.kind === "links")
@@ -103,6 +106,106 @@ describe("backend crawl routes", () => {
       ],
     });
   });
+});
+
+describe("backend inspection cancellation", () => {
+  it("does not fetch when inspection is already aborted", async () => {
+    const request = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Unexpected fetch"));
+    const controller = new AbortController();
+    const reason = new DOMException("Stopped", "AbortError");
+    controller.abort(reason);
+    await expect(
+      inspectBackend("https://site.example/", 1, controller.signal),
+    ).rejects.toBe(reason);
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["page", "fetch"],
+    ["page", "body"],
+    ["robots", "fetch"],
+    ["robots", "body"],
+    ["sitemap", "fetch"],
+    ["sitemap", "body"],
+  ] as const)(
+    "propagates abort during %s %s without subsequent requests",
+    async (stage, part) => {
+      const urls = [
+        "https://site.example/",
+        "https://site.example/robots.txt",
+        "https://site.example/sitemap.xml",
+      ];
+      const index = ["page", "robots", "sitemap"].indexOf(stage);
+      const requests: { url: string; signal: RequestInit["signal"] }[] = [];
+      const controller = new AbortController();
+      const reason = new DOMException("Stopped", "AbortError");
+      let entered: () => void = () => {};
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let finish: (() => void) | undefined;
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+        const url = String(input);
+        const signal = init?.signal;
+        requests.push({ url, signal });
+        if (url !== urls[index]) return new Response("");
+        if (part === "fetch")
+          return new Promise<Response>((resolve, reject) => {
+            finish = () => resolve(new Response(""));
+            signal?.addEventListener("abort", () => reject(signal?.reason), {
+              once: true,
+            });
+            entered();
+          });
+        return new Response(
+          new ReadableStream(
+            {
+              pull(stream) {
+                return new Promise<void>((resolve) => {
+                  finish = () => {
+                    if (!signal?.aborted) stream.close();
+                    resolve();
+                  };
+                  signal?.addEventListener(
+                    "abort",
+                    () => {
+                      stream.error(signal?.reason);
+                      resolve();
+                    },
+                    { once: true },
+                  );
+                  entered();
+                });
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        );
+      });
+      const outcome = inspectBackend(urls[0], 1, controller.signal).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      try {
+        await started;
+        controller.abort(reason);
+        finish?.();
+        finish = undefined;
+        expect(await outcome).toBe(reason);
+        expect(requests).toEqual(
+          urls
+            .slice(0, index + 1)
+            .map((url) => ({ url, signal: controller.signal })),
+        );
+      } finally {
+        controller.abort(reason);
+        finish?.();
+        await outcome;
+      }
+    },
+  );
 });
 
 describe("resolveRedirects", () => {
