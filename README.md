@@ -78,7 +78,7 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` requires it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
 
 Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
 A missing or wrong token answers 401.
@@ -167,3 +167,31 @@ Until VM fork is enabled on the account, pods are snapshot copies: the parent is
 To use fork, push the image built from `sandbox/Dockerfile` to a registry and create the snapshot from it with `--image <image> --sandbox-class linux-vm`.
 
 Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo (both open questions in the agent system spec).
+
+## Evidence capture
+
+`src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
+It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
+Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
+Interaction recordings are not captured yet; a full pack keeps the session's page-load recording, and none in a signed-in session.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/v1/runs/:id/capture` | Body `{ mode: "first_look" \| "full_pack", scope: { origin, paths }, signIn?: "start" \| "resume" }`. `first_look` takes a desktop screenshot of each path; `full_pack` adds a mobile screenshot, DOM, styles, assets, network and the recording. `signIn: "start"` returns an Anchor live-view URL where the user signs in themselves; `"resume"` captures in that session. |
+| `GET /api/v1/evidence/:id` | The evidence record (shared `EvidenceRecord` in `src/shared/evidence.ts`). |
+| `GET /api/v1/evidence/:id/content` | The stored file. |
+
+Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason, and so is the session recording, which names the out-of-scope URLs.
+Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
+Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the run API's interim access policy).
+A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
+In a signed-in capture the DOM, assets and network log are stored as `not_observed` until masking exists.
+Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
+
+Worker bindings (secrets, set with `wrangler secret put`):
+
+- `ANCHOR_API_KEY`
+- the run API's `OPERATOR_TOKEN` and `SURREALDB_*` bindings above
+
+Without them the endpoints answer `503` and list the missing names.
+Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's and SurrealDB's documented shapes rather than recorded from live calls.

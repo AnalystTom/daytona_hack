@@ -1,5 +1,4 @@
 import { SurrealRunStore } from "./surreal";
-import type { RunStore } from "./types";
 
 export interface StoreEnv {
   SURREALDB_URL?: string;
@@ -19,7 +18,7 @@ export const surrealBindings = [
 
 export function resolveStore(
   env: StoreEnv,
-): { store: RunStore } | { missing: string[] } {
+): { store: SurrealRunStore } | { missing: string[] } {
   const missing = surrealBindings.filter((name) => !env[name]);
   if (missing.length > 0) return { missing };
   return {

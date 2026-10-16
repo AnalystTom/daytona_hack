@@ -22,6 +22,7 @@ export interface SurrealConfig {
 //   task:[runId, taskId]              latest state of a task, linked to the event that set it
 //   steering:<id>, approval:<id>      linked to the run and to the event that announced them
 //   memory:<id>                       Agent Memory entry with its sources
+//   evidence:<id>, evidence_chunk:<id>_<n>, sign_in:<runId>   evidence capture (src/worker/evidence)
 // The JSON RPC turns datetime-like strings into datetimes (normalising their format), so an
 // event's envelope is kept as JSON text to replay exactly what the producer sent.
 const schema = `
@@ -31,6 +32,9 @@ DEFINE TABLE IF NOT EXISTS task SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS steering SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS approval SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS memory SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS evidence SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS evidence_chunk SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS sign_in SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS event_run_sequence ON event FIELDS run, sequence;
 DEFINE INDEX IF NOT EXISTS task_run ON task FIELDS run;
 DEFINE INDEX IF NOT EXISTS memory_run ON memory FIELDS run;
@@ -105,7 +109,8 @@ export class SurrealRunStore implements RunStore {
     return results.map((r) => r.result);
   }
 
-  private async query(sql: string, vars: Record<string, unknown> = {}) {
+  // Also used by the evidence store, so both share one client and schema.
+  async query(sql: string, vars: Record<string, unknown> = {}) {
     const key = `${this.endpoint} ${this.config.namespace} ${this.config.database}`;
     let ready = schemaReady.get(key);
     if (!ready) {
