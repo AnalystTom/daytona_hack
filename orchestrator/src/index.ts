@@ -122,7 +122,7 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 const ROUTES = [
-  "POST /gateway/capture {runId, url, kind: screenshot|html} (Bearer GATEWAY_TOKEN, from the sandbox; approved pages only)",
+  "POST /gateway/capture {runId, url} -> desktop screenshot png (Bearer GATEWAY_TOKEN, from the sandbox; approved pages only)",
   "POST /gateway/remember {runId, text, observedAt?} / POST /gateway/recall {runId, query} (Bearer GATEWAY_TOKEN)",
   "POST /sandboxes/:id/captain {text} / GET /sandboxes/:id/screen (Bearer OPERATOR_TOKEN, from the backend)",
   "POST /runs {url, goal} -> run state (first look + first chat reply)",

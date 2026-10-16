@@ -144,13 +144,12 @@ export class Run extends DurableObject<Env> {
       : null;
   }
 
-  /** Sandbox gateway capture: only pages in the run's approved scope, recorded as evidence. */
-  async gatewayCapture(url: string, kind: "screenshot" | "html") {
+  /** Sandbox gateway screenshot: only pages in the run's approved scope, recorded as evidence. */
+  async gatewayCapture(url: string) {
     if (!this.s) return { status: 404, error: "run not found" };
     const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
     if (!inScope(url, scope))
       return { status: 403, error: "url is outside the run's approved scope" };
-    if (kind === "html") return pageHtml(this.env, url);
     const result = await this.capture({
       mode: "first_look",
       scope: { origin: scope.origin, paths: [new URL(url).pathname] },

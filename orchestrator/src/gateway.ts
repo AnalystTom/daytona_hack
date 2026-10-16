@@ -26,25 +26,15 @@ export async function handleGateway(
   const scope = `org/reversy/run/${String(body.runId || "local").slice(0, 40)}`;
   switch (path[0]) {
     case "capture": {
-      // {runId, url, kind: "screenshot"|"html"}: only pages in the run's approved scope
+      // {runId, url}: a desktop screenshot of a page in the run's approved scope
       if (!body.runId || !/^https?:\/\//.test(body.url || ""))
         return json({ error: "runId and url required" }, 400);
       const run = env.RUNS.get(env.RUNS.idFromName(String(body.runId))) as any;
-      const out = await run.gatewayCapture(
-        body.url,
-        body.kind === "html" ? "html" : "screenshot",
-      );
+      const out = await run.gatewayCapture(body.url);
       if (out.error) return json({ error: out.error }, out.status);
-      return out.png
-        ? new Response(out.png, {
-            headers: { "Content-Type": "image/png", "X-Tool": "anchor" },
-          })
-        : new Response(out.html, {
-            headers: {
-              "Content-Type": "text/html; charset=utf-8",
-              "X-Tool": out.tool,
-            },
-          });
+      return new Response(out.png, {
+        headers: { "Content-Type": "image/png", "X-Tool": "anchor" },
+      });
     }
     case "remember":
       // {text, observedAt?} — an observation or decision with its sources written into the text
