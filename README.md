@@ -1,6 +1,7 @@
 # Reversy
 
 Reversy takes a site apart and rebuilds it with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
+Start with a URL and goal; the [run scope and data policy](docs/spec.md#5-run-scope-and-first-demo-target) apply to each brief.
 
 This repository is one TypeScript project deployed as a single Cloudflare Worker named `reversy`:
 

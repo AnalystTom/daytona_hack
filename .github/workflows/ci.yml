@@ -23,7 +23,7 @@ jobs:
       - run: npm test
       - run: npm run build
 
-  # The orchestrator's tests run with the root suite; typecheck and a dry-run bundle catch build breaks.
+  # Orchestrator tests run in the root ci job; this job adds its typecheck and dry-run bundle.
   orchestrator:
     runs-on: ubuntu-latest
     defaults:

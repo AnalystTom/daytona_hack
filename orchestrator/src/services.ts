@@ -165,3 +165,12 @@ export async function pageHtml(
   });
   return { html: await res.text(), tool: "fetch" };
 }
+
+export async function sha256(data: string | ArrayBuffer): Promise<string> {
+  const buf = typeof data === "string" ? new TextEncoder().encode(data) : data;
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 16);
+}

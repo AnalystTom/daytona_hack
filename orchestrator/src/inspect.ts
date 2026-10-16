@@ -20,7 +20,17 @@ import {
 } from "../../src/worker/evidence/store";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { resolveStore } from "../../src/worker/store";
+import { decodeXML } from "entities";
+import { Parser } from "htmlparser2";
+import { sha256 } from "./services";
 import type { Env, Evidence } from "./types";
+
+export interface Capture {
+  evidence: Evidence[];
+  blobs: Record<string, ArrayBuffer | string>;
+}
+
+const now = () => new Date().toISOString();
 
 export function routesFrom(html: string, base: string): string[] {
   const origin = new URL(base).origin;
@@ -219,4 +229,230 @@ export function outline(html: string, max = 12000): string {
     .replace(/\s(class|style|data-[a-z-]+)="[^"]*"/g, "")
     .replace(/\s+/g, " ")
     .slice(0, max);
+}
+
+/** Keys and value types of a JSON value, never its content. */
+export function shapeOf(v: unknown, depth = 0): unknown {
+  if (Array.isArray(v)) return v.length ? [shapeOf(v[0], depth + 1)] : [];
+  if (v && typeof v === "object") {
+    if (depth > 3) return "object";
+    return Object.fromEntries(
+      Object.entries(v)
+        .slice(0, 30)
+        .map(([k, x]) => [k, shapeOf(x, depth + 1)]),
+    );
+  }
+  return v === null ? "null" : typeof v;
+}
+
+export const DELIVERY_HEADERS =
+  /^(content-type|cache-control|age|etag|last-modified|vary|server|via|x-cache|cf-cache-status|x-powered-by|content-encoding|location|access-control-allow-origin|strict-transport-security|content-security-policy)$/i;
+
+/** What the HTML tells about the back end: bundles, API URLs it references, embedded data. */
+export function backendFacts(html: string, base: string) {
+  const abs = (u: string) => {
+    try {
+      return new URL(u, base).toString();
+    } catch {
+      return "";
+    }
+  };
+  const scripts = new Set<string>();
+  const endpoints = new Set<string>();
+  const addEndpoint = (value: string) => {
+    if (
+      /^(?:https?:\/\/[^/\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b/.test(
+        value,
+      )
+    ) {
+      const url = abs(value);
+      if (url) endpoints.add(url);
+    }
+  };
+  const findEndpoints = (text: string) => {
+    for (const m of text.matchAll(
+      /["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b[^"'`\s<>]*)["'`]/g,
+    ))
+      addEndpoint(m[1]);
+  };
+  const data: { type: string; shape: unknown }[] = [];
+  let script: { type: string; text: string } | undefined;
+  new Parser({
+    onopentag(name, attrs) {
+      for (const value of Object.values(attrs)) {
+        addEndpoint(value);
+        findEndpoints(value);
+      }
+      if (name === "script") {
+        if (attrs.src) {
+          const url = abs(attrs.src);
+          if (url) scripts.add(url);
+        }
+        script = { type: attrs.type || "", text: "" };
+      }
+    },
+    ontext(text) {
+      if (script) script.text += text;
+    },
+    onclosetag(name) {
+      if (name !== "script" || !script) return;
+      findEndpoints(script.text);
+      if (
+        /^application\/(?:ld\+)?json$/.test(script.type) &&
+        data.length < 10
+      ) {
+        try {
+          data.push({
+            type: script.type,
+            shape: shapeOf(JSON.parse(script.text)),
+          });
+        } catch {}
+      }
+      script = undefined;
+    },
+  }).end(html);
+  return {
+    scripts: [...scripts].slice(0, 40),
+    endpoints: [...endpoints].slice(0, 40),
+    data,
+  };
+}
+
+/** Back-end evidence for one route: the response itself, the APIs it points at, crawl files, code analysis. */
+export async function inspectBackend(
+  url: string,
+  startId: number,
+  signal?: AbortSignal,
+): Promise<Capture> {
+  signal?.throwIfAborted();
+  const target = new URL(url);
+  const page = target.pathname + target.search;
+  const origin = target.origin;
+  const evidence: Evidence[] = [];
+  const blobs: Capture["blobs"] = {};
+  let n = startId;
+  const id = () => `ev_${String(n++).padStart(3, "0")}`;
+  const add = async (
+    e: Omit<Evidence, "id" | "page" | "capturedAt" | "hash" | "path">,
+    blob?: string,
+  ) => {
+    const eid = id();
+    if (blob) blobs[eid] = blob;
+    evidence.push({
+      id: eid,
+      page,
+      capturedAt: now(),
+      hash: blob ? await sha256(blob) : "",
+      ...(blob ? { path: `evidence/${eid}.json` } : {}),
+      ...e,
+    });
+  };
+
+  let html = "";
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      redirect: "manual",
+      signal,
+    });
+    signal?.throwIfAborted();
+    html = await res.text();
+    signal?.throwIfAborted();
+    const headers = Object.fromEntries(
+      [...res.headers].filter(([k]) => DELIVERY_HEADERS.test(k)),
+    );
+    let shape: unknown;
+    if (headers["content-type"]?.includes("json")) {
+      try {
+        shape = shapeOf(JSON.parse(html));
+      } catch {}
+    }
+    await add(
+      {
+        kind: "network",
+        tool: "fetch",
+        status: "observed",
+        routes: [page],
+        response: { status: res.status, headers, shape },
+        limits:
+          "one GET from Cloudflare without a browser session; calls made by client JavaScript were not observed",
+        summary: `GET ${page} -> ${res.status} ${headers["content-type"] || ""} (${Math.round(html.length / 1024)} KB)`,
+      },
+      JSON.stringify(
+        { request: { method: "GET", url }, status: res.status, headers },
+        null,
+        1,
+      ),
+    );
+  } catch (e) {
+    signal?.throwIfAborted();
+    await add({
+      kind: "network",
+      tool: "fetch",
+      status: "not_observed",
+      limits: `request failed: ${String(e)}`.slice(0, 300),
+      summary: `GET ${page} could not be observed`,
+    });
+  }
+
+  signal?.throwIfAborted();
+  const facts = backendFacts(html, url);
+  await add(
+    {
+      kind: "network",
+      tool: "fetch",
+      status: "inferred",
+      limits:
+        "API URLs referenced in the HTML were not called; embedded JSON shows keys and types only",
+      summary: `${facts.endpoints.length} API URLs referenced, ${facts.data.length} embedded data blocks, ${facts.scripts.length} script bundles`,
+      routes: facts.endpoints
+        .map((u) => new URL(u))
+        .filter((u) => u.origin === origin)
+        .map((u) => u.pathname + u.search),
+    },
+    JSON.stringify(facts, null, 1),
+  );
+
+  for (const file of ["/robots.txt", "/sitemap.xml"]) {
+    signal?.throwIfAborted();
+    try {
+      const res = await fetch(origin + file, { redirect: "manual", signal });
+      signal?.throwIfAborted();
+      const body = res.ok ? (await res.text()).slice(0, 200_000) : "";
+      signal?.throwIfAborted();
+      const routes = [
+        ...new Set(
+          [
+            ...body.matchAll(/<loc>([^<]+)<\/loc>|^(?:dis)?allow:\s*(\S+)/gim),
+          ].map((m) => (m[1] ? decodeXML(m[1]) : m[2]).trim()),
+        ),
+      ].slice(0, 200);
+      await add(
+        {
+          kind: "links",
+          tool: "fetch",
+          status: res.ok ? "observed" : "not_observed",
+          limits: res.ok ? "listed routes only" : `HTTP ${res.status}`,
+          summary: res.ok
+            ? `${file}: ${routes.length} routes`
+            : `${file} not available`,
+        },
+        res.ok ? JSON.stringify({ file, routes }, null, 1) : undefined,
+      );
+    } catch {
+      signal?.throwIfAborted();
+    }
+  }
+
+  // shortcut: REA is not installed in the sandbox yet, so code-level evidence is recorded as not observed; capture it once REA runs there.
+  await add({
+    kind: "code",
+    tool: "rea",
+    status: "not_observed",
+    limits:
+      "REA analysis of shipped JavaScript bundles is not available in this build",
+    summary: `REA analysis of ${facts.scripts.length} script bundles not run`,
+  });
+  signal?.throwIfAborted();
+  return { evidence, blobs };
 }

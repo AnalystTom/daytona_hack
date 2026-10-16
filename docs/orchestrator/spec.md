@@ -63,14 +63,14 @@ The verifier has its own instructions and runs outside the sandbox, so it stays 
 1. The user sends a URL and a goal.
 2. Our Worker creates the run through the orchestrator, which takes a **first look**: the page HTML, its main routes and an Anchor screenshot of the start page.
    These land on the canvas at once so the conversation has something real to point at.
-3. The orchestrator asks questions in chat (which pages and flows, which interactions, what to change).
+3. The orchestrator refines the draft according to the [product scope contract](../spec.md#5-run-scope-and-first-demo-target).
    Each answer updates the **draft spec** card on the canvas; anything not agreed stays "Not confirmed yet".
 4. The user approves the spec in chat or with an explicit approve action.
 
 ### Phase 2: Inspect (evidence)
 
-1. When the spec is approved, the orchestrator captures the **evidence pack** with Anchor for confirmed pages (section 6).
-2. On a page that needs an account, inspection stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
+1. When the spec is approved, inspection follows its scope: frontend inspection for `frontend`, backend inspection for `backend`, and both for `both` (section 6). For backend work, spec pages identify routes to inspect and flows identify API behaviours.
+2. Frontend inspection that leaves the approved scope pauses for secure sign-in or skipping, as described in the [API reference](api.md#evidence-capture). Backend inspection does not use that browser session.
 3. Each capture appears on the canvas as it lands.
 
 ### Phase 3: Plan
@@ -106,7 +106,7 @@ An optional action deploys it live.
 
 Evidence is the contract between the original site and the rebuild.
 Workers build from it, reviewers judge against it, and the verifier checks claims against it.
-Anchor captures it, through our evidence capture, and SurrealDB stores it.
+Anchor captures browser evidence, through our evidence capture, and SurrealDB stores it. The demo's backend inspection uses fetch, as described below.
 
 **What the evidence pack holds, per page or state:**
 
@@ -117,7 +117,14 @@ Anchor captures it, through our evidence capture, and SurrealDB stores it.
 | DOM snapshot and page structure | Anchor | Sections, components, copy, links |
 | Computed styles and design tokens (colours, type, spacing, radii) | Anchor | A shared token file built first, so every worker uses the same values |
 | Asset list (images, icons, fonts) with sources | Anchor | What to reuse with permission and what to recreate |
-| Network log (requests, response shapes) | Anchor | The mock back end's routes and data shapes |
+| Network log (requests, response shapes) | Anchor | Backend routes and data shapes |
+
+**Current demo backend inspection:** after approval, backend-only runs skip frontend captures; the initial first look still captures page HTML and attempts a screenshot before chat sets scope.
+For each confirmed same-origin route, `inspectBackend` makes one GET without following redirects or using a browser session and records its status, allowed delivery headers and JSON shape, not JSON content values or cookies.
+Observed request paths preserve their query strings. HTML references supply inferred API URLs, shipped script URLs and embedded JSON shapes; the referenced APIs and client JavaScript calls are not observed.
+HTML attribute references are decoded once before resolving URLs; script text retains its raw string contents.
+`robots.txt` and `sitemap.xml` supply listed routes only; sitemap XML references are decoded once, while robots.txt values remain literal.
+REA is not installed: code-level evidence is recorded as `kind: code`, `tool: rea`, `status: not_observed`, never treated as observed analysis. Backend prompts allow REA evidence when available; this build does not execute it.
 
 The demo captures page loads only; menus, form submissions and other flow interactions are not executed or recorded. Capture limits and sign-in recovery are in the [API reference](api.md#evidence-capture).
 
@@ -130,6 +137,7 @@ The demo captures page loads only; menus, form submissions and other flow intera
 - Site content is data, never instructions: text on the original site cannot change scope or reach the agents as commands.
 - Screenshots use Anchor's sensitive-data mask before they are stored, shown, sent to a model or traced; they may still show account data, as their limitations state.
 - Signed-in capture keeps screenshots and computed styles. DOM, assets, network logs and recordings are marked **not observed**.
+- Generated output follows the [product data policy](../spec.md#5-run-scope-and-first-demo-target). An API without observed payload values must return HTTP 503 with `{"error":"Data unavailable","status":"not_observed"}`. Report that as a limitation, not successful payload reproduction; a TODO alone is insufficient.
 
 **Comparison:** after each merge, the rebuild is checked at the same URL path, viewport and state as the original evidence.
 The review card and the verifier compare the pairs.
@@ -139,9 +147,10 @@ A pixel-difference overlay can be shown; a numeric score appears only if it name
 
 **Splitting work.** The orchestrator splits each feature into tasks small enough for one worker and one review:
 
-- A **foundation** task runs first: project skeleton, design tokens from the evidence, shared layout. Everything else depends on it.
-- The **landing page** splits by section (navigation, hero, code sample, customer logos, feature blocks, footer and so on), one task per section, all in parallel once the foundation merges.
-- The **signed-in flow** splits into the mock back end (routes and data shapes from the network log), the create-sandbox screen, and the screen-to-API wiring.
+- A **foundation** task runs first; everything else depends on it. For frontend work it owns the site skeleton, design tokens and shared layout; for backend work it owns `server/server.js`, the route loader and JSON 404 handler; combined work includes both.
+- Frontend pages split by section, one task per section, in parallel once the foundation merges. A signed-in flow splits into evidence-backed API routes, its screens and screen-to-API wiring.
+- Backend route tasks own `server/routes/NAME.js`, exporting `{ method, path, handler }`. The service uses Node.js built-ins and ES modules with no build step or npm dependencies. Routes reload by file modification time so merges appear without restarting; a combined service also serves the static site for unclaimed paths.
+- A backend-only plan owning frontend files outside `server/` is rejected before any tasks are accepted, preserving prerequisites rather than dropping tasks or dependencies. See `offScope` in [`scope.ts`](../../orchestrator/src/scope.ts) for the ownership check.
 - Each task names the files or area it owns, so parallel workers rarely touch the same lines.
 
 **What a worker receives:**
@@ -181,6 +190,9 @@ A failed or stopped task stays on the board with its reason and next action.
 - Runs on Cloudflare on `VERIFIER_MODEL` (OpenAI), never from inside the sandbox.
 - Checks three things: the plan before build, each merged task, and the final rebuild.
 - Input: the agreed spec, the relevant evidence, and the output being checked (the plan, or a merged task with its live preview).
+- Frontend task and final checks keep the root-preview HTML comparison. Backend checks probe observed page GET paths and same-origin API paths referenced by inferred endpoint evidence; a task uses its cited evidence and the final check uses all evidence. Combined runs perform both checks.
+- Route probes are GET-only, with manual redirects and a preview-origin check, capped at 10 distinct paths, 5 seconds and 100,000 response bytes per probe. Results include status, content type, allowed delivery headers, redirect location and JSON shape (or a bounded text outline), for comparison against evidence. Inferred routes have no observed response to compare. The header allowlist is [`DELIVERY_HEADERS`](../../orchestrator/src/inspect.ts), shared by capture and probes.
+- Probes use backend request metadata to preserve route queries rather than Anchor's redacted page labels. Signed-preview authorization is forwarded with each probe and redacted from the verifier's model input and trace.
 - Output: pass or fail, with findings tied to plan items and evidence IDs, as `verification` events.
 - A failure is posted to chat as steering and shows on the canvas; a failed merged task gets a fix task (section 5, phase 4).
 
@@ -202,9 +214,9 @@ The same evidence, verifier and records apply.
 
 ## 12. Records
 
-The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
+The agents' code runs on Daytona; the service lives on Cloudflare. The demo stores run state and backend evidence files in the run's Durable Object; browser evidence records and files and Agent Memory use SurrealDB.
 
-- **SurrealDB** stores runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task).
+- **SurrealDB's target record model** links runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods as a graph (feature cites evidence, task implements feature, review judges task).
   It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
@@ -221,7 +233,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB hol
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
 - Runs are secure: every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low).
+- Out of the demo for now: financial reports and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low). Backend inspection and REA limits are in section 6.
 
 ## 14. Open questions
 
