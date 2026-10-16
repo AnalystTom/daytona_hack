@@ -76,7 +76,6 @@ export async function ownedSessions(
       (_session, index) => confirmed[index]?.ok === true,
     );
   }
-  write(SESSIONS_KEY, sessions);
   return { ok: true, value: sessions };
 }
 

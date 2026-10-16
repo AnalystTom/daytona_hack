@@ -24,11 +24,12 @@ describe("sessions", () => {
       target: "https://alice.example/private",
       phase: "building",
     });
+    const cached = listSessions();
     const fetchImpl = vi.fn<typeof fetch>(async () =>
       Response.json([{ id: "bob-run", createdAt: "2026-10-16T12:00:00Z" }]),
     );
     expect(await ownedSessions(fetchImpl)).toEqual({ ok: true, value: [] });
-    expect(listSessions()).toEqual([]);
+    expect(listSessions()).toEqual(cached);
     rememberSession({
       runId: "bob-run",
       target: "https://bob.example/",
@@ -66,6 +67,7 @@ describe("sessions", () => {
   it("confirms cached runs individually for the operator API without history support", async () => {
     rememberSession({ runId: "allowed", target: "https://allowed.example" });
     rememberSession({ runId: "missing", target: "https://missing.example" });
+    const cached = listSessions();
     const fetchImpl = vi.fn<typeof fetch>(async (input) =>
       input === "/api/v1/runs/allowed"
         ? Response.json({ id: "allowed" })
@@ -74,8 +76,59 @@ describe("sessions", () => {
     const result = await ownedSessions(fetchImpl);
     expect(result.ok && result.value.map((s) => s.runId)).toEqual(["allowed"]);
     expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(listSessions().map((s) => s.runId)).toEqual(["allowed"]);
+    expect(listSessions()).toEqual(cached);
   });
+
+  it.each(["access", "operator"] as const)(
+    "preserves another tab's additions and updates during %s validation",
+    async (mode) => {
+      rememberSession(
+        { runId: "existing", target: "https://old.example", phase: "brief" },
+        1,
+      );
+      let entered!: () => void;
+      let release!: (response: Response) => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const waiting = new Promise<Response>((resolve) => {
+        release = resolve;
+      });
+      const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+        if (mode === "operator" && input === "/api/v1/runs")
+          return new Response(null, { status: 404 });
+        entered();
+        return waiting;
+      });
+      const validating = ownedSessions(fetchImpl);
+      await started;
+      rememberSession(
+        { runId: "new-run", target: "https://new.example", phase: "brief" },
+        2,
+      );
+      rememberSession(
+        {
+          runId: "existing",
+          target: "https://updated.example",
+          phase: "building",
+        },
+        3,
+      );
+      const concurrent = listSessions();
+      release(
+        Response.json(
+          mode === "access"
+            ? [{ id: "existing", createdAt: "2026-10-16T12:00:00Z" }]
+            : { id: "existing" },
+        ),
+      );
+      const result = await validating;
+      expect(result.ok && result.value.map((session) => session.runId)).toEqual(
+        ["existing"],
+      );
+      expect(listSessions()).toEqual(concurrent);
+    },
+  );
 
   it("removes a refused run and its layout while retaining other sessions", () => {
     rememberSession({ runId: "refused", target: "https://private.example" });

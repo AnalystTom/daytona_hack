@@ -210,6 +210,7 @@ describe("workspace ownership", () => {
       target: "https://bob.example/",
       phase: "done",
     });
+    const cached = listSessions();
     let resolve!: (response: Response) => void;
     vi.stubGlobal(
       "fetch",
@@ -234,7 +235,7 @@ describe("workspace ownership", () => {
     expect(html).toContain("bob.example");
     expect(html).toContain("Build finished");
     expect(html).not.toContain("alice");
-    expect(listSessions().map((session) => session.runId)).toEqual(["bob-run"]);
+    expect(listSessions()).toEqual(cached);
   });
 
   it("clears retained chat, target, layout and canvas on ownership refusal and ignores a late message reply", async () => {
