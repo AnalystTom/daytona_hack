@@ -175,6 +175,23 @@ describe("run sandbox lifecycle", () => {
     expect(calls).toEqual(["session sb1 /opt/reversy/sandbox/boot.sh"]);
   });
 
+  it("boots a started sandbox that was never booted", async () => {
+    const { deps, calls } = fakeDaytona();
+    await startRunSandbox(deps, env);
+    const exec = deps.daytona.exec;
+    let unknown = true;
+    deps.daytona.exec = async (id, command, options) => {
+      if (command.endsWith("status.sh") && unknown) {
+        unknown = false;
+        return { exitCode: 0, result: "unknown\n" };
+      }
+      return exec(id, command, options);
+    };
+    calls.length = 0;
+    expect((await startRunSandbox(deps, env)).boot).toBe("ready");
+    expect(calls).toEqual(["session sb1 /opt/reversy/sandbox/boot.sh"]);
+  });
+
   it("marks a boot that could not start failed, so the next start retries it", async () => {
     const { deps, calls } = fakeDaytona();
     await startRunSandbox(deps, env);

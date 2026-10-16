@@ -3,6 +3,7 @@ import type { EventEnvelope } from "../../shared/contracts";
 import { ApiError } from "../../shared/runs";
 import { MemoryRunStore } from "../store/memory";
 import type { RunStore } from "../store/types";
+import { runBridgeToken } from "../daytona/bridge-token";
 import { handleRunsApi, type RunsEnv } from "./api";
 
 const env: RunsEnv = {
@@ -10,6 +11,9 @@ const env: RunsEnv = {
   OPERATOR_TOKEN: "operator-secret",
 };
 const bridge = { authorization: "Bearer bridge-secret" };
+const bridgeFor = async (runId: string) => ({
+  authorization: `Bearer ${await runBridgeToken("bridge-secret", runId)}`,
+});
 const operator = { authorization: "Bearer operator-secret" };
 const memoryStore = new MemoryRunStore();
 const fast = { pollMs: 5, heartbeatMs: 1000, maxMs: 5000 };
@@ -57,8 +61,16 @@ const envelope = (
   ...extra,
 });
 
-const postEvents = (runId: string, json: unknown, headers = bridge) =>
-  call(`/runs/${runId}/events`, { method: "POST", headers, json });
+const postEvents = async (
+  runId: string,
+  json: unknown,
+  headers?: Record<string, string>,
+) =>
+  call(`/runs/${runId}/events`, {
+    method: "POST",
+    headers: headers ?? (await bridgeFor(runId)),
+    json,
+  });
 
 const expectError = async (
   response: Response,
@@ -270,6 +282,21 @@ describe("bridge events", () => {
       401,
       "unauthorized",
     );
+    await expectError(
+      await postEvents(runId, envelope(runId, "a"), bridge),
+      401,
+      "unauthorized",
+    );
+    const otherRun = await createRun();
+    await expectError(
+      await postEvents(runId, envelope(runId, "a"), await bridgeFor(otherRun)),
+      401,
+      "unauthorized",
+    );
+    expect(
+      (await postEvents(runId, envelope(runId, "a"), await bridgeFor(runId)))
+        .status,
+    ).toBeLessThan(300);
   });
 
   it("validates envelopes against the shared contract and the run", async () => {
@@ -360,7 +387,8 @@ describe("GET /runs/:id/events", () => {
 describe("Agent Memory", () => {
   it("writes and reads observations and decisions with sources", async () => {
     const runId = await createRun();
-    const write = (json: unknown, headers = bridge) =>
+    const runBridge = await bridgeFor(runId);
+    const write = (json: unknown, headers = runBridge) =>
       call(`/runs/${runId}/memory`, { method: "POST", headers, json });
     expect(
       (
@@ -392,8 +420,13 @@ describe("Agent Memory", () => {
       "unauthorized",
     );
 
+    await expectError(
+      await call(`/runs/${runId}/memory?kind=decision`, { headers: bridge }),
+      401,
+      "unauthorized",
+    );
     const read = await call(`/runs/${runId}/memory?kind=decision`, {
-      headers: bridge,
+      headers: runBridge,
     });
     expect(await read.json()).toMatchObject({
       entries: [
@@ -405,7 +438,7 @@ describe("Agent Memory", () => {
       ],
     });
     await expectError(
-      await call(`/runs/${runId}/memory?kind=nope`, { headers: bridge }),
+      await call(`/runs/${runId}/memory?kind=nope`, { headers: runBridge }),
       400,
       "invalid_request",
     );

@@ -77,7 +77,7 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_DATABASE` | Database inside that namespace (it must already exist) |
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
-| `BRIDGE_TOKEN` | Shared secret the sandbox bridge sends as `Authorization: Bearer <token>` |
+| `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
 | `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` requires it as `Authorization: Bearer <token>` |
 
 Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
@@ -125,7 +125,7 @@ The SDK itself is not bundled because it depends on Node-only packages that the 
 
 A route whose bindings are missing answers 503 and lists them by name; a caller without the right token gets 401.
 Other Worker code can call the lifecycle functions in `lifecycle.ts` directly instead of going through these routes.
-Bridge posting needs the run API's events endpoint to verify that per-run token (derive it with `runBridgeToken` for the run id in the URL); until that integration change lands, the endpoint rejects bridge posts.
+The run API's bridge routes derive that same token for the run id in the URL, so a run's token works only for that run.
 Secrets reach the sandbox through the toolbox at boot (`sandbox/save-env.sh`, owner-only files), never through Daytona's sandbox metadata or the snapshot.
 
 ### Routes

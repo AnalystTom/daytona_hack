@@ -131,8 +131,8 @@ export async function startRunSandbox(
   const existing = await findRunSandbox(deps, env.runId);
   if (existing?.state === "started") {
     const current = await summarize(deps, env.runId, existing);
-    if (current.boot !== "failed") return current;
-    // boot.sh is idempotent, so a failed boot is retried in place.
+    if (current.boot === "running" || current.boot === "ready") return current;
+    // boot.sh is idempotent, so a failed or never-started boot is retried in place.
     await boot(deps, existing.id, env);
     return summarize(deps, env.runId, existing);
   }
