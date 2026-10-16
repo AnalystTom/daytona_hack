@@ -7,7 +7,7 @@ const surreal = {
   SURREALDB_URL: "https://db.example.test",
   SURREALDB_NAMESPACE: "reversy",
   SURREALDB_DATABASE: "main",
-  SURREALDB_USERNAME: "user",
+  SURREALDB_USER: "user",
   SURREALDB_PASSWORD: "pass",
 };
 const body = {
@@ -37,7 +37,7 @@ describe("evidence routes", () => {
         "ANCHOR_API_KEY",
         "SURREALDB_NAMESPACE",
         "SURREALDB_DATABASE",
-        "SURREALDB_USERNAME",
+        "SURREALDB_USER",
         "SURREALDB_PASSWORD",
       ],
     });

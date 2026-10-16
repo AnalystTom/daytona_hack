@@ -192,7 +192,7 @@ Worker bindings (secrets, set with `wrangler secret put`):
 - `SURREALDB_URL` (the SurrealDB HTTP base URL; requests go to its `/rpc` endpoint)
 - `SURREALDB_NAMESPACE`
 - `SURREALDB_DATABASE`
-- `SURREALDB_USERNAME`
+- `SURREALDB_USER`
 - `SURREALDB_PASSWORD`
 
 Without them the endpoints answer `503` and list the missing names.

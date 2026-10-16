@@ -7,7 +7,7 @@ export const surrealBindings = [
   "SURREALDB_URL",
   "SURREALDB_NAMESPACE",
   "SURREALDB_DATABASE",
-  "SURREALDB_USERNAME",
+  "SURREALDB_USER",
   "SURREALDB_PASSWORD",
 ] as const;
 type SurrealEnv = Record<(typeof surrealBindings)[number], string>;
@@ -57,7 +57,7 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
     "Content-Type": "application/json",
     "Surreal-NS": env.SURREALDB_NAMESPACE,
     "Surreal-DB": env.SURREALDB_DATABASE,
-    Authorization: `Basic ${btoa(`${env.SURREALDB_USERNAME}:${env.SURREALDB_PASSWORD}`)}`,
+    Authorization: `Basic ${btoa(`${env.SURREALDB_USER}:${env.SURREALDB_PASSWORD}`)}`,
   };
 
   // Runs one statement and returns its result rows.
