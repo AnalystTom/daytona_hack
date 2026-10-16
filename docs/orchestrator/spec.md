@@ -214,9 +214,9 @@ The same evidence, verifier and records apply.
 
 ## 12. Records
 
-The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
+The agents' code runs on Daytona; the service lives on Cloudflare. The demo stores run state and backend evidence files in the run's Durable Object; browser evidence records and files and Agent Memory use SurrealDB.
 
-- **SurrealDB** stores runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task).
+- **SurrealDB's target record model** links runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods as a graph (feature cites evidence, task implements feature, review judges task).
   It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
