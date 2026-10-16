@@ -3,7 +3,7 @@ import { version } from "../../package.json";
 import worker from "./index";
 
 const call = (path: string) =>
-  worker.fetch(new Request(`https://reversy.test${path}`));
+  worker.fetch(new Request(`https://reversy.test${path}`), {});
 
 describe("worker", () => {
   it("reports health with the package version", async () => {

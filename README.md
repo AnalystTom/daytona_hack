@@ -31,6 +31,21 @@ npm run dev
 | `npm test` | Runs the Vitest tests |
 | `npm run deploy` | Builds, then runs `wrangler deploy` |
 
+## Worker bindings
+
+| Binding | Used by | Without it |
+|---|---|---|
+| `ANTHROPIC_API_KEY` (secret) | The verifier, `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
+
+Set a secret with `npx wrangler secret put <NAME>`.
+
+## Verifier
+
+`POST /api/v1/runs/:id/verify` checks the orchestrator's output with `claude-opus-5-5` at high effort (`docs/orchestrator/spec.md` section 7).
+The body is `{kind: "plan" | "task" | "final", spec, evidence, findings, screenshots, plan}`, plus `task` for `kind: "task"` and `rebuildEvidenceIds` for `kind: "final"`; the schemas are in `src/shared/verifier.ts`.
+It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs.
+A model error, refusal, truncated reply or malformed verdict returns 502, never a pass.
+
 ## Deploy
 
 GitHub Actions (`.github/workflows/ci.yml`) runs format, lint, typecheck, test and build on every pull request and push.
