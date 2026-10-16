@@ -12,6 +12,7 @@ export interface Env extends StoreEnv {
   ORCHESTRATOR_MODEL: string;
   VERIFIER_MODEL?: string;
   WORKER_MODEL: string;
+  WORKER_EFFORT?: string;
   MAX_WORKERS: string;
   RUN_MAX_MINUTES?: string; // a run is stopped this long after it started (default 120)
   SPECTRON_URL?: string;
