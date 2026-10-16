@@ -48,6 +48,8 @@ const evidenceList = (evidence: Evidence[]) =>
     status: e.status,
     summary: e.summary,
     limits: e.limits,
+    routes: e.routes,
+    response: e.response,
   }));
 
 const MAX_ROUTES = 10;
@@ -74,7 +76,10 @@ async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
   return Promise.all(
     routes.map(async (path) => {
       try {
-        const res = await fetch(new URL(path, previewUrl), {
+        const url = new URL(path, previewUrl);
+        if (url.origin !== new URL(previewUrl).origin)
+          return { path, error: "route leaves the preview origin" };
+        const res = await fetch(url, {
           redirect: "manual",
           signal: AbortSignal.timeout(PROBE_MS),
         });
@@ -85,7 +90,9 @@ async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
         while (reader && size < PROBE_BYTES) {
           const { done, value } = await reader.read();
           if (done) break;
-          text += decoder.decode(value, { stream: true });
+          text += decoder.decode(value.subarray(0, PROBE_BYTES - size), {
+            stream: true,
+          });
           size += value.length;
         }
         await reader?.cancel();

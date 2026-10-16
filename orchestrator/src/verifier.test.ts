@@ -18,7 +18,14 @@ const ev = (id: string, page: string, status: Evidence["status"]) =>
   }) as Evidence;
 
 const evidence = [
-  ev("ev_001", "/api/articles", "observed"),
+  {
+    ...ev("ev_001", "/api/articles", "observed"),
+    response: {
+      status: 200,
+      headers: { "content-type": "application/json" },
+      shape: { items: [{ id: "number", title: "string" }], total: "number" },
+    },
+  },
   ev("ev_002", "/api/search", "observed"),
   {
     ...ev("ev_003", "/api/articles", "inferred"),
@@ -74,6 +81,9 @@ describe("backend verification", () => {
       { url: `${PREVIEW}api/v1/articles?id=1`, method: "GET" },
     ]);
     expect(inputs[0].previewHtml).toBe("");
+    expect(inputs[0].evidence).toContainEqual(
+      expect.objectContaining({ id: "ev_001", response: evidence[0].response }),
+    );
     expect(inputs[0].routes).toEqual([
       {
         path: "/api/articles",
@@ -122,5 +132,38 @@ describe("backend verification", () => {
     await verifyTask(env, spec("frontend"), evidence, task, PREVIEW);
     expect(requests.map((r) => r.url)).toEqual([PREVIEW]);
     expect(inputs[0].routes).toEqual([]);
+  });
+
+  it("does not follow protocol-relative evidence paths outside the preview", async () => {
+    const { requests, inputs } = stub();
+    await verifyTask(
+      env,
+      spec("backend"),
+      [ev("ev_001", "//elsewhere.example/api", "observed")],
+      task,
+      PREVIEW,
+    );
+    expect(requests).toEqual([]);
+    expect(inputs[0].routes).toEqual([
+      {
+        path: "//elsewhere.example/api",
+        error: "route leaves the preview origin",
+      },
+    ]);
+  });
+
+  it("caps the final check at ten GETs", async () => {
+    const { requests } = stub();
+    await verifyFinal(
+      env,
+      spec("backend"),
+      Array.from({ length: 12 }, (_, i) =>
+        ev(`ev_${i}`, `/api/${i}`, "observed"),
+      ),
+      [],
+      PREVIEW,
+    );
+    expect(requests).toHaveLength(10);
+    expect(requests.every((r) => r.method === "GET")).toBe(true);
   });
 });

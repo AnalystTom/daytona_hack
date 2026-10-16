@@ -236,7 +236,7 @@ export function shapeOf(v: unknown, depth = 0): unknown {
 }
 
 const DELIVERY_HEADERS =
-  /^(content-type|cache-control|age|etag|last-modified|vary|server|via|x-cache|cf-cache-status|x-powered-by|content-encoding|location|set-cookie|access-control-allow-origin|strict-transport-security|content-security-policy)$/i;
+  /^(content-type|cache-control|age|etag|last-modified|vary|server|via|x-cache|cf-cache-status|x-powered-by|content-encoding|location|access-control-allow-origin|strict-transport-security|content-security-policy)$/i;
 
 /** What the HTML tells about the back end: bundles, API URLs it references, embedded data. */
 export function backendFacts(html: string, base: string) {
@@ -314,11 +314,18 @@ export async function inspectBackend(
     const headers = Object.fromEntries(
       [...res.headers].filter(([k]) => DELIVERY_HEADERS.test(k)),
     );
+    let shape: unknown;
+    if (headers["content-type"]?.includes("json")) {
+      try {
+        shape = shapeOf(JSON.parse(html));
+      } catch {}
+    }
     await add(
       {
         kind: "network",
         tool: "fetch",
         status: "observed",
+        response: { status: res.status, headers, shape },
         limits:
           "one GET from Cloudflare without a browser session; calls made by client JavaScript were not observed",
         summary: `GET ${page} -> ${res.status} ${headers["content-type"] || ""} (${Math.round(html.length / 1024)} KB)`,

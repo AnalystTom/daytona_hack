@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { architecture, CHAT_INSTRUCTIONS, SCOPES, stackRule } from "./scope";
+import { inspectBackend } from "./inspect";
 import type { Env, Evidence, Task } from "./types";
 
 vi.mock("cloudflare:workers", () => ({
@@ -42,7 +42,11 @@ function context() {
   return ctx;
 }
 
-type Call = { name: string; instructions: string };
+type Call = {
+  name: string;
+  instructions: string;
+  input: { evidence: Evidence[] };
+};
 
 // Stubs the model (one canned answer per prompt name) and the target site.
 function stubFetch(answers: Record<string, unknown[]>) {
@@ -51,7 +55,11 @@ function stubFetch(answers: Record<string, unknown[]>) {
     if (input === "https://api.openai.com/v1/responses") {
       const body = JSON.parse(String(init?.body));
       const name = body.text.format.name;
-      calls.push({ name, instructions: body.instructions });
+      calls.push({
+        name,
+        instructions: body.instructions,
+        input: JSON.parse(body.input),
+      });
       const queue = answers[name] ?? [
         { pass: true, summary: "ok", findings: [] },
       ];
@@ -136,6 +144,25 @@ describe("run scope", () => {
     const plan = calls.find((c) => c.name === "plan");
     expect(plan?.instructions).toContain("server/routes/NAME.js");
     expect(plan?.instructions).not.toContain("sections/NAME.html");
+    expect(plan?.input.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "network",
+        status: "inferred",
+        routes: ["/api/v1/articles?id=1"],
+      }),
+    );
+    expect(plan?.input.evidence).toContainEqual(
+      expect.objectContaining({
+        status: "observed",
+        response: {
+          status: 200,
+          headers: {
+            "content-type": "text/html",
+            "cache-control": "max-age=60",
+          },
+        },
+      }),
+    );
 
     // the frontend task is dropped and nothing waits on it
     expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02", "t04"]);
@@ -187,14 +214,40 @@ describe("run scope", () => {
     expect(state.evidence.some((e: Evidence) => e.kind === "code")).toBe(false);
   });
 
-  it("names no fixed demo target as a limit on runs", () => {
-    const prompts = [
-      CHAT_INSTRUCTIONS,
-      ...SCOPES.flatMap((s) => [architecture(s, "/app"), stackRule(s)]),
-    ];
-    for (const p of prompts)
-      expect(p).not.toMatch(
+  it("emits unrestricted chat and plan prompts for a combined run", async () => {
+    const { state, calls } = await plannedRun("both", "Rebuild both layers.", [
+      task("t01", ["index.html", "server/server.js"]),
+    ]);
+    expect(state.spec.scope).toBe("both");
+    for (const call of calls)
+      expect(call.instructions).not.toMatch(
         /daytona\.io|create[- ]a?[- ]?sandbox|landing page|for this version/i,
       );
+  });
+
+  it("captures JSON response shapes without copying values or cookies", async () => {
+    vi.stubGlobal("fetch", async () =>
+      Response.json(
+        { items: [{ id: 42, title: "private content" }] },
+        {
+          headers: {
+            "set-cookie": "session=private",
+            "cache-control": "no-cache",
+          },
+        },
+      ),
+    );
+    const { evidence, blobs } = await inspectBackend(SITE, 1);
+    expect(evidence[0].response).toEqual({
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "no-cache",
+      },
+      shape: { items: [{ id: "number", title: "string" }] },
+    });
+    expect(JSON.stringify({ evidence, blobs })).not.toMatch(
+      /session=private|private content/,
+    );
   });
 });

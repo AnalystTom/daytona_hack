@@ -787,6 +787,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
           status: e.status,
           summary: e.summary,
           limits: e.limits,
+          routes: e.routes,
+          response: e.response,
         })),
         pageOutline: outline(html),
       }),
