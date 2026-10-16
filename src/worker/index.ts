@@ -1,11 +1,15 @@
 import { version } from "../../package.json";
 import { type DaytonaEnv, handleSandboxRoute } from "./daytona/routes";
 import { type EvidenceEnv, handleEvidence } from "./evidence/routes";
+import { handleOrchestrator, type OrchestratorEnv } from "./orchestrator/front";
 import { handleRunsApi, type RunsEnv } from "./runs/api";
 import { handleVerify, type VerifierEnv } from "./verifier/route";
 
 export default {
-  async fetch(request: Request, env: VerifierEnv & DaytonaEnv & EvidenceEnv) {
+  async fetch(
+    request: Request,
+    env: VerifierEnv & DaytonaEnv & EvidenceEnv & OrchestratorEnv,
+  ) {
     const { pathname } = new URL(request.url);
     if (request.method === "GET" && pathname === "/api/health") {
       return Response.json({ ok: true, version });
@@ -19,7 +23,12 @@ export default {
     // Evidence routes run before the run API, which 404s every other /api/v1/ path.
     const evidence = await handleEvidence(request, env);
     if (evidence) return evidence;
+    // Run routes go to the orchestrator; the older run API below now only answers other paths.
+    const orchestrator = await handleOrchestrator(request, env);
+    if (orchestrator) return orchestrator;
     if (pathname.startsWith("/api/v1/")) return handleRunsApi(request, env);
     return Response.json({ error: "Not found" }, { status: 404 });
   },
-} satisfies ExportedHandler<RunsEnv & VerifierEnv & DaytonaEnv & EvidenceEnv>;
+} satisfies ExportedHandler<
+  RunsEnv & VerifierEnv & DaytonaEnv & EvidenceEnv & OrchestratorEnv
+>;

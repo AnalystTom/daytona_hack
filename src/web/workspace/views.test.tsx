@@ -68,7 +68,13 @@ describe("BuildView", () => {
 describe("ChatPanel", () => {
   it("asks for a brief with Send brief disabled while empty", () => {
     const html = renderToStaticMarkup(
-      <ChatPanel entries={[]} pending={false} onSend={noop} onRetry={noop} />,
+      <ChatPanel
+        entries={[]}
+        pending={false}
+        onSend={noop}
+        onRetry={noop}
+        onSaveToken={noop}
+      />,
     );
     expect(html).toContain("What would you like to make yours?");
     expect(html).toMatch(
@@ -103,6 +109,7 @@ describe("ChatPanel", () => {
         pending={false}
         onSend={noop}
         onRetry={noop}
+        onSaveToken={noop}
       />,
     );
     expect(html).toContain("copy daytona.io");

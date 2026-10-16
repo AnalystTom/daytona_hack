@@ -1,10 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SpecCanvas } from "../../shared/workspace";
+import type { Override } from "../build/BuildBoard";
 import { BuildView } from "./BuildView";
 import { ChatPanel } from "./ChatPanel";
-import { type ChatEntry, deliver, takeIncomingBrief } from "./chat";
+import { askForUrl, type ChatEntry, deliver, takeIncomingBrief } from "./chat";
 import type { WorkspaceFixture } from "./fixtures";
 import { Mark } from "./Mark";
+import { chatEntries, type OrchestratorEvent, runView } from "./orchestrator";
+import {
+  fetchEvents,
+  operatorToken,
+  overrideVerdict,
+  type RunCallError,
+  type RunCallResult,
+  runAction,
+} from "./runClient";
 import { SpecView } from "./SpecView";
 import "./workspace.css";
 
@@ -14,14 +24,107 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "build", label: "Build" },
 ];
 
+const PHASES: Record<string, string> = {
+  brief: "Agreeing the spec",
+  inspecting: "Inspecting the site",
+  planning: "Planning tasks",
+  planned: "Plan ready",
+  building: "Building",
+  done: "Build finished",
+  stopped: "Stopped",
+  failed: "Run failed",
+};
+const POLL_MS = 2000;
+// A finished run changes only when someone acts on it, so it is checked less often.
+const IDLE_POLL_MS = 15000;
+const EVENTS_TOKEN_NOTICE = "events-token";
+
+const idle = (phase?: string) =>
+  phase === "done" || phase === "stopped" || phase === "failed";
+
 export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
   const [view, setView] = useState<View>("spec");
-  // Filled by run events once the run API streams them; empty until then.
-  const [canvas] = useState<SpecCanvas>(fixture?.canvas ?? { evidence: [] });
   const [entries, setEntries] = useState<ChatEntry[]>(fixture?.entries ?? []);
   const [pending, setPending] = useState(false);
-  const runId = useRef<string | undefined>(undefined);
-  const approved = canvas.draftSpec?.status === "approved";
+  const [runId, setRunId] = useState<string>();
+  const [events, setEvents] = useState<OrchestratorEvent[]>([]);
+  const [offline, setOffline] = useState(false);
+  // Set from the Start build click until the next event, so a second click cannot race the phase change.
+  const [starting, setStarting] = useState(false);
+  const pollSoon = useRef<() => void>(undefined);
+  // Messages sent before the brief had a URL; they are sent with it.
+  const briefParts = useRef<string[]>([]);
+  const run = useMemo(() => runView(runId ?? "", events), [runId, events]);
+  const phase = useRef(run.phase);
+  phase.current = run.phase;
+  const canvas: SpecCanvas = fixture?.canvas ?? {
+    draftSpec: run.draftSpec,
+    evidence: run.evidence,
+  };
+  const canBuild = runId !== undefined && run.phase === "planned" && !starting;
+
+  // Follows the run's events from the orchestrator.
+  useEffect(() => {
+    if (!runId) return;
+    let since = 0;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let busy = false;
+    const poll = async () => {
+      busy = true;
+      const result = await fetchEvents(runId, since);
+      busy = false;
+      if (!live) return;
+      setOffline(!result.ok && result.error !== "operator_token");
+      if (!result.ok && result.error === "operator_token") {
+        const { error, detail } = result;
+        setEntries((list) =>
+          list.some((e) => e.id === EVENTS_TOKEN_NOTICE)
+            ? list
+            : [
+                ...list,
+                { kind: "notice", id: EVENTS_TOKEN_NOTICE, error, detail },
+              ],
+        );
+      }
+      if (result.ok) {
+        const fresh = result.value.filter((event) => event.seq > since);
+        if (fresh.length > 0) {
+          since = Math.max(...fresh.map((event) => event.seq));
+          setEvents((list) => [...list, ...fresh]);
+          setStarting(false);
+          setEntries((list) => [...list, ...chatEntries(fresh)]);
+        }
+      }
+      timer = setTimeout(poll, idle(phase.current) ? IDLE_POLL_MS : POLL_MS);
+    };
+    // An action can restart a finished run, so it skips the idle wait.
+    pollSoon.current = () => {
+      if (busy) return;
+      clearTimeout(timer);
+      void poll();
+    };
+    void poll();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [runId]);
+
+  const addNotice = (error: RunCallError, id: string = crypto.randomUUID()) =>
+    setEntries((list) => [
+      ...list,
+      { kind: "notice", id, error: error.error, detail: error.detail },
+    ]);
+
+  const act = async (call: Promise<RunCallResult<unknown>>) => {
+    const result = await call;
+    if (result.ok) pollSoon.current?.();
+    else {
+      setStarting(false);
+      addNotice(result);
+    }
+  };
 
   const setDelivery = (id: string, delivery: "sent" | "failed") =>
     setEntries((list) =>
@@ -32,21 +135,30 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
 
   const send = async (id: string, text: string) => {
     setPending(true);
-    const result = await deliver(runId.current, text);
-    runId.current = result.runId;
+    const message =
+      runId === undefined ? [...briefParts.current, text].join("\n") : text;
+    const result = await deliver(runId, message);
     setPending(false);
-    setDelivery(id, result.error ? "failed" : "sent");
-    const { error } = result;
-    if (error) {
+    if (result.needsUrl) {
+      briefParts.current.push(text);
+      setDelivery(id, "sent");
       setEntries((list) => [
         ...list,
-        {
-          kind: "notice",
-          id: `${id}-notice`,
-          error: error.error,
-          detail: `${error.detail} Your message is kept here.`,
-        },
+        { kind: "agent", id: `${id}-ask`, text: askForUrl },
       ]);
+      return;
+    }
+    setDelivery(id, result.error ? "failed" : "sent");
+    if (result.runId && runId === undefined) {
+      briefParts.current = [];
+      setRunId(result.runId);
+    }
+    const { error } = result;
+    if (error) {
+      addNotice(
+        { ...error, detail: `${error.detail} Your message is kept here.` },
+        `${id}-notice`,
+      );
     }
   };
 
@@ -68,6 +180,19 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
         .map((e) => (e.id === id ? { ...entry, delivery: "sending" } : e)),
     );
     void send(id, entry.text);
+  };
+
+  // Saving the token resends the message it stopped, if any; a refused action is pressed again.
+  const onSaveToken = (token: string, noticeId: string) => {
+    operatorToken.set(token);
+    const messageId = noticeId.replace(/-notice$/, "");
+    if (messageId !== noticeId) return onRetry(messageId);
+    setEntries((list) => list.filter((e) => e.id !== noticeId));
+    pollSoon.current?.();
+  };
+
+  const onOverride = (override: Override) => {
+    if (runId) void act(overrideVerdict(runId, override));
   };
 
   // A brief sent from /start arrives already in the chat. Runs once; StrictMode's second pass finds it taken.
@@ -103,26 +228,36 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
               </button>
             ))}
           </nav>
-          <button
-            type="button"
-            className="button button-primary ws-start"
-            disabled={!approved || pending}
-            title={approved ? undefined : "Needs an approved spec"}
-            onClick={() => {
-              setView("build");
-              setEntries((list) => [
-                ...list,
-                {
-                  kind: "notice",
-                  id: crypto.randomUUID(),
-                  error: "not_connected",
-                  detail: "Starting a build is not available yet.",
-                },
-              ]);
-            }}
-          >
-            Start build
-          </button>
+          <div className="ws-run">
+            {run.phase && (
+              <span className="ws-phase" role="status">
+                {PHASES[run.phase] ?? run.phase}
+              </span>
+            )}
+            {run.previewUrl && (
+              <a
+                className="button"
+                href={run.previewUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open preview
+              </a>
+            )}
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!canBuild}
+              title={canBuild ? undefined : "Available once the plan is ready"}
+              onClick={() => {
+                setView("build");
+                setStarting(true);
+                if (runId) void act(runAction(runId, "build"));
+              }}
+            >
+              Start build
+            </button>
+          </div>
         </header>
         <main
           className="ws-canvas"
@@ -131,15 +266,25 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           {view === "spec" ? (
             <SpecView canvas={canvas} />
           ) : (
-            <BuildView draftSpec={canvas.draftSpec} />
+            <BuildView
+              draftSpec={canvas.draftSpec}
+              events={run.board}
+              onStopBuild={() => runId && void act(runAction(runId, "stop"))}
+              onOverride={onOverride}
+            />
           )}
         </main>
       </div>
       <ChatPanel
-        entries={entries}
+        entries={
+          offline
+            ? [...entries, { kind: "reconnecting", id: "offline" }]
+            : entries
+        }
         pending={pending}
         onSend={onSend}
         onRetry={onRetry}
+        onSaveToken={onSaveToken}
       />
     </div>
   );

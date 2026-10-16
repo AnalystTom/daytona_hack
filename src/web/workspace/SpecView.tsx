@@ -1,8 +1,32 @@
+import { useEffect, useState } from "react";
 import type {
   CanvasEvidence,
   DraftSpec,
   SpecCanvas,
 } from "../../shared/workspace";
+import { fetchEvidence } from "./runClient";
+
+// Run evidence needs the operator token, so it is fetched and shown from a blob URL.
+function useEvidenceSrc(src: string) {
+  const fromRun = src.startsWith("/api/");
+  const [blobUrl, setBlobUrl] = useState<string>();
+  useEffect(() => {
+    if (!fromRun) return;
+    let url: string | undefined;
+    let live = true;
+    void fetchEvidence(src).then((result) => {
+      if (!live || !result.ok) return;
+      url = URL.createObjectURL(result.value);
+      setBlobUrl(url);
+    });
+    return () => {
+      live = false;
+      if (url) URL.revokeObjectURL(url);
+      setBlobUrl(undefined);
+    };
+  }, [src, fromRun]);
+  return fromRun ? blobUrl : src;
+}
 
 const NOT_CONFIRMED = "Not confirmed yet";
 
@@ -66,6 +90,7 @@ function EvidenceCaption({ item }: { item: CanvasEvidence }) {
 }
 
 function ScreenshotCard({ item }: { item: CanvasEvidence }) {
+  const src = useEvidenceSrc(item.src);
   return (
     <article className="card evidence-card">
       <header className="card-head">
@@ -74,7 +99,7 @@ function ScreenshotCard({ item }: { item: CanvasEvidence }) {
       </header>
       <img
         className="evidence-media"
-        src={item.src}
+        src={src}
         alt={`Screenshot of ${item.pageOrState}`}
       />
       <EvidenceCaption item={item} />

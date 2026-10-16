@@ -50,18 +50,11 @@ A model error, refusal, truncated reply or malformed verdict returns 502, never 
 
 ## Run API
 
-The Worker serves the run API under `/api/v1/runs` (see `docs/orchestrator/spec.md` sections 3, 5 and 12, and `src/shared/runs.ts` for the request and response shapes):
+`/api/v1/runs` is the front door to the private `reversy-orchestrator` Worker (`orchestrator/`), reached through the `ORCHESTRATOR` service binding.
+Every route under it needs `Authorization: Bearer <OPERATOR_TOKEN>`, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
 
-| Route | Who calls it | What it does |
-|---|---|---|
-| `POST /runs` | UI | Creates a run from `{url, goal}`; the URL must be https, without credentials, on a public host |
-| `GET /runs/:id` | UI | The run and its tasks |
-| `POST /runs/:id/messages` | UI | A chat message `{text}` for Firstmate |
-| `GET /runs/:id/events` | UI, bridge | Server-sent events; reconnecting with `Last-Event-ID` replays what was missed |
-| `POST /runs/:id/events` | Sandbox bridge | One `EventEnvelope` or a batch; duplicate event IDs are ignored |
-| `POST`/`GET /runs/:id/memory` | Sandbox bridge | Agent Memory: observations and decisions with their sources |
-| `POST /runs/:id/approve-spec` | UI | Records the user's spec approval |
-| `POST /runs/:id/stop` | UI | Stops the run |
+The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
+Its store is still what evidence capture reads and writes.
 
 The API assigns each stored event its `sequence` (1, 2, ...) in arrival order and writes it to SurrealDB before any stream sends it.
 Errors are `{code, message, retryable, requestId}`.
@@ -78,23 +71,22 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route, `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
+| `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
-Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
+Without the SurrealDB bindings the store answers 503 naming the missing ones; without `OPERATOR_TOKEN` or `ORCHESTRATOR` every run route does the same.
 A missing or wrong token answers 401.
 
-Interim access policy: only creating a run (which will start a paid sandbox) needs the operator token.
-Every other run route treats the random run ID as its capability: whoever has the ID can read the run, stream its events, chat, approve the spec and stop it.
-There is no user identity, run ownership or rate limiting yet.
+Interim access policy: the operator token is the only access control; there is no user identity, run ownership or rate limiting yet.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 
 ## Deploy
 
 GitHub Actions (`.github/workflows/ci.yml`) runs format, lint, typecheck, test and build on every pull request and push.
-On a push to `main`, once CI passes, the deploy job builds and deploys the Worker with the Cloudflare wrangler action.
+On a push to `main`, once CI passes, the Cloudflare wrangler action deploys `reversy-orchestrator` (`orchestrator/`) and then this Worker, which binds to it.
 
-The deploy job needs two repository secrets:
+The deploy jobs need two repository secrets:
 
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
@@ -183,7 +175,7 @@ Interaction recordings are not captured yet; a full pack keeps the session's pag
 
 Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason, and so is the session recording, which names the out-of-scope URLs.
 Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
-Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the run API's interim access policy).
+Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the [run API's](#run-api) interim access policy).
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 In a signed-in capture the DOM, assets and network log are stored as `not_observed` until masking exists.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.

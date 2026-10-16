@@ -8,7 +8,12 @@ export type ChatEntry =
       delivery: "sending" | "sent" | "failed";
     }
   | { kind: "agent"; id: string; text: string }
-  | { kind: "notice"; id: string; error: RunCallError["error"]; detail: string }
+  | {
+      kind: "notice";
+      id: string;
+      error: RunCallError["error"] | "run_error";
+      detail: string;
+    }
   | { kind: "reconnecting"; id: string }
   | { kind: "sign_in"; id: string; page: string; signInUrl: string };
 
@@ -17,15 +22,36 @@ export type RunClient = {
   sendMessage: typeof sendMessage;
 };
 
-// The first message creates the run (it is the brief); later ones go to that run.
-// shortcut: until a run exists, any new message is sent as the brief; queue undelivered messages if that misorders briefs.
+export const askForUrl =
+  "Which website should I rebuild? Send its address, like https://www.daytona.io/.";
+
+// Splits a brief into the target URL and the goal around it; undefined when there is no URL.
+export function parseBrief(
+  text: string,
+): { url: string; goal: string } | undefined {
+  const found = text.match(/(?:https?:\/\/|\bwww\.)[^\s<>"]+/i);
+  if (!found) return undefined;
+  const raw = found[0].replace(/[.,;:!?)\]]+$/, "");
+  const url = raw.toLowerCase().startsWith("www.") ? `https://${raw}` : raw;
+  const goal = text
+    .replace(raw, " ")
+    .replace(/\s+/g, " ")
+    .replace(/ ([,.;:!?])/g, "$1")
+    .trim();
+  return { url, goal: goal || "Rebuild this website." };
+}
+
+// The first message with a URL creates the run (it is the brief); later ones go to that run.
+// Until a run exists, earlier messages without a URL are passed in `brief` and sent with it.
 export async function deliver(
   runId: string | undefined,
   text: string,
   client: RunClient = { createRun, sendMessage },
-): Promise<{ runId?: string; error?: RunCallError }> {
+): Promise<{ runId?: string; needsUrl?: true; error?: RunCallError }> {
   if (runId === undefined) {
-    const created = await client.createRun(text);
+    const brief = parseBrief(text);
+    if (!brief) return { needsUrl: true };
+    const created = await client.createRun(brief);
     return created.ok ? { runId: created.value.runId } : { error: created };
   }
   const sent = await client.sendMessage(runId, text);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BuildEvent } from "../../shared/build";
-import { deriveBoard } from "./board";
+import type { TaskState } from "../../shared/contracts";
+import { canOverride, deriveBoard } from "./board";
 
 // Test fixtures only: hand-written events, never shown as a live result.
 let next = 0;
@@ -273,5 +274,26 @@ describe("deriveBoard", () => {
       "task_nav",
       "task_footer",
     ]);
+  });
+});
+
+describe("canOverride", () => {
+  const task = (state: TaskState, verdict?: "approved" | "rejected") => ({
+    id: "t1",
+    state,
+    log: [],
+    review: verdict ? { verdict } : undefined,
+  });
+
+  it("offers an override for a reviewed or failed task that is still open", () => {
+    expect(canOverride(task("in_review", "rejected"))).toBe(true);
+    expect(canOverride(task("queued", "rejected"))).toBe(true);
+    expect(canOverride(task("failed"))).toBe(true);
+  });
+
+  it("offers none before a review, after a merge or once stopped", () => {
+    expect(canOverride(task("building"))).toBe(false);
+    expect(canOverride(task("merged", "approved"))).toBe(false);
+    expect(canOverride(task("stopped", "rejected"))).toBe(false);
   });
 });

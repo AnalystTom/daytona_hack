@@ -11,10 +11,10 @@ import {
   type Run,
   runEventTypes,
 } from "../../shared/runs";
+import { runBridgeToken } from "../daytona/bridge-token";
 import { resolveStore, type StoreEnv } from "../store";
 import { type RunStore, StoreError } from "../store/types";
 import { defaultStreamOptions, eventStream, type StreamOptions } from "./sse";
-import { runBridgeToken } from "../daytona/bridge-token";
 import { checkTargetUrl } from "./url";
 
 export interface RunsEnv extends StoreEnv {
@@ -24,7 +24,7 @@ export interface RunsEnv extends StoreEnv {
   OPERATOR_TOKEN?: string;
 }
 
-class Failure extends Error {
+export class Failure extends Error {
   constructor(
     readonly status: number,
     readonly code: string,
@@ -36,7 +36,7 @@ class Failure extends Error {
 }
 
 const maxBodyBytes = 1_000_000;
-const notConfigured = (missing: string[]) =>
+export const notConfigured = (missing: string[]) =>
   new Failure(
     503,
     "not_configured",
@@ -50,30 +50,35 @@ export async function handleRunsApi(
   streamOptions: StreamOptions = defaultStreamOptions,
   store?: RunStore,
 ): Promise<Response> {
-  const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
   try {
     return await route(request, env, streamOptions, store);
   } catch (error) {
-    const failure =
-      error instanceof Failure
-        ? error
-        : error instanceof StoreError
-          ? new Failure(
-              503,
-              "store_unavailable",
-              "Storage is temporarily unavailable.",
-              true,
-            )
-          : new Failure(500, "internal_error", "Internal error.");
-    if (!(error instanceof Failure)) console.error(requestId, error);
-    const body: ApiError = {
-      code: failure.code,
-      message: failure.message,
-      retryable: failure.retryable,
-      requestId,
-    };
-    return Response.json(body, { status: failure.status });
+    return errorResponse(request, error);
   }
+}
+
+// Turns a thrown error into the API's error body; unexpected errors are logged, not shown.
+export function errorResponse(request: Request, error: unknown): Response {
+  const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
+  const failure =
+    error instanceof Failure
+      ? error
+      : error instanceof StoreError
+        ? new Failure(
+            503,
+            "store_unavailable",
+            "Storage is temporarily unavailable.",
+            true,
+          )
+        : new Failure(500, "internal_error", "Internal error.");
+  if (!(error instanceof Failure)) console.error(requestId, error);
+  const body: ApiError = {
+    code: failure.code,
+    message: failure.message,
+    retryable: failure.retryable,
+    requestId,
+  };
+  return Response.json(body, { status: failure.status });
 }
 
 async function route(
@@ -306,7 +311,10 @@ async function emit(
   return stored[0] ?? event;
 }
 
-async function readJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
+export async function readJson<T>(
+  request: Request,
+  schema: z.ZodType<T>,
+): Promise<T> {
   // The header check refuses big bodies before they are read; the length check catches chunked ones.
   const declared = Number(request.headers.get("content-length") ?? 0);
   const text = declared > maxBodyBytes ? "" : await request.text();
@@ -334,9 +342,9 @@ async function readJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
-async function checkToken(
+export async function checkToken(
   request: Request,
-  env: RunsEnv,
+  env: Pick<RunsEnv, "BRIDGE_TOKEN" | "OPERATOR_TOKEN">,
   binding: "BRIDGE_TOKEN" | "OPERATOR_TOKEN",
   runId?: string,
 ) {

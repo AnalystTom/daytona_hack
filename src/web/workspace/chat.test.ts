@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { deliver, type RunClient, takeIncomingBrief } from "./chat";
+import { deliver, parseBrief, type RunClient, takeIncomingBrief } from "./chat";
 
 const notConnected = {
   ok: false,
@@ -7,18 +7,58 @@ const notConnected = {
   detail: "The run service is not available yet.",
 } as const;
 
+describe("parseBrief", () => {
+  it("splits the URL from the goal", () => {
+    expect(
+      parseBrief("Rebuild https://www.daytona.io/, only the hero."),
+    ).toEqual({
+      url: "https://www.daytona.io/",
+      goal: "Rebuild, only the hero.",
+    });
+    expect(parseBrief("copy www.daytona.io")).toEqual({
+      url: "https://www.daytona.io",
+      goal: "copy",
+    });
+  });
+
+  it("gives a goal when the brief is only a URL", () => {
+    expect(parseBrief("https://example.com")).toEqual({
+      url: "https://example.com",
+      goal: "Rebuild this website.",
+    });
+  });
+
+  it("finds no URL in plain text", () => {
+    expect(parseBrief("rebuild the daytona landing page")).toBeUndefined();
+  });
+});
+
 describe("deliver", () => {
-  it("creates the run from the first message", async () => {
+  it("creates the run from the first message with a URL", async () => {
     const client: RunClient = {
       createRun: vi.fn(
         async () => ({ ok: true, value: { runId: "run_1" } }) as const,
       ),
       sendMessage: vi.fn(),
     };
-    expect(await deliver(undefined, "brief", client)).toEqual({
+    expect(
+      await deliver(undefined, "copy https://example.com", client),
+    ).toEqual({
       runId: "run_1",
     });
+    expect(client.createRun).toHaveBeenCalledWith({
+      url: "https://example.com",
+      goal: "copy",
+    });
     expect(client.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("asks for the URL instead of creating a run without one", async () => {
+    const client: RunClient = { createRun: vi.fn(), sendMessage: vi.fn() };
+    expect(await deliver(undefined, "copy the hero", client)).toEqual({
+      needsUrl: true,
+    });
+    expect(client.createRun).not.toHaveBeenCalled();
   });
 
   it("sends later messages to the existing run", async () => {
@@ -35,7 +75,7 @@ describe("deliver", () => {
       createRun: vi.fn(async () => notConnected),
       sendMessage: vi.fn(),
     };
-    expect(await deliver(undefined, "brief", client)).toEqual({
+    expect(await deliver(undefined, "https://example.com", client)).toEqual({
       error: notConnected,
     });
   });

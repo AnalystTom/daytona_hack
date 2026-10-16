@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import { ApiError } from "../../shared/runs";
+import { runBridgeToken } from "../daytona/bridge-token";
 import { MemoryRunStore } from "../store/memory";
 import type { RunStore } from "../store/types";
-import { runBridgeToken } from "../daytona/bridge-token";
 import { handleRunsApi, type RunsEnv } from "./api";
 
 const env: RunsEnv = {
