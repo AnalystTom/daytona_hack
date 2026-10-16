@@ -44,7 +44,7 @@ interface State {
   sandboxIds?: string[];
   pending?: "inspect" | "build_setup" | "variants";
   error?: string;
-  startedAt: string;
+  startedAt?: string;
   expired?: boolean;
   stoppingSandboxIds?: string[];
   variants?: Variant[];
@@ -53,6 +53,16 @@ interface State {
 }
 
 const now = () => new Date().toISOString();
+const MISSING_START_TIME =
+  "This run has no valid stored start time. It is stopped; sandbox cleanup is due and external records are unavailable.";
+const isTimestamp = (value: unknown): value is string =>
+  typeof value === "string" &&
+  /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
+    value,
+  ) &&
+  Number.isFinite(Date.parse(value)) &&
+  new Date(value.slice(0, 10)).toISOString().slice(0, 10) ===
+    value.slice(0, 10);
 
 export class Run extends DurableObject<Env> {
   private s!: State;
@@ -95,12 +105,19 @@ export class Run extends DurableObject<Env> {
     this.daytona = new Daytona(env);
     ctx.blockConcurrencyWhile(async () => {
       this.s = (await ctx.storage.get<State>("state"))!;
+      this.seq = (await ctx.storage.get<number>("seq")) || 0;
       if (this.s) {
         const { previewUrl, ...state } = this.s as State & {
           previewUrl?: string;
         };
+        const startedAt =
+          state.error === MISSING_START_TIME
+            ? undefined
+            : [state.startedAt, state.chat?.[0]?.ts].find(isTimestamp);
+        const reportInvalid = !startedAt && state.error !== MISSING_START_TIME;
         this.s = {
           ...state,
+          startedAt,
           previewReady: state.previewReady || Boolean(previewUrl),
           variants: state.variants?.map(
             ({
@@ -109,9 +126,23 @@ export class Run extends DurableObject<Env> {
             }: Variant & { previewUrl?: string }) => variant,
           ),
         };
+        if (!startedAt) {
+          if (reportInvalid) this.s.stoppingSandboxIds = this.sandboxes();
+          this.s.phase = "stopped";
+          this.s.pending = undefined;
+          this.s.expired = true;
+          this.s.error = MISSING_START_TIME;
+        }
         await this.save();
+        if (reportInvalid)
+          await this.emit("error", { message: MISSING_START_TIME }, false);
+        if (
+          reportInvalid ||
+          !this.s.expired ||
+          this.s.stoppingSandboxIds?.length
+        )
+          await this.schedule(this.deadline);
       }
-      this.seq = (await ctx.storage.get<number>("seq")) || 0;
     });
   }
 
@@ -121,6 +152,8 @@ export class Run extends DurableObject<Env> {
   }
 
   private async emit(type: RunEvent["type"], data: unknown, record = true) {
+    if (type === "phase" && (data as { phase: string }).phase !== "stopped")
+      this.live();
     const ev: RunEvent = structuredClone({
       seq: ++this.seq,
       ts: now(),
@@ -139,7 +172,7 @@ export class Run extends DurableObject<Env> {
       );
     }
     const records = this.env.RECORDS;
-    if (records && record) {
+    if (records && record && this.s.startedAt) {
       const { id, spec, startedAt } = this.s;
       const input = {
         run: { id, url: spec.url, goal: spec.goal, startedAt },
@@ -163,19 +196,31 @@ export class Run extends DurableObject<Env> {
 
   // ---------- run limit ----------
   private get deadline() {
-    return Date.parse(this.s.startedAt || this.s.chat[0]?.ts) + RUN_LIMIT_MS;
+    return this.s.startedAt ? Date.parse(this.s.startedAt) + RUN_LIMIT_MS : 0;
   }
 
   private live() {
+    if (!this.s.startedAt) throw new Error(MISSING_START_TIME);
     if (this.s.expired || Date.now() >= this.deadline)
       throw new Error("This run reached its 2-hour limit.");
     if (this.s.phase === "stopped") throw new Error("This run was stopped.");
   }
 
+  private async schedule(at: number) {
+    const next = Math.max(
+      Date.now(),
+      this.s.expired ? at : Math.min(at, this.deadline),
+    );
+    await this.ctx.storage.transaction(async (storage) => {
+      const current = await storage.getAlarm();
+      if (current === null || next < current) await storage.setAlarm(next);
+    });
+  }
+
   /** Next alarm: a loop step soon, never later than the run's deadline. */
   private async wake(ms: number) {
     this.woke = true;
-    await this.ctx.storage.setAlarm(Math.min(Date.now() + ms, this.deadline));
+    await this.schedule(Date.now() + ms);
   }
 
   private sandboxes() {
@@ -210,9 +255,7 @@ export class Run extends DurableObject<Env> {
       await this.save();
     } catch {
       this.woke = true;
-      await this.ctx.storage.setAlarm(
-        Math.min(Date.now() + TICK_MS, this.deadline),
-      );
+      await this.schedule(Date.now() + TICK_MS);
     }
   }
 
@@ -228,7 +271,7 @@ export class Run extends DurableObject<Env> {
     }
     if (this.s.stoppingSandboxIds?.length) {
       this.woke = true;
-      await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
+      await this.schedule(Date.now() + TICK_MS);
     }
   }
 
@@ -334,7 +377,7 @@ export class Run extends DurableObject<Env> {
     };
     await this.save();
     // Always one alarm pending until the deadline, so the limit holds even when nothing else runs.
-    await this.ctx.storage.setAlarm(this.deadline);
+    await this.schedule(this.deadline);
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" });
     await this.addChat("user", `${url}\n${goal}`);
@@ -409,7 +452,7 @@ export class Run extends DurableObject<Env> {
     await this.save();
     await this.emit("phase", { phase: "stopped" });
     // The loop ends; the deadline alarm still shuts the sandbox down.
-    if (!this.s.expired) await this.ctx.storage.setAlarm(this.deadline);
+    if (!this.s.expired) await this.schedule(this.deadline);
     return this.s;
   }
 
@@ -486,6 +529,7 @@ export class Run extends DurableObject<Env> {
         this.memScope(),
         `Promoted variant ${v.id} (${v.title}, ${v.pod} of ${v.snapshot}); building continues from it.`,
       );
+      this.live();
       await this.addChat(
         "assistant",
         `Promoted ${v.title}. Tell me what to build next; the next build will continue from this variant.`,
@@ -515,11 +559,13 @@ export class Run extends DurableObject<Env> {
         t,
         ...this.s.tasks.filter((fix) => fix.fixFor === t.id),
       ]) {
+        this.live();
         retry.status = "queued";
         retry.attempts = 0;
         retry.verification = undefined;
         await this.emit("task", retry);
       }
+      this.live();
       const { variant } = this.pod(t);
       if (variant && variant.status !== "promoted") {
         variant.status = "building";
@@ -550,7 +596,7 @@ export class Run extends DurableObject<Env> {
     }
     if (this.s.stoppingSandboxIds?.length) await this.stopSandboxes();
     if (this.s.phase === "stopped") {
-      if (!this.woke) await this.ctx.storage.setAlarm(this.deadline);
+      if (!this.woke) await this.schedule(this.deadline);
       return;
     }
     try {
@@ -631,8 +677,7 @@ export class Run extends DurableObject<Env> {
         await this.wake(TICK_MS); // keep the loop alive
     }
     await this.save();
-    if (!this.woke && !this.s.expired)
-      await this.ctx.storage.setAlarm(this.deadline);
+    if (!this.woke && !this.s.expired) await this.schedule(this.deadline);
   }
 
   // ---------- phase 1: conversation ----------
@@ -735,6 +780,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
     await this.emit("spec", this.s.spec);
+    this.live();
     await this.addChat("assistant", out.reply);
     if (out.userApproved) await this.approveSpec();
   }
@@ -871,9 +917,12 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       this.s.evidence,
       this.s.tasks,
     );
+    this.live();
     await this.verified(pv);
+    this.live();
     this.s.phase = "planned";
     await this.emit("phase", { phase: "planned" });
+    this.live();
     await this.addChat(
       "assistant",
       `Plan ready: ${this.s.tasks.length} tasks. Verifier: ${pv.pass ? "pass" : "fail"}. Review it on the canvas, then press Start build.`,
@@ -941,6 +990,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     }
     await this.save();
     // The sandbox is private: the app asks /runs/:id/preview for a signed link when it shows the preview.
+    this.live();
     await this.emit("preview", { sandboxId: id });
     await remember(
       this.env,
@@ -957,6 +1007,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       async (set) =>
         set({ "output.value": JSON.stringify(v), "eval.pass": v.pass }),
     );
+    this.live();
     await this.emit("verification", {
       ...v,
       // An honest label: the verifier is GPT on OpenAI, run from Cloudflare.
@@ -967,6 +1018,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       this.memScope(),
       `Verifier on ${v.taskId || v.target}: ${v.pass ? "pass" : "fail"} — ${v.summary}`,
     );
+    this.live();
     if (!v.pass) {
       // a failure goes back to the orchestrator as steering and shows on the canvas
       await this.addChat(
@@ -1102,6 +1154,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         merged: this.s.tasks.filter((t) => t.status === "merged").length,
         failed: this.s.tasks.filter((t) => t.status === "failed").length,
       });
+      this.live();
       await this.addChat(
         "assistant",
         `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is on the Preview tab, where you can also ask for three landing-page variants.`,
@@ -1291,6 +1344,7 @@ Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the t
     this.live();
     if (r.exitCode !== 0) {
       await this.daytona.exec(id, `cd ${repo} && git merge --abort`);
+      this.live();
       t.review = {
         verdict: "reject",
         reason: "merge conflict with main",

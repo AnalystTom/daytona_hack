@@ -5,23 +5,46 @@ import { MemoryRunStore } from "../../src/worker/store/memory";
 import type { Env, RunEvent, RunRecord, Task } from "../src/types";
 
 // A Durable Object state in memory; Daytona and OpenAI are answered by a mocked fetch.
-function fakeRun(state: object, overrides: Partial<Env> = {}) {
+function fakeRun(
+  state: object,
+  overrides: Partial<Env> = {},
+  initialAlarm: number | null = null,
+) {
   const pending: Promise<unknown>[] = [];
   const snapshots: object[] = [structuredClone(state)];
   const data = new Map<string, unknown>([["state", state]]);
-  const alarms: number[] = [];
   let ready: Promise<unknown> = Promise.resolve();
-  const ctx = {
-    storage: {
-      get: async (key: string) => data.get(key),
-      list: async ({ prefix }: { prefix: string }) =>
-        new Map([...data].filter(([key]) => key.startsWith(prefix))),
-      put: async (key: string, value: unknown) => {
-        data.set(key, value);
-        if (key === "state") snapshots.push(structuredClone(value as object));
-      },
-      setAlarm: async (at: number) => void alarms.push(at),
+  let scheduled = initialAlarm;
+  let transacting: Promise<unknown> = Promise.resolve();
+  const storage = {
+    get: async (key: string) => data.get(key),
+    list: async ({ prefix, start }: { prefix: string; start: string }) =>
+      new Map(
+        [...data]
+          .filter(([key]) => key.startsWith(prefix) && key >= start)
+          .sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    put: async (key: string, value: unknown) => {
+      data.set(key, value);
+      if (key === "state") snapshots.push(structuredClone(value as object));
     },
+    getAlarm: async () => scheduled,
+    setAlarm: async (at: number) => {
+      scheduled = at;
+    },
+    transaction: (
+      fn: (txn: {
+        getAlarm: () => Promise<number | null>;
+        setAlarm: (at: number) => Promise<void>;
+      }) => Promise<void>,
+    ) => {
+      const result = transacting.then(() => fn(storage));
+      transacting = result.catch(() => {});
+      return result;
+    },
+  };
+  const ctx = {
+    storage,
     waitUntil: (promise: Promise<unknown>) => void pending.push(promise),
     blockConcurrencyWhile: (fn: () => Promise<unknown>) => {
       ready = fn();
@@ -35,9 +58,14 @@ function fakeRun(state: object, overrides: Partial<Env> = {}) {
     ...overrides,
   } as Env;
   const run = new Run(ctx as never, env);
+  const alarm = run.alarm.bind(run);
+  run.alarm = async () => {
+    scheduled = null;
+    await alarm();
+  };
   return {
     run,
-    alarms,
+    scheduled: () => scheduled,
     state: () => data.get("state") as any,
     persisted: () => structuredClone(snapshots.at(-1)) as any,
     ready,
@@ -154,10 +182,10 @@ describe("Run", () => {
   it("keeps the next alarm within the run's deadline", async () => {
     mockFetch();
     const startedAt = new Date(Date.now() - 3600_000).toISOString();
-    const { run, alarms, ready } = fakeRun(baseState(startedAt, "done", []));
+    const { run, scheduled, ready } = fakeRun(baseState(startedAt, "done", []));
     await ready;
     await run.alarm();
-    expect(alarms).toEqual([Date.parse(startedAt) + 2 * 3600_000]);
+    expect(scheduled()).toBe(Date.parse(startedAt) + 2 * 3600_000);
   });
 
   it("retries a failed sandbox shutdown without retrying sandboxes already stopped", async () => {
@@ -176,7 +204,7 @@ describe("Run", () => {
         return Response.json({ url: "https://toolbox.test" });
       return Response.json({ exitCode: 0, result: "" });
     });
-    const { run, state, ready, alarms } = fakeRun({
+    const { run, state, ready, scheduled } = fakeRun({
       ...baseState(
         new Date(Date.now() - 3 * 3600_000).toISOString(),
         "done",
@@ -191,7 +219,7 @@ describe("Run", () => {
       phase: "stopped",
       stoppingSandboxIds: ["sb1"],
     });
-    expect(alarms[0]).toBeGreaterThan(Date.now());
+    expect(scheduled()).toBeGreaterThan(Date.now());
     await expect(run.message("more")).rejects.toThrow("2-hour limit");
     await run.alarm();
     expect(state().stoppingSandboxIds).toEqual([]);
@@ -1047,6 +1075,8 @@ describe("Run", () => {
   it.each(["fork_start", "fork_preview", "main_start", "main_setup"])(
     "keeps allocated ownership and retries failed cleanup after %s",
     async (stage) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
       const main = stage.startsWith("main");
       let forks = 1;
       let orphanStops = 0;
@@ -1095,7 +1125,7 @@ describe("Run", () => {
           });
         return Response.json({ cmdId: "command" });
       });
-      const { run, state, persisted, ready } = fakeRun({
+      const { run, state, persisted, ready, scheduled } = fakeRun({
         ...baseState(
           new Date().toISOString(),
           main ? "building" : "variants",
@@ -1110,18 +1140,58 @@ describe("Run", () => {
       expect(persisted().stoppingSandboxIds).toContain("sb2");
       if (main) expect(state().sandboxId).toBeUndefined();
       else expect(state().forkUnavailable).toBeFalsy();
+      const retryAt = Date.now() + (main ? 10_000 : 100);
+      expect(scheduled()).toBe(retryAt);
       await run.stop();
-      const restored = fakeRun(persisted());
+      expect(scheduled()).toBe(retryAt);
+      const restored = fakeRun(persisted(), {}, scheduled());
       await restored.ready;
+      expect(restored.scheduled()).toBe(retryAt);
+      vi.setSystemTime(retryAt);
       await restored.run.alarm();
       expect(restored.persisted().stoppingSandboxIds).toContain("sb2");
       expect(restored.state().expired).toBeUndefined();
+      expect(restored.scheduled()).toBe(retryAt + 10_000);
+      vi.setSystemTime(retryAt + 10_000);
       await restored.run.alarm();
       expect(restored.persisted().stoppingSandboxIds).toEqual([]);
       expect(orphanStops).toBe(2);
       expect(stopped.has("https://daytona.test/sandbox/sb2")).toBe(true);
     },
   );
+
+  it("keeps shutdown retries within the deadline until the run expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    const deadline = Date.now() + 500;
+    mockFetch();
+    const provider = fetch;
+    let stops = 0;
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+      if (input.endsWith("/stop") && ++stops === 1)
+        return Promise.resolve(new Response("unavailable", { status: 503 }));
+      return provider(input, init);
+    });
+    const { run, ready, scheduled, persisted } = fakeRun({
+      ...baseState(
+        new Date(deadline - 2 * 3600_000).toISOString(),
+        "stopped",
+        [],
+      ),
+      stoppingSandboxIds: ["sb1"],
+    });
+    await ready;
+    await run.alarm();
+    expect(scheduled()).toBe(deadline);
+    vi.setSystemTime(deadline);
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      expired: true,
+      stoppingSandboxIds: [],
+    });
+    expect(stops).toBe(2);
+    expect(scheduled()).toBeNull();
+  });
 
   it("claims Stop before awaiting worker cleanup", async () => {
     const entered = deferred();
@@ -1408,6 +1478,193 @@ describe("Run", () => {
       persisted().variants.every((v: object) => !("previewUrl" in v)),
     ).toBe(true);
   });
+
+  it.each([
+    ["plan", "verifier"],
+    ["plan", "report"],
+    ["plan", "report_error"],
+    ["final", "report"],
+    ["task", "report"],
+    ["promotion", "report"],
+  ])("keeps Stop terminal during %s %s", async (target, delay) => {
+    const entered = deferred();
+    const release = deferred();
+    mockFetch({ pass: false, summary: "Needs repair", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      const report =
+        target === "promotion"
+          ? "Promoted variant"
+          : `Verifier on ${target === "task" ? "t1" : target}`;
+      if (
+        (delay === "verifier" && body.text?.format?.name === "verify_plan") ||
+        (delay.startsWith("report") &&
+          input.endsWith("/facts") &&
+          body.text?.startsWith(report))
+      ) {
+        entered.resolve();
+        await release.promise;
+        if (delay === "report_error") throw new Error("memory unavailable");
+      }
+      if (body.text?.format?.name === "plan")
+        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
+      return provider(input, init);
+    });
+    const { run, persisted, ready } = fakeRun(
+      {
+        ...baseState(
+          new Date().toISOString(),
+          target === "plan"
+            ? "inspecting"
+            : target === "promotion"
+              ? "done"
+              : "building",
+          target === "task"
+            ? [task("t1", "in_review")]
+            : target === "promotion"
+              ? [verifiedVariantTask("v1")]
+              : [],
+        ),
+        pending: target === "plan" ? "inspect" : undefined,
+        variants: target === "promotion" ? [variant("v1", "copy")] : undefined,
+      },
+      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+    );
+    await ready;
+    const work = (
+      target === "task"
+        ? run.override("t1", "approve", "Accept")
+        : target === "promotion"
+          ? run.promote("v1")
+          : run.alarm()
+    ).catch((e) => e);
+    await entered.promise;
+    await run.stop();
+    const stoppedSeq = (await run.events(0)).at(-1)!.seq;
+    release.resolve();
+    await work;
+    expect(persisted().phase).toBe("stopped");
+    expect(
+      (await run.events(stoppedSeq)).filter(
+        (e) => e.type === "phase" || e.type === "chat",
+      ),
+    ).toEqual([]);
+    await expect(run.startBuild()).rejects.toThrow("was stopped");
+    expect(calls).not.toContain("POST https://daytona.test/sandbox");
+  });
+
+  it.each([
+    [undefined, "2026-10-16T10:30:00.000Z", "2026-10-16T10:30:00.000Z"],
+    ["invalid", "2026-10-16T10:30:00-01:00", "2026-10-16T10:30:00-01:00"],
+    [
+      "2026-10-16T11:00:00.000Z",
+      "2026-10-16T11:30:00.000Z",
+      "2026-10-16T11:00:00.000Z",
+    ],
+  ])(
+    "migrates stored start %s and first chat %s without extending the run",
+    async (startedAt, ts, expected) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch();
+      const store = new MemoryRunStore();
+      const records: RunRecord[] = [];
+      const initial = {
+        ...baseState("", "done", []),
+        startedAt,
+        chat: [{ role: "user", text: "Original request", ts }],
+      };
+      const { run, persisted, ready, flush, scheduled } = fakeRun(initial, {
+        RECORDS: {
+          async record(input) {
+            records.push(input);
+            await recordRunEvent(store, input);
+          },
+        },
+      });
+      await ready;
+      expect(persisted().startedAt).toBe(expected);
+      expect(scheduled()).toBe(Date.parse(expected!) + 2 * 3600_000);
+      await run.stop();
+      await flush();
+      expect(records.length).toBeGreaterThan(0);
+      expect(records.every((r) => r.run.startedAt === expected)).toBe(true);
+      expect((await store.getRun("run-1"))?.createdAt).toBe(expected);
+      const earlier = Date.now() + 1000;
+      const restored = fakeRun(persisted(), {}, earlier);
+      await restored.ready;
+      expect(restored.scheduled()).toBe(earlier);
+    },
+  );
+
+  it("arms immediate cleanup for a legacy run already past its original deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    mockFetch();
+    const ts = "2026-10-16T09:00:00.000Z";
+    const { run, persisted, ready, scheduled } = fakeRun({
+      ...baseState("", "done", []),
+      startedAt: undefined,
+      chat: [{ role: "user", text: "Original request", ts }],
+    });
+    await ready;
+    expect(persisted().startedAt).toBe(ts);
+    expect(scheduled()).toBe(Date.now());
+    await expect(run.makeVariants()).rejects.toThrow("2-hour limit");
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "stopped",
+      expired: true,
+      startedAt: ts,
+    });
+    expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+    expect(scheduled()).toBeNull();
+  });
+
+  it.each([
+    undefined,
+    "invalid",
+    "2026-02-30T12:00:00Z",
+    "2026-10-16T24:00:00Z",
+    "2026-10-16T12:00:00+99:00",
+  ])(
+    "stops legacy runs with unusable history %s without fabricating records",
+    async (ts) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch();
+      const record = vi.fn();
+      const { run, persisted, ready, flush, scheduled } = fakeRun(
+        {
+          ...baseState("", "done", []),
+          startedAt: ts,
+          chat: ts ? [{ role: "user", text: "Original request", ts }] : [],
+        },
+        { RECORDS: { record } },
+      );
+      await ready;
+      expect(persisted()).toMatchObject({ phase: "stopped", expired: true });
+      expect(persisted().startedAt).toBeUndefined();
+      expect(persisted().error).toContain("no valid stored start time");
+      expect(
+        (await run.events(0)).filter((e) => e.type === "error"),
+      ).toHaveLength(1);
+      expect(scheduled()).toBe(Date.now());
+      await expect(run.startBuild()).rejects.toThrow(
+        "no valid stored start time",
+      );
+      await run.alarm();
+      await flush();
+      expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+      expect(record).not.toHaveBeenCalled();
+      expect(scheduled()).toBeNull();
+      const restored = fakeRun(persisted(), { RECORDS: { record } });
+      await restored.ready;
+      expect(restored.persisted().startedAt).toBeUndefined();
+      expect(restored.scheduled()).toBeNull();
+    },
+  );
 
   it("preserves existing preview availability while dropping legacy capability fields from saved state", async () => {
     const legacy = "https://legacy-preview.test/?token=old-capability";

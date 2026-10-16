@@ -34,6 +34,8 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 Each run is limited to 2 hours from its creation. At the limit the orchestrator stops the workers and every sandbox of the run,
 emits `phase {phase: "stopped", reason: "time_limit"}`, and refuses further actions. Sandboxes also auto-stop after 60 idle minutes.
+Legacy runs retain their stored creation timestamp, or use the original first-chat timestamp when creation time is missing or invalid. With neither valid timestamp, the run stops with an explicit error and immediate sandbox cleanup; no creation time or external run records are fabricated. Alarm scheduling always preserves an earlier pending cleanup or deadline.
+
 Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pending and is retried by alarms until Daytona confirms shutdown, including sandboxes that never finished starting. Stop claims its terminal phase before external cleanup; in-flight setup and workers cannot resume the run.
 
 ## Events
