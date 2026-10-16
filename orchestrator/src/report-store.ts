@@ -20,18 +20,19 @@ function store(env: Env) {
 
 export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
   const { report } = snapshot;
+  // JSON literals preserve strings that SurrealDB's RPC variables coerce into record IDs.
   await store(env).query(
     `BEGIN TRANSACTION;
     UPSERT type::record('report_run', $id) CONTENT {
       runId: $id, target: $target, demo: $demo, successful: $successful,
       completedAt: $completedAt, snapshot: $snapshot
     };
-    FOR $figure IN $figures {
+    FOR $figure IN ${JSON.stringify(report.figures)} {
       UPSERT type::record('report_figure', [$id, $figure.id]) CONTENT {
         run: type::record('report_run', $id), source: type::record('report_source', [$id, $figure.sourceId]), original: $figure
       };
     };
-    FOR $source IN $sources {
+    FOR $source IN ${JSON.stringify(report.sources)} {
       UPSERT type::record('report_source', [$id, $source.id]) CONTENT {
         run: type::record('report_run', $id), original: $source
       };
@@ -46,8 +47,6 @@ export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
       successful: !report.replay,
       completedAt: report.completedAt,
       snapshot: JSON.stringify(snapshot),
-      figures: report.figures,
-      sources: report.sources,
     },
   );
   // A successful write receipt includes a reread, not just an HTTP response.
@@ -87,8 +86,8 @@ export async function saveEdit(
   await store(env).query(
     `UPSERT type::record('report_edit', [$runId, $figureId]) CONTENT {
     run: type::record('report_run', $runId), figure: type::record('report_figure', [$runId, $figureId]),
-    label: $label, value: $value, updatedAt: time::now()
+    label: ${JSON.stringify(edit.label)}, value: ${JSON.stringify(edit.value)}, updatedAt: time::now()
   }`,
-    { runId, figureId, ...edit },
+    { runId, figureId },
   );
 }

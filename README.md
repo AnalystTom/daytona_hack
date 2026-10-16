@@ -1,9 +1,9 @@
 # Reversy
 
-Reversy takes a site apart and rebuilds it with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
+Reversy takes sites and reports apart with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
 Start with a URL and goal; the [run scope and data policy](docs/spec.md#5-run-scope-and-first-demo-target) apply to each brief.
 
-This repository is one TypeScript project deployed as a single Cloudflare Worker named `reversy`:
+The web app is deployed as a Cloudflare Worker named `reversy`, backed by the private `reversy-orchestrator` Worker:
 
 - `src/web/`: React front end, built with Vite and served as Workers static assets.
 - `src/worker/`: the Worker, which handles `/api/*` (for example `GET /api/health`).
@@ -59,6 +59,13 @@ OPERATOR_TOKEN=... npm run example:save -- [runId]
 `runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Only runs in `done`, `stopped` or `failed` phase can be saved. An optional second argument selects the site; its default is in the script. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it. Saving requires `ORCHESTRATOR`, `OPERATOR_TOKEN` and the `SURREALDB_*` bindings below; public reads require only the SurrealDB bindings.
 
 Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
+
+## Report demo
+
+At `/start`, choose **Goldman Sachs report** and send its draft unchanged, or use the same button in an empty `/workspace` to submit it immediately.
+Enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
+Keep the workspace's `?run=<id>` URL to reopen that run after a reload.
+See the [financial report demo](docs/spec.md#financial-report-demo) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
 

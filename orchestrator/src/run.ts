@@ -267,7 +267,6 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
-<<<<<<< HEAD
     await this.beforeWork();
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
@@ -301,16 +300,10 @@ export class Run extends DurableObject<Env> {
       await this.emit("evidence", evidence, signal);
       await this.emit("spec", this.s.spec, signal);
     }
-    if (isReportGoal(goal)) {
-      this.s.demo = isGoldmanDemo(url, goal);
-      this.s.spec.approved = this.s.demo;
-      this.s.spec.pages[0].confirmed = this.s.demo;
-=======
     if (isGoldmanDemo(url, goal)) {
       this.s.demo = true;
       this.s.spec.approved = true;
       this.s.spec.pages[0].confirmed = true;
->>>>>>> 3078c86 (no-mistakes(review): Fix report provenance, numeric validation, routing, and replay)
       this.s.spec.pages[0].notes =
         "Report figures, editable investment breakdown, source locations and bounded online source research";
       this.s.spec.flows = [];
@@ -483,9 +476,11 @@ export class Run extends DurableObject<Env> {
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
-    const signal = this.inspection.signal;
+    this.s.pending = isReportGoal(this.s.spec.goal) ? "report" : "inspect";
+    await this.save(signal);
+    await this.emit("spec", this.s.spec, signal);
+    await this.emit("phase", { phase: "inspecting" }, signal);
     signal.throwIfAborted();
-<<<<<<< HEAD
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return this.s;
   }
@@ -534,8 +529,6 @@ export class Run extends DurableObject<Env> {
     await this.beforeWork();
     this.s.phase = "inspecting";
     this.s.pending = pending;
-=======
->>>>>>> 3078c86 (no-mistakes(review): Fix report provenance, numeric validation, routing, and replay)
     await this.save();
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);

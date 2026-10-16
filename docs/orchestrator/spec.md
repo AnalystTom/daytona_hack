@@ -49,7 +49,7 @@ Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys st
 | Agent | Runs in | Model | Writes code | Job |
 |---|---|---|---|---|
 | Orchestrator | Durable Object on Cloudflare | GPT 6.1 (`gpt-6.1-sol`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
-| Workers | Codex in the Daytona sandbox | GPT 6.1 (`gpt-6.1-sol`), high reasoning | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
+| Workers | Codex in the Daytona sandbox | `WORKER_MODEL`, reasoning from `WORKER_EFFORT` (deployment values in [`wrangler.jsonc`](../../orchestrator/wrangler.jsonc)) | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
 | Reviewer | Orchestrator, on Cloudflare | GPT 6.1 | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
 | Verifier | Cloudflare, outside the sandbox | GPT 6.1 (`VERIFIER_MODEL`) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
 
@@ -57,6 +57,18 @@ All models are OpenAI; there is no Anthropic model in the demo.
 The verifier has its own instructions and runs outside the sandbox, so it stays independent of the agents it checks.
 
 ## 5. How a run works
+
+### Report dissection
+
+The [report demo](../spec.md#financial-report-demo) branches from the website workflow below. Only the exact URL and goal in [`src/shared/report.ts`](../../src/shared/report.ts) auto-approve scope. Other goals containing the word `report` require approval in chat or through the approve route, then use report dissection instead of website planning.
+
+The report path runs `brief` → `inspecting` → `done` (or `failed` / `stopped`). It captures the article, parses available embedded Flourish chart data without executing source JavaScript, researches original sources, confirms persistence and emits a `report` event. The product spec owns its output and replay behavior.
+
+Research uses at most four OpenAI web-search tool calls and fetches at most six candidate original-source URLs, in addition to up to three embedded charts. A search that executes no web-search calls fails. Article/chart source identities are excluded before and after redirects.
+
+The bounded quote-evidence rule requires the complete independently captured HTML passage, never a model-clipped substring. After whitespace normalization, both the passage and figure value must exactly match the captured figure quotation and value; the unit, scale and currency must be explicit in the value (except a year). Different wording or uncertain units remain unverified. There is no general quantity parser, FX conversion or inferred equivalence. The shared implementation is `exactQuoteEvidence` in [`src/shared/report.ts`](../../src/shared/report.ts), also checked when displaying a match; [`dissection.test.ts`](../../orchestrator/src/dissection.test.ts) covers a clipped heading that omits a currency qualifier.
+
+The orchestrator needs `OPENAI_API_KEY` and the `SURREALDB_*` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
 
 ### Phase 1: Brief (chat)
 
@@ -162,6 +174,7 @@ A pixel-difference overlay can be shown; a numeric score appears only if it name
 
 **Scheduling.** Tasks form a dependency graph.
 The orchestrator dispatches every task whose dependencies have merged, up to `MAX_WORKERS` at once, and re-checks the queue on a Durable Object alarm.
+Deployment values for worker concurrency and reasoning live in [`orchestrator/wrangler.jsonc`](../../orchestrator/wrangler.jsonc); unset bindings fall back to six workers and high reasoning.
 
 **Kanban mapping.** The Build view's columns follow the orchestrator's task events:
 
@@ -217,6 +230,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 
 - **SurrealDB's target record model** links runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods as a graph (feature cites evidence, task implements feature, review judges task).
   It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
+- **Report records** use `report_run` for the snapshot and replay eligibility, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Replay copies the prior figures and source records into the new run with fresh edits; it does not copy screenshot blobs or make that replay eligible as a successful live fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
 ## 13. Decided
@@ -232,7 +246,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
 - Run access: see section 8.
-- The report demo captures the Goldman Sachs article and embedded investment chart, stores figure/source provenance and edits in SurrealDB, and searches online with at most four OpenAI web-search calls and six original-source fetches. It starts no build workers. Only the exact starter automatically approves scope. Live failures replay a successful demo only with its original run ID and time shown. REA, variants and changes to login are out of this report demo.
+- Report demo: see the [product scope](../spec.md#financial-report-demo) and [report workflow](#report-dissection).
 
 ## 14. Open questions
 
