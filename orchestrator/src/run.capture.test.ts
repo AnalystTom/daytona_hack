@@ -232,6 +232,7 @@ describe("Run sign-in handoff", () => {
         throw new Error(`Unexpected request: ${url}`);
       });
       await run.start("run-1", "https://example.com/", "Rebuild both layers.");
+      requests.length = 0; // Count backend inspection separately from startup redirect resolution.
       await run.approveSpec();
       captureMock.mockResolvedValueOnce({
         status: "captured",

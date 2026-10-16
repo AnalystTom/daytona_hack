@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { backendFacts, inspectBackend, maxRedirects, resolveRedirects } from "./inspect";
+import {
+  backendFacts,
+  inspectBackend,
+  maxRedirects,
+  resolveRedirects,
+} from "./inspect";
 
 afterEach(() => vi.restoreAllMocks());
 
