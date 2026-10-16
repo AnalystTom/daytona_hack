@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { LandingIntro, shouldRevealSite, shouldShowIntro } from "./Intro";
+import { LandingIntro, shouldShowIntro } from "./Intro";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -53,16 +53,16 @@ describe("landing intro", () => {
     expect(html).not.toContain('src="/intro/reversy-intro.mp4"');
   });
 
-  it("starts the handoff when the final Reversy hold begins", () => {
-    expect(shouldRevealSite(7.99, 10)).toBe(false);
-    expect(shouldRevealSite(8, 10)).toBe(true);
-    expect(shouldRevealSite(10, 10)).toBe(true);
+  it("keeps one live landing page mounted beneath the video for the reveal", () => {
+    visit();
+    const html = renderToStaticMarkup(
+      <LandingIntro>
+        <a href="/app">Start a project</a>
+      </LandingIntro>,
+    );
+    expect(html.match(/Start a project/g)).toHaveLength(1);
+    expect(html.indexOf('href="/app"')).toBeLessThan(html.indexOf("<dialog"));
   });
-
-  it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, 1])(
-    "waits for the ended event if the duration is %s",
-    (duration) => expect(shouldRevealSite(0, duration)).toBe(false),
-  );
   it.each([{ seen: true }, { reducedMotion: true }, { hash: "#how-it-works" }])(
     "goes straight to the site for %j",
     (options) => {

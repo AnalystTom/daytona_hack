@@ -8,13 +8,7 @@ import {
 import { Icon } from "./icons";
 import "./intro.css";
 
-const seenKey = "reversy:intro-seen:v2";
-
-export function shouldRevealSite(currentTime: number, duration: number) {
-  return (
-    Number.isFinite(duration) && duration > 2 && currentTime >= duration - 2
-  );
-}
+const seenKey = "reversy:intro-seen:v3";
 
 export function shouldShowIntro() {
   if (typeof window === "undefined") return false;
@@ -68,6 +62,10 @@ function Intro({ onFinish }: { onFinish: () => void }) {
     const dialog = dialogRef.current;
     const video = videoRef.current;
     const overflow = document.body.style.overflow;
+    const root = document.documentElement;
+    const scrollbarGutter = root.style.scrollbarGutter;
+    // Keep the live page's width identical while its scrollbar is hidden.
+    root.style.scrollbarGutter = "stable";
     document.body.style.overflow = "hidden";
     dialog?.showModal();
     video?.play().catch(() => {
@@ -78,6 +76,7 @@ function Intro({ onFinish }: { onFinish: () => void }) {
       video?.pause();
       dialog?.close();
       document.body.style.overflow = overflow;
+      root.style.scrollbarGutter = scrollbarGutter;
     };
   }, []);
 
@@ -118,12 +117,6 @@ function Intro({ onFinish }: { onFinish: () => void }) {
         playsInline
         disablePictureInPicture
         aria-label="The Reversy beaver cuts through the Daytona page to reveal Reversy"
-        onTimeUpdate={(event) => {
-          const video = event.currentTarget;
-          if (shouldRevealSite(video.currentTime, video.duration)) {
-            setState("leaving");
-          }
-        }}
         onEnded={() => setState("leaving")}
         onError={onFinish}
         onWaiting={() =>
