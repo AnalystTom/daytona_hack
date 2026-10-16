@@ -4,6 +4,7 @@ import type {
   DraftSpec,
   SpecCanvas,
 } from "../../shared/workspace";
+import { notObservedReason } from "../../shared/evidence";
 import { CanvasItem } from "./Canvas";
 import { fetchEvidence } from "./runClient";
 
@@ -64,6 +65,11 @@ export function DraftSpecCard({ spec }: { spec: DraftSpec }) {
         ) : (
           <p className="muted">{NOT_CONFIRMED}</p>
         )}
+        {spec.redirectedFrom && spec.url && (
+          <p className="muted">
+            You entered {spec.redirectedFrom}; it redirects to {spec.url}.
+          </p>
+        )}
       </section>
       <section className="spec-field">
         <h3>Pages and flows</h3>
@@ -91,18 +97,22 @@ function EvidenceCaption({ item }: { item: CanvasEvidence }) {
 }
 
 function ScreenshotCard({ item }: { item: CanvasEvidence }) {
-  const src = useEvidenceSrc(item.src);
+  const src = useEvidenceSrc(item.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">
         <ImageIcon />
         <h2 className="card-title">Target screenshot</h2>
       </header>
-      <img
-        className="evidence-media"
-        src={src}
-        alt={`Screenshot of ${item.pageOrState}`}
-      />
+      {item.src ? (
+        <img
+          className="evidence-media"
+          src={src}
+          alt={`Screenshot of ${item.pageOrState}`}
+        />
+      ) : (
+        <p className="muted">{notObservedReason(item.limitations.join(" "))}</p>
+      )}
       <EvidenceCaption item={item} />
     </article>
   );

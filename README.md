@@ -30,6 +30,10 @@ Bare domains and `www.` addresses use HTTPS and preserve their port, path, query
 
 The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
 
+In **Spec**, when the entered URL redirects, the draft spec shows "You entered X; it redirects to Y" beside the resolved target URL. Redirect handling and capture limits are described in the [orchestrator API](docs/orchestrator/api.md#evidence-capture).
+
+A screenshot item marked **Not observed** stays on the canvas with the capture reason and no image. If the first look has no usable screenshot, Reversy's first chat reply explains why.
+
 Use **Spec** or **Build** to work on the canvas:
 
 - Drag empty canvas space or scroll to pan. Scrollable card content scrolls normally until its edge.

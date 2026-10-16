@@ -18,6 +18,7 @@ const Chat = z.object({ role: z.string(), text: z.string() });
 const ErrorData = z.object({ message: z.string() });
 const Spec = z.object({
   url: z.string(),
+  redirects: z.array(z.string()).optional(),
   pages: z.array(
     z.object({
       path: z.string(),
@@ -153,7 +154,10 @@ export function runView(
         const e = item.data;
         // Only screenshots and recordings have a card; other evidence feeds the plan.
         const kind = e.kind === "recording" ? "recording" : "screenshot";
-        if (e.kind !== kind || !e.url || !EVIDENCE_PATH.test(e.url)) break;
+        // A screenshot that was not observed still gets a card saying why.
+        const missing = e.status === "not_observed" && kind === "screenshot";
+        if (e.kind !== kind) break;
+        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
         view.evidence = view.evidence.filter((x) => x.id !== e.id);
         view.evidence.push({
           id: e.id,
@@ -164,7 +168,7 @@ export function runView(
           capturedAt: e.capturedAt,
           contentHash: e.hash || "unknown",
           limitations: e.limits ? [e.limits] : [],
-          src: `/api/v1${e.url}`,
+          src: missing ? undefined : `/api/v1${e.url}`,
         });
         break;
       }
@@ -278,6 +282,10 @@ function draftSpec(spec: z.infer<typeof Spec>): DraftSpec {
   ];
   return {
     url: isWebLink(spec.url) ? spec.url : undefined,
+    redirectedFrom:
+      spec.redirects?.[0] && isWebLink(spec.redirects[0])
+        ? spec.redirects[0]
+        : undefined,
     pagesAndFlows: pagesAndFlows.length ? pagesAndFlows : undefined,
     openQuestions: spec.openQuestions.length ? spec.openQuestions : undefined,
     status: spec.approved ? "approved" : "draft",

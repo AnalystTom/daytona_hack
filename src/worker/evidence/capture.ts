@@ -4,6 +4,7 @@ import {
   type CaptureRequest,
   type EvidenceRecord,
   inScope,
+  leftScope,
   redactQuery,
   viewports,
 } from "../../shared/evidence";
@@ -48,8 +49,7 @@ async function sha256(bytes: Uint8Array) {
 }
 
 export const recordingCapMs = 30_000;
-// Ends the reason on every item of a page that left the scope; the orchestrator offers sign-in on it.
-export const leftScope = "outside the approved scope";
+export { leftScope } from "../../shared/evidence";
 
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";

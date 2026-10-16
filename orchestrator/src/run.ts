@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   type CaptureRequest,
   inScope,
+  notObservedReason,
   redactQuery,
 } from "../../src/shared/evidence";
 import { CaptureError } from "../../src/worker/evidence/capture";
@@ -15,6 +16,7 @@ import {
   isStoredEvidenceId,
   maxPaths,
   outline,
+  resolveRedirects,
   routesFrom,
   stoppedPages,
 } from "./inspect";
@@ -76,8 +78,7 @@ export class Run extends DurableObject<Env> {
 
   private get tracer() {
     if (
-      !this._tracer ||
-      !this._tracer.traceId.startsWith(this.s.id.replace(/-/g, "").slice(0, 8))
+      !this._tracer?.traceId.startsWith(this.s.id.replace(/-/g, "").slice(0, 8))
     ) {
       this._tracer = new RunTracer(this.env, this.ctx, this.s.id);
     }
@@ -212,7 +213,8 @@ export class Run extends DurableObject<Env> {
   }
 
   /** Phase 1: create the run, take a first look, open the conversation. */
-  async start(id: string, url: string, goal: string) {
+  async start(id: string, entered: string, goal: string) {
+    let url = entered;
     const signal = this.inspection.signal;
     this.s = {
       id,
@@ -234,23 +236,67 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
+    // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
+    const site = await resolveRedirects(entered);
+    if (signal.aborted) return this.s;
+    const notes: string[] = [];
+    if (site.chain.length > 1 || site.stopped) {
+      url = site.url;
+      this.s.spec.url = url;
+      this.s.spec.pages = [{ path: new URL(url).pathname, confirmed: false }];
+      if (site.chain.length > 1) this.s.spec.redirects = site.chain;
+      const summary =
+        site.chain.length > 1
+          ? `You entered ${redactQuery(entered)}; it redirects to ${redactQuery(url)}.`
+          : `You entered ${redactQuery(entered)}.`;
+      const evidence: Evidence = {
+        id: "redirects",
+        page: new URL(url).pathname,
+        kind: "redirects",
+        tool: "fetch",
+        status: "observed",
+        capturedAt: now(),
+        hash: "",
+        limits: site.stopped
+          ? `Did not follow the redirect to ${site.stopped}`
+          : "",
+        summary,
+      };
+      notes.push(`${summary} ${evidence.limits}`.trim());
+      this.s.evidence.push(evidence);
+      await this.save(signal);
+      await this.emit("evidence", evidence, signal);
+      await this.emit("spec", this.s.spec, signal);
+    }
     try {
-      await this.traced("inspector.first_look", "TOOL", url, () =>
-        this.capture({
-          mode: "first_look",
-          scope: captureScope(url, []).scope,
-        }),
+      const result = await this.traced(
+        "inspector.first_look",
+        "TOOL",
+        url,
+        () =>
+          this.capture({
+            mode: "first_look",
+            scope: captureScope(url, []).scope,
+          }),
       );
+      const shots =
+        result.status === "captured"
+          ? result.items.filter((i) => i.kind === "screenshot")
+          : [];
+      if (!shots.some((i) => i.label === "observed"))
+        notes.push(
+          `No screenshot: ${notObservedReason(redactQuery(shots[0]?.limitations.join(" ") ?? ""))}`,
+        );
     } catch (e: any) {
       if (signal.aborted) return this.s;
       // The conversation can start without the screenshot.
+      const message = String(e?.message || e);
       await this.emit(
         "error",
-        {
-          message: `First look screenshot failed: ${String(e?.message || e)}`,
-        },
+        { message: `First look screenshot failed: ${message}` },
         signal,
       );
+      notes.push(`No screenshot: the capture failed: ${message}`);
     }
     if (signal.aborted) return this.s;
     const { html } = await pageHtml(this.env, url);
@@ -268,13 +314,17 @@ export class Run extends DurableObject<Env> {
       signal,
     );
     await this.converse(
-      `First look done. Main routes found: ${routes.join(", ")}`,
+      [
+        "First look done.",
+        ...notes,
+        `Main routes found: ${routes.join(", ")}`,
+      ].join(" "),
       signal,
     );
     return this.s;
   }
 
-  /** Chat: the user is the captain; the orchestrator refines the spec. */
+  /** Chat: the orchestrator refines the spec with the user. */
   async message(text: string) {
     await this.addChat("user", text);
     await this.converse();
@@ -503,7 +553,9 @@ export class Run extends DurableObject<Env> {
     }>(this.env, {
       name: "orchestrator_turn",
       effort: "medium",
-      instructions: `You are Reversy's orchestrator talking to the user (the captain) about rebuilding a website.
+      instructions: `You are Reversy's orchestrator talking to the user about rebuilding a website.
+Address the user neutrally as "you", with no title or nickname.
+If the note says there is no screenshot, tell the user why in plain words, using the reason it gives.
 Ask at most one round of short, concrete questions (which pages and flows, which interactions, what to change).
 Update the draft spec: mark a page or flow confirmed only when the user agreed to it; everything else stays unconfirmed.
 Scope for this version: the landing page in detail plus one signed-in flow (create a sandbox) with a mock back end.

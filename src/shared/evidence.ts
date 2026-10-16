@@ -58,6 +58,19 @@ const normalisePath = (path: string) =>
 export const redactQuery = (value: string) =>
   value.replace(/[?#][^\s"']*/g, "");
 
+// Ends the reason on every item of a page that left the scope; the orchestrator offers sign-in on it.
+export const leftScope = "outside the approved scope";
+
+/** Why an item was not observed, in plain words, from its capture limitations. */
+export function notObservedReason(limits: string): string {
+  const moved = limits.match(/(?:Redirected|Page moved) to (\S+?),? outside/);
+  if (moved)
+    return `The site redirected to ${moved[1]}, outside the pages approved for this run; that is usually a sign-in page.`;
+  const failed = limits.match(/Capture failed: (.*)/);
+  if (failed) return `The capture service refused: ${failed[1]}`;
+  return limits || "The capture returned no screenshot.";
+}
+
 // A scoped query must match exactly; queryless paths allow any query. Trailing slashes are equivalent.
 export function inScope(url: string, scope: CaptureScope): boolean {
   let parsed: URL;
