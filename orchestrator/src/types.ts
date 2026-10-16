@@ -14,6 +14,8 @@ export interface Env {
   SPECTRON_API_KEY?: string;
   ANCHORBROWSER_API_KEY?: string;
   EVENTS_WEBHOOK_URL?: string;
+  ARIZE_API_KEY?: string;
+  ARIZE_SPACE_ID?: string;
 }
 
 export type Phase = "brief" | "inspecting" | "planning" | "planned" | "building" | "done" | "stopped" | "failed";

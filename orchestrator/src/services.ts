@@ -1,12 +1,24 @@
 // OpenAI (structured outputs), SurrealDB Agent Memory, Anchor Browser — all over plain fetch.
+import type { RunTracer } from "./tracing";
 import type { Env } from "./types";
 
+// Set by the Run that owns this isolate's current work, so every model call lands in its trace.
+export const tracing: { current?: RunTracer } = {};
+
 export async function llmJson<T>(env: Env, opts: { instructions: string; input: string; schema: object; name: string; effort?: string; model?: string }): Promise<T> {
+  const model = opts.model || env.ORCHESTRATOR_MODEL;
+  const call = (set?: (a: Record<string, string | number>) => void) => llmCall<T>(env, opts, model, set);
+  return tracing.current
+    ? tracing.current.span(`llm.${opts.name}`, "LLM", { "llm.model_name": model, "input.value": opts.input.slice(0, 20000), "llm.system": opts.instructions.slice(0, 4000) }, call)
+    : call();
+}
+
+async function llmCall<T>(env: Env, opts: { instructions: string; input: string; schema: object; name: string; effort?: string }, model: string, set?: (a: Record<string, string | number>) => void): Promise<T> {
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: opts.model || env.ORCHESTRATOR_MODEL,
+      model,
       reasoning: { effort: opts.effort || "high" },
       instructions: opts.instructions,
       input: opts.input,
@@ -16,6 +28,7 @@ export async function llmJson<T>(env: Env, opts: { instructions: string; input: 
   const body: any = await res.json();
   if (!res.ok) throw new Error(`openai ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
   const text = body.output_text ?? body.output?.flatMap((o: any) => o.content || []).find((c: any) => c.type === "output_text")?.text;
+  set?.({ "output.value": text, "llm.token_count.prompt": body.usage?.input_tokens || 0, "llm.token_count.completion": body.usage?.output_tokens || 0 });
   return JSON.parse(text) as T;
 }
 

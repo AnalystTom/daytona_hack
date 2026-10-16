@@ -2,7 +2,8 @@
 import { DurableObject } from "cloudflare:workers";
 import { Daytona, shq } from "./daytona";
 import { inspectPage, outline, routesFrom } from "./inspect";
-import { llmJson, recall, remember } from "./services";
+import { llmJson, recall, remember, tracing } from "./services";
+import { RunTracer } from "./tracing";
 import { verifyFinal, verifyPlan, verifyTask, type Verdict } from "./verifier";
 import type { ChatMessage, Env, Evidence, Phase, RunEvent, Spec, Task } from "./types";
 
@@ -31,6 +32,19 @@ export class Run extends DurableObject<Env> {
   private s!: State;
   private seq = 0;
   private daytona: Daytona;
+  private _tracer?: RunTracer;
+
+  private get tracer() {
+    if (!this._tracer || !this._tracer.traceId.startsWith(this.s.id.replace(/-/g, "").slice(0, 8))) {
+      this._tracer = new RunTracer(this.env, this.ctx, this.s.id);
+    }
+    tracing.current = this._tracer;
+    return this._tracer;
+  }
+
+  private traced<T>(name: string, kind: "CHAIN" | "TOOL" | "AGENT" | "EVALUATOR", input: string, fn: (set: (a: Record<string, string | number | boolean>) => void) => Promise<T>) {
+    return this.tracer.span(name, kind, { "input.value": input, "run.id": this.s.id }, fn);
+  }
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -86,9 +100,10 @@ export class Run extends DurableObject<Env> {
       spec: { url, goal, pages: [{ path: new URL(url).pathname, confirmed: false }], flows: [], openQuestions: [], approved: false, revision: 0 },
     };
     await this.save();
+    this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" });
     await this.addChat("user", `${url}\n${goal}`);
-    const cap = await inspectPage(this.env, url, 1, { full: false });
+    const cap = await this.traced("inspector.first_look", "TOOL", url, () => inspectPage(this.env, url, 1, { full: false }));
     await this.storeEvidence(cap.evidence, cap.blobs);
     const html = String(Object.values(cap.blobs).find((b) => typeof b === "string") || "");
     const routes = routesFrom(html, url);
@@ -165,11 +180,11 @@ export class Run extends DurableObject<Env> {
     try {
       if (this.s.pending === "inspect") {
         this.s.pending = undefined;
-        await this.inspectAndPlan();
+        await this.traced("phase.inspect_and_plan", "CHAIN", JSON.stringify(this.s.spec), () => this.inspectAndPlan());
       } else if (this.s.pending === "build_setup") {
         this.s.pending = undefined;
         try {
-          await this.setupSandbox();
+          await this.traced("phase.build_setup", "TOOL", "create Daytona sandbox", () => this.setupSandbox());
         } catch (e) {
           this.s.phase = "planned"; // let the user press Start build again
           if (this.s.sandboxId) await this.daytona.remove(this.s.sandboxId).catch(() => {});
@@ -178,7 +193,7 @@ export class Run extends DurableObject<Env> {
         }
         await this.ctx.storage.setAlarm(Date.now() + 100);
       } else if (this.s.phase === "building") {
-        await this.tick();
+        await this.traced("build.tick", "CHAIN", this.s.tasks.map((t) => `${t.id}:${t.status}`).join(" "), () => this.tick());
       }
     } catch (e: any) {
       this.s.error = String(e?.message || e);
@@ -198,6 +213,10 @@ export class Run extends DurableObject<Env> {
   }
 
   private async converse(note?: string) {
+    return this.traced("orchestrator.chat_turn", "AGENT", this.s.chat.at(-1)?.text || "", (set) => this.converseInner(set, note));
+  }
+
+  private async converseInner(set: (a: Record<string, string>) => void, note?: string) {
     const memory = await recall(this.env, this.memScope(), this.s.chat.at(-1)?.text || this.s.spec.goal);
     const out = await llmJson<{ reply: string; spec: Omit<Spec, "approved" | "revision" | "url" | "goal">; userApproved: boolean }>(this.env, {
       name: "orchestrator_turn",
@@ -229,6 +248,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
       },
     });
     Object.assign(this.s.spec, out.spec);
+    set({ "output.value": out.reply });
     await this.emit("spec", this.s.spec);
     await this.addChat("assistant", out.reply);
     if (out.userApproved) await this.approveSpec();
@@ -322,7 +342,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     for (const e of this.s.evidence) {
       if (!e.path) continue;
       const b = await this.ctx.storage.get<ArrayBuffer>(`blob:${e.id}`);
-      if (b && e.kind !== "screenshot") await this.daytona.writeFile(id, `/home/daytona/${e.path}`, new TextDecoder().decode(b));
+      if (b) await this.daytona.writeFile(id, `/home/daytona/${e.path}`, e.kind === "screenshot" ? b : new TextDecoder().decode(b));
     }
     await this.daytona.writeFile(id, `${EV}/index.json`, JSON.stringify(this.s.evidence, null, 1));
     await this.daytona.writeFile(id, `${EV}/spec.json`, JSON.stringify(this.s.spec, null, 1));
@@ -335,6 +355,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
   }
 
   private async verified(v: Verdict) {
+    await this.traced(`verifier.${v.target}`, "EVALUATOR", v.taskId || v.target, async (set) => set({ "output.value": JSON.stringify(v), "eval.pass": v.pass }));
     await this.emit("verification", v);
     await remember(this.env, this.memScope(), `Verifier on ${v.taskId || v.target}: ${v.pass ? "pass" : "fail"} — ${v.summary}`);
     if (!v.pass) {
@@ -356,7 +377,11 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       const r = await this.daytona.exec(id, `cat ${LOGS}/${t.id}.exit 2>/dev/null`);
       if (r.exitCode !== 0 || !r.result.trim()) continue;
       const code = parseInt(r.result.trim(), 10);
-      await this.review(t, code);
+      await this.traced(`worker.${t.id}`, "AGENT", t.title, async (set) => {
+        set({ "worker.exit_code": code, "worker.attempt": t.attempts, "worker.model": this.env.WORKER_MODEL, "worker.started_at": t.startedAt || "" });
+        await this.review(t, code);
+        set({ "output.value": JSON.stringify(t.review), "task.status": t.status });
+      });
     }
     // 2. dispatch every task whose dependencies merged
     const max = parseInt(this.env.MAX_WORKERS || "6", 10);
@@ -409,7 +434,13 @@ Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the t
     const dir = `${WT}/${t.id}`;
     await this.daytona.must(id, `cd ${APP} && (git worktree remove --force ${dir} 2>/dev/null; rm -rf ${dir}; git worktree prune; git branch -D ${t.branch} 2>/dev/null; true) && git worktree add -q ${dir} -b ${t.branch} main && rm -f ${LOGS}/${t.id}.exit`);
     await this.daytona.writeFile(id, `${LOGS}/${t.id}.prompt.md`, this.instructions(t));
-    const cmd = `cd ${dir} && timeout 900 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
+    // let the worker see up to two screenshots it builds from
+    const images = this.s.evidence
+      .filter((e) => e.kind === "screenshot" && e.status === "observed" && e.path && t.evidence.includes(e.id))
+      .slice(0, 2)
+      .map((e) => `-i /home/daytona/${e.path}`)
+      .join(" ");
+    const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
     t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
     t.status = "building";
     t.attempts += 1;

@@ -90,7 +90,7 @@ export class Daytona {
     return r.cmdId;
   }
 
-  async writeFile(id: string, path: string, content: string) {
+  async writeFile(id: string, path: string, content: string | ArrayBuffer) {
     const form = new FormData();
     form.append("file", new Blob([content]), path.split("/").pop());
     const res = await fetch(`${await this.tb(id)}/files/upload?path=${encodeURIComponent(path)}`, {
