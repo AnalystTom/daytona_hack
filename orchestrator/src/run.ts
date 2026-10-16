@@ -459,7 +459,7 @@ export class Run extends DurableObject<Env> {
         ...evidence,
         url:
           evidence.url && evidence.status !== "not_observed"
-            ? `/runs/${previous.report.runId}/evidence/${evidence.id}`
+            ? `/runs/${this.s.id}/evidence/${evidence.id}`
             : undefined,
       }));
       await this.emit("evidence_reset", {});

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import {
   GOLDMAN_GOAL,
   GOLDMAN_URL,
@@ -17,6 +17,15 @@ import { capture } from "./inspect";
 import { llmJson } from "./services";
 import { Run } from "./run";
 import type { Env } from "./types";
+import backend from "./index";
+import { runView } from "../../src/web/workspace/orchestrator";
+import { handleOrchestrator } from "../../src/worker/orchestrator/front";
+import {
+  accessJwt,
+  AUD,
+  certs,
+  TEAM,
+} from "../../src/worker/orchestrator/access-fixtures";
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
@@ -178,7 +187,12 @@ it.each([false, true])(
       replay: { runId: "test-run", completedAt: priorReport.completedAt },
     });
     expect(state.report?.figures).toEqual(priorReport.figures);
-    expect(state.evidence).toEqual(priorState.evidence);
+    expect(state.evidence).toEqual(
+      priorState.evidence.map((evidence) => ({
+        ...evidence,
+        url: evidence.url?.replace("/runs/test-run/", "/runs/new-run/"),
+      })),
+    );
     expect(current.data.has("blob:ev_report_html")).toBe(false);
     expect(current.data.has("blob:ev_report_screen")).toBe(false);
     const html = await current.run.evidenceFile("ev_report_html");
@@ -202,9 +216,64 @@ it.each([false, true])(
     ).toHaveLength(hasScreen ? 1 : 0);
     expect(
       state.evidence.every(
-        (e) => !e.url || e.url.startsWith("/runs/test-run/evidence/"),
+        (e) => !e.url || e.url.startsWith("/runs/new-run/evidence/"),
       ),
     ).toBe(true);
+    const screenshot = runView("new-run", events).evidence.find(
+      (e) => e.id === "ev_report_screen",
+    );
+    assert(screenshot);
+    const backendEnv = {
+      RUNS: {
+        idFromName: (id: string) => id,
+        get: (id: string) => (id === "new-run" ? current.run : previous.run),
+      },
+    } as unknown as Env;
+    const env = {
+      ACCESS_TEAM_DOMAIN: TEAM,
+      ACCESS_AUD: AUD,
+      ORCHESTRATOR: {
+        fetch: (url: string, init?: RequestInit) =>
+          backend.fetch(new Request(url, init), backendEnv),
+      } as unknown as Fetcher,
+    };
+    const deps = {
+      fetcher: certs,
+      owners: {
+        get: async (runId: string) => ({
+          runId,
+          owner: runId === "new-run" ? "bob@example.com" : "alice@example.com",
+          createdAt: Date.now(),
+        }),
+        list: vi.fn(async () => []),
+        reserve: vi.fn(async () => undefined),
+        finish: vi.fn(async () => undefined),
+      },
+    };
+    const token = await accessJwt({ email: "bob@example.com" });
+    const request = (path: string) =>
+      handleOrchestrator(
+        new Request(`https://reversy.test${path}`, {
+          headers: { "cf-access-jwt-assertion": token },
+        }),
+        env,
+        deps,
+      );
+    const response = await request(
+      screenshot.src ?? "/api/v1/runs/new-run/evidence/ev_report_screen",
+    );
+    assert(response);
+    expect(response.status).toBe(hasScreen ? 200 : 404);
+    if (hasScreen) {
+      expect(response.headers.get("content-type")).toBe("image/png");
+      expect(new Uint8Array(await response.arrayBuffer())).toEqual(
+        new Uint8Array([1, 2, 3]),
+      );
+    }
+    expect(
+      (await request("/api/v1/runs/test-run/evidence/ev_report_screen"))
+        ?.status,
+    ).toBe(404);
     expect(runs.idFromName).toHaveBeenCalledWith("test-run");
     expect(priorReport.edits.f1.value).toBe("Prior value");
     await current.run.editReport("f1", {
