@@ -34,21 +34,27 @@ const bareHost =
 export function parseBrief(
   text: string,
 ): { url: string; goal: string } | undefined {
-  const explicit = text.match(/https?:\/\/[^\s<>"]+/i);
-  const raw = (explicit ?? text.split(/\s+/))
-    .map((token) => token.replace(/[.,;:!?)\]]+$/, ""))
-    .find(
-      (token) =>
-        explicit !== null || (!token.includes("@") && bareHost.test(token)),
-    );
-  if (!raw) return undefined;
-  const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
-  const goal = text
-    .replace(raw, " ")
-    .replace(/\s+/g, " ")
-    .replace(/ ([,.;:!?])/g, "$1")
-    .trim();
-  return { url, goal: goal || "Rebuild this website." };
+  for (const token of text.matchAll(/\S+/g)) {
+    const raw = token[0].replace(/[.,;:!?)\]]+$/, "");
+    const explicit = /^https?:\/\/[^/?#\s<>"]+(?:[/?#][^\s<>"]*)?$/i.test(raw);
+    if (!explicit && (raw.includes("@") || !bareHost.test(raw))) continue;
+    const url = explicit ? raw : `https://${raw}`;
+    try {
+      new URL(url);
+    } catch {
+      continue;
+    }
+    const goal = (
+      text.slice(0, token.index) +
+      " " +
+      text.slice(token.index + raw.length)
+    )
+      .replace(/\s+/g, " ")
+      .replace(/ ([,.;:!?])/g, "$1")
+      .trim();
+    return { url, goal: goal || "Rebuild this website." };
+  }
+  return undefined;
 }
 
 // The first message with a URL creates the run (it is the brief); later ones go to that run.

@@ -90,6 +90,51 @@ describe("parseBrief", () => {
     });
   });
 
+  it.each([
+    "example.com/path/https://other.org/page",
+    "example.com?next=https://other.org/page",
+    "example.com#https://other.org/page",
+    "www.example.com?next=https://other.org/page",
+    "http://example.com?next=https://other.org/page",
+    "https://example.com?next=https://other.org/page",
+  ])("keeps nested URLs inside the target token %s", (address) => {
+    expect(parseBrief(`Rebuild ${address}, only the header.`)).toEqual({
+      url: /^https?:\/\//.test(address) ? address : `https://${address}`,
+      goal: "Rebuild, only the header.",
+    });
+  });
+
+  it.each([
+    ["wikipedia.com", "https://other.org/page", "https://wikipedia.com"],
+    ["www.wikipedia.com", "https://other.org/page", "https://www.wikipedia.com"],
+    ["https://other.org/page", "wikipedia.com", "https://other.org/page"],
+  ])("selects the first address %s before %s", (first, second, url) => {
+    expect(parseBrief(`${first} ${second}`)).toEqual({ url, goal: second });
+  });
+
+  it.each([
+    "nothttps://example.com",
+    "email@https://example.com",
+    "ftp://example.com",
+    "https://",
+    "https:///example.com",
+    "https://example.com:invalid",
+    "example.com:99999",
+  ])("rejects an invalid complete URL token %s", (address) => {
+    expect(parseBrief(address)).toBeUndefined();
+  });
+
+  it.each([
+    ["shop.com.auction;", "shop.com", "https://shop.com"],
+    ["tom@www.example.com;", "www.example.com", "https://www.example.com"],
+    ["nothttps://example.com;", "https://example.com", "https://example.com"],
+  ])("removes the selected occurrence after %s", (rejected, address, url) => {
+    expect(parseBrief(`Do not copy ${rejected} copy ${address}`)).toEqual({
+      url,
+      goal: `Do not copy ${rejected} copy`,
+    });
+  });
+
   it("finds no URL in plain text", () => {
     expect(parseBrief("rebuild the daytona landing page")).toBeUndefined();
   });
@@ -100,6 +145,7 @@ describe("deliver", () => {
     "https://example.com",
     "wikipedia.com",
     "example.com:8443/dashboard?view=mobile#pricing",
+    "example.com?next=https://other.org/page",
   ])("creates the run from the first message with %s", async (address) => {
     const client: RunClient = {
       createRun: vi.fn(
@@ -123,6 +169,7 @@ describe("deliver", () => {
     "bücher.de",
     "example.com+tag@example.org",
     "www.example.com+tag@example.org",
+    "nothttps://example.com",
   ])("asks for the URL instead of creating a run for %s", async (message) => {
     const client: RunClient = { createRun: vi.fn(), sendMessage: vi.fn() };
     expect(await deliver(undefined, message, client)).toEqual({
