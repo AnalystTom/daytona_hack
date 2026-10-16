@@ -226,7 +226,12 @@ export class Run extends DurableObject<Env> {
   }
 
   /** Phase 1: create the run, take a first look, open the conversation. */
-  async start(id: string, entered: string, goal: string, startedAt = Date.now()) {
+  async start(
+    id: string,
+    entered: string,
+    goal: string,
+    startedAt = Date.now(),
+  ) {
     if (this.s) throw new Error("This run already exists.");
     let url = entered;
     const signal = this.inspection.signal;
@@ -786,6 +791,8 @@ export class Run extends DurableObject<Env> {
           this.env,
           this.memScope(),
           `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}${e.page}: ${e.summary}. Limits: ${e.limits}.`,
+          undefined,
+          this.beforeWork,
         );
       }
     }

@@ -416,6 +416,45 @@ describe("run paid-work deadlines", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each(["backend", "both"])(
+    "does not write paid memory after %s inspection crosses the deadline",
+    async (scope) => {
+      const { run, env, request, calls, expire } = await setup({
+        phase: "inspecting",
+        pending: "inspect",
+      });
+      Object.assign((await run.getState()).spec, { scope });
+      env.SPECTRON_URL = "https://memory.test";
+      vi.spyOn(inspect, "inspectBackend").mockImplementation(async () => {
+        expire();
+        return {
+          evidence: [
+            {
+              id: "backend-response",
+              page: "/",
+              kind: "network",
+              tool: "fetch",
+              status: "observed",
+              capturedAt: new Date().toISOString(),
+              hash: "",
+              limits: "",
+              summary: "Observed backend response",
+            },
+          ],
+          blobs: {},
+        };
+      });
+      await run.alarm();
+      expect(
+        request.mock.calls.some(([input]) =>
+          String(input).startsWith("https://memory.test"),
+        ),
+      ).toBe(false);
+      expect(calls).toEqual([]);
+      expect((await run.getState()).phase).toBe("stopped");
+    },
+  );
+
   it("does not verify a plan after planning crosses the deadline", async () => {
     const { run, request, calls, expire } = await setup({
       phase: "inspecting",

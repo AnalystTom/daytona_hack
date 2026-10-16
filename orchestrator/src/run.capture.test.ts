@@ -111,6 +111,7 @@ const redirected: EvidenceRecord = {
 };
 
 beforeEach(() => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(""));
   captureMock.mockReset();
   vi.mocked(endSavedSignIn).mockReset().mockResolvedValue(undefined);
   vi.mocked(evidenceStore).mockReset();
@@ -132,25 +133,27 @@ function deferred<T>() {
 async function persistedRun(
   evidence: Evidence[] = [],
   phase: Phase = "planned",
+  empty = false,
 ) {
   const ctx = fakeCtx();
-  await ctx.storage.put("state", {
-    id: "run-1",
-    phase,
-    spec: {
-      url: "https://example.com/",
-      goal: "copy it",
-      pages: [{ path: "/account", confirmed: true }],
-      flows: [],
-      openQuestions: [],
-      approved: true,
-      revision: 1,
-    },
-    chat: [],
-    evidence,
-    tasks: [],
-    signInPaths: phase === "awaiting_sign_in" ? ["/account"] : undefined,
-  });
+  if (!empty)
+    await ctx.storage.put("state", {
+      id: "run-1",
+      phase,
+      spec: {
+        url: "https://example.com/",
+        goal: "copy it",
+        pages: [{ path: "/account", confirmed: true }],
+        flows: [],
+        openQuestions: [],
+        approved: true,
+        revision: 1,
+      },
+      chat: [],
+      evidence,
+      tasks: [],
+      signInPaths: phase === "awaiting_sign_in" ? ["/account"] : undefined,
+    });
   const run = new Run(ctx as never, {} as Env);
   await ctx.loaded();
   return { run, ctx };
@@ -337,6 +340,33 @@ describe("Run sign-in handoff", () => {
     expect((await run.getState()).phase).toBe("planned");
     expect(requests).not.toHaveBeenCalled();
   });
+
+  it.each(["start", "resume", "skip", "gateway"] as const)(
+    "refuses expired %s capture work without spending or reopening the run",
+    async (action) => {
+      const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+      const state = await run.getState();
+      state.startedAt = Date.now() - 121 * 60_000;
+      const result =
+        action === "start"
+          ? run.startSignIn()
+          : action === "resume"
+            ? run.resumeSignIn()
+            : action === "skip"
+              ? run.skipSignIn()
+              : run.gatewayCapture("https://example.com/account");
+      await expect(result).rejects.toThrow(/limit/);
+      expect(captureMock).not.toHaveBeenCalled();
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      expect(ctx.events()).toContainEqual(
+        expect.objectContaining({ type: "phase", data: { phase: "stopped" } }),
+      );
+    },
+  );
 
   it("retains the target query through first look, gateway, approval, secure sign-in and resume", async () => {
     const ctx = fakeCtx();
@@ -636,6 +666,82 @@ describe("Run inspection cancellation and recovery", () => {
     expect(llmJson).not.toHaveBeenCalled();
     expect(verifyPlan).not.toHaveBeenCalled();
   });
+  it.each(["inspect", "resume"] as const)(
+    "blocks concurrent paid actions while %s Anchor cleanup is delayed",
+    async (kind) => {
+      const { run, ctx } = await persistedRun(
+        [],
+        kind === "resume" ? "awaiting_sign_in" : "brief",
+      );
+      const memory = bindCapture(
+        kind === "resume"
+          ? { sessionId: "active-session", origin: "https://example.com" }
+          : null,
+      );
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "active-session",
+        liveViewUrl: "https://live.example.test/session",
+      });
+      const entered = deferred<void>();
+      const releaseCapture = deferred<void>();
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockImplementation(async () => {
+          entered.resolve();
+          await releaseCapture.promise;
+          return fixturePageFacts("https://example.com/account");
+        });
+      const closing = deferred<void>();
+      const releaseCleanup = deferred<void>();
+      const close = vi
+        .spyOn(anchor, "endSession")
+        .mockImplementation(async () => {
+          closing.resolve();
+          await releaseCleanup.promise;
+        });
+      if (kind === "resume") await run.resumeSignIn();
+      else await run.approveSpec();
+      const inspection = run.alarm();
+      await entered.promise;
+      const stopping = run.stop();
+      await closing.promise;
+      try {
+        expect(await ctx.storage.get("state")).toMatchObject({
+          phase: "inspecting",
+          pending: "stop",
+        });
+        await expect(run.message("Keep working")).rejects.toThrow(/stopping/);
+        await expect(
+          run.override("t01", "approve", "Keep working"),
+        ).rejects.toThrow(/stopping/);
+        await expect(run.approveSpec()).rejects.toThrow(/stopping/);
+        await expect(run.startBuild()).rejects.toThrow(/stopping/);
+        await expect(
+          run.gatewayCapture("https://example.com/account"),
+        ).rejects.toThrow(/stopping/);
+        const reloaded = new Run(ctx as never, {} as Env);
+        await ctx.loaded();
+        await expect(reloaded.message("Keep working")).rejects.toThrow(
+          /stopping/,
+        );
+        expect(llmJson).not.toHaveBeenCalled();
+        expect(captureMock).toHaveBeenCalledTimes(1);
+        expect(memory.records.size).toBe(0);
+      } finally {
+        releaseCleanup.resolve();
+        releaseCapture.resolve();
+        await stopping;
+        await inspection;
+      }
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(snippet).toHaveBeenCalledTimes(1);
+      expect(llmJson).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     ["resume", "success"],
@@ -650,6 +756,7 @@ describe("Run inspection cancellation and recovery", () => {
       const { run, ctx } = await persistedRun(
         [],
         kind === "resume" ? "awaiting_sign_in" : "brief",
+        kind === "first_look",
       );
       const memory = bindCapture(
         kind === "resume"
