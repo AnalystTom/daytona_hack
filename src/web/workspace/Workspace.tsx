@@ -14,6 +14,7 @@ import {
   type RunCallError,
   type RunCallResult,
   runAction,
+  startSignIn,
 } from "./runClient";
 import { SpecView } from "./SpecView";
 import "./workspace.css";
@@ -27,6 +28,7 @@ const VIEWS: { id: View; label: string }[] = [
 const PHASES: Record<string, string> = {
   brief: "Agreeing the spec",
   inspecting: "Inspecting the site",
+  awaiting_sign_in: "Waiting for sign-in",
   planning: "Planning tasks",
   planned: "Plan ready",
   building: "Building",
@@ -62,6 +64,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     evidence: run.evidence,
   };
   const canBuild = runId !== undefined && run.phase === "planned" && !starting;
+  const signingIn = runId !== undefined && run.phase === "awaiting_sign_in";
 
   // Follows the run's events from the orchestrator.
   useEffect(() => {
@@ -122,6 +125,27 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     if (result.ok) pollSoon.current?.();
     else {
       setStarting(false);
+      addNotice(result);
+    }
+  };
+
+  // The tab opens within the click so it is not blocked as a pop-up, and gets no handle on this page.
+  const openSignIn = async () => {
+    if (!runId) return;
+    const tab = window.open("", "_blank");
+    if (!tab) {
+      addNotice({
+        ok: false,
+        error: "failed",
+        detail: "Allow pop-ups for this site, then open secure sign-in again.",
+      });
+      return;
+    }
+    tab.opener = null;
+    const result = await startSignIn(runId);
+    if (result.ok) tab.location.href = result.value;
+    else {
+      tab.close();
       addNotice(result);
     }
   };
@@ -243,6 +267,31 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
               >
                 Open preview
               </a>
+            )}
+            {signingIn && runId && (
+              <>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void openSignIn()}
+                >
+                  Open secure sign-in
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void act(runAction(runId, "sign-in/resume"))}
+                >
+                  Resume capture
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void act(runAction(runId, "sign-in/skip"))}
+                >
+                  Skip sign-in
+                </button>
+              </>
             )}
             <button
               type="button"

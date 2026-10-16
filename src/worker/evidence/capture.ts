@@ -44,6 +44,10 @@ async function sha256(bytes: Uint8Array) {
   return `sha256:${Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+export const recordingCapMs = 30_000;
+// Ends the reason on every item of a page that left the scope; the orchestrator offers sign-in on it.
+export const leftScope = "outside the approved scope";
+
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";
 const signedInSkipped =
@@ -108,6 +112,17 @@ export async function captureRun(
   } else {
     sessionId = (await anchor.createSession(key, { recording: full })).id;
   }
+  // Recordings are capped at 30 seconds: pause it then, however long the pages take.
+  let capMissed = false;
+  let pausing: Promise<void> | undefined;
+  const cap =
+    full && !signedIn
+      ? setTimeout(() => {
+          pausing = anchor.pauseRecording(key, sessionId).catch(() => {
+            capMissed = true;
+          });
+        }, recordingCapMs)
+      : undefined;
 
   const items: EvidenceRecord[] = [];
   const save = async (
@@ -173,7 +188,7 @@ export async function captureRun(
     const leave = (verb: string, finalUrl: string) => {
       outOfScope.push(finalUrl);
       const reason = (target: string) =>
-        `${verb} ${target}, outside the approved scope; capture stopped for this page.`;
+        `${verb} ${target}, ${leftScope}; capture stopped for this page.`;
       stopped = reason(finalUrl);
       shown = reason(finalUrl.split(/[?#]/)[0] as string);
     };
@@ -240,6 +255,8 @@ export async function captureRun(
   try {
     for (const path of scope.paths) await capturePage(path);
   } finally {
+    if (cap !== undefined) clearTimeout(cap);
+    await pausing;
     // Anchor also ends idle sessions itself, so a failed close only costs a few idle minutes.
     await anchor.endSession(key, sessionId).catch(() => {});
   }
@@ -265,7 +282,9 @@ export async function captureRun(
         const video = await anchor.primaryRecording(key, sessionId);
         if (video) {
           await save(recording, "observed", "video/mp4", video, [
-            "Page-load recording of the whole capture session; no interactions were performed.",
+            capMissed
+              ? "Page-load recording of the whole capture session; pausing it at 30 seconds failed, so it may run longer. No interactions were performed."
+              : "Page-load recording of the first 30 seconds of the capture session; no interactions were performed.",
           ]);
         } else {
           await notObserved(

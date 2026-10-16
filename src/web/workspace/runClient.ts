@@ -12,6 +12,7 @@ export type RunCallError = {
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
 
 const CreatedRun = z.object({ id: z.string().min(1) });
+const SignIn = z.object({ liveViewUrl: z.url({ protocol: /^https$/ }) });
 const ErrorBody = z.union([
   z.object({ message: z.string().min(1) }).transform((b) => b.message),
   z.object({ error: z.string().min(1) }).transform((b) => b.error),
@@ -132,7 +133,7 @@ export function sendMessage(
 
 export function runAction(
   runId: string,
-  action: "build" | "stop",
+  action: "build" | "stop" | "sign-in/resume" | "sign-in/skip",
   fetchImpl: typeof fetch = fetch,
 ) {
   return call(
@@ -140,6 +141,17 @@ export function runAction(
     runPath(runId, action),
     {},
     async () => undefined,
+    fetchImpl,
+  );
+}
+
+// Anchor's one-time live view, where the user signs in themselves; Reversy never sees the password.
+export function startSignIn(runId: string, fetchImpl: typeof fetch = fetch) {
+  return call(
+    "POST",
+    runPath(runId, "sign-in"),
+    {},
+    async (r) => SignIn.parse(await r.json()).liveViewUrl,
     fetchImpl,
   );
 }

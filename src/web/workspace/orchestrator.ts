@@ -145,14 +145,13 @@ export function runView(
         const item = Evidence.safeParse(data);
         if (!item.success) break;
         const e = item.data;
-        // Only screenshots have a card; other evidence feeds the plan.
-        if (e.kind !== "screenshot" || !e.url || !EVIDENCE_PATH.test(e.url)) {
-          break;
-        }
+        // Only screenshots and recordings have a card; other evidence feeds the plan.
+        const kind = e.kind === "recording" ? "recording" : "screenshot";
+        if (e.kind !== kind || !e.url || !EVIDENCE_PATH.test(e.url)) break;
         view.evidence = view.evidence.filter((x) => x.id !== e.id);
         view.evidence.push({
           id: e.id,
-          kind: "screenshot",
+          kind,
           label: e.status,
           pageOrState: e.page,
           tool: e.tool,

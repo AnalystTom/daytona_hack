@@ -163,9 +163,10 @@ Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandb
 ## Evidence capture
 
 `src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
-It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
+It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `POST /v1/sessions/{id}/recordings/pause`, `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
 Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
-Interaction recordings are not captured yet; a full pack keeps the session's page-load recording, and none in a signed-in session.
+Interaction recordings are not captured yet; a full pack keeps the session's page-load recording, paused 30 seconds into the session, and none in a signed-in session.
+The orchestrator (`orchestrator/`) runs the same capture for its runs, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings (`docs/orchestrator/api.md`).
 
 | Endpoint | What it does |
 |---|---|

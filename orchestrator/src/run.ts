@@ -1,8 +1,19 @@
 // One Durable Object per run: brief → inspect → plan → build/review, driven by alarms.
 import { DurableObject } from "cloudflare:workers";
+import { type CaptureRequest, inScope } from "../../src/shared/evidence";
+import { CaptureError } from "../../src/worker/evidence/capture";
 import { Daytona, shq } from "./daytona";
-import { inspectPage, outline, routesFrom } from "./inspect";
-import { llmJson, recall, remember, tracing } from "./services";
+import {
+  capture,
+  captureScope,
+  evidenceStore,
+  isStoredEvidenceId,
+  maxPaths,
+  outline,
+  routesFrom,
+  stoppedPages,
+} from "./inspect";
+import { llmJson, pageHtml, recall, remember, tracing } from "./services";
 import { RunTracer } from "./tracing";
 import type {
   ChatMessage,
@@ -30,7 +41,8 @@ interface State {
   tasks: Task[];
   sandboxId?: string;
   previewUrl?: string;
-  pending?: "inspect" | "build_setup";
+  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup";
+  signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   error?: string;
 }
 
@@ -115,8 +127,40 @@ export class Run extends DurableObject<Env> {
     return [...m.values()];
   }
 
-  async evidenceBlob(id: string) {
-    return this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
+  /** One of this run's evidence files, read from SurrealDB. */
+  async evidenceFile(id: string) {
+    if (!isStoredEvidenceId(id) || !this.s?.evidence.some((e) => e.id === id))
+      return null;
+    const store = evidenceStore(this.env);
+    const [record, content] = await Promise.all([
+      store.getEvidence(id),
+      store.getContent(id),
+    ]);
+    return record && content
+      ? { contentType: record.contentType, content }
+      : null;
+  }
+
+  /** Sandbox gateway capture: only pages in the run's approved scope, recorded as evidence. */
+  async gatewayCapture(url: string, kind: "screenshot" | "html") {
+    if (!this.s) return { status: 404, error: "run not found" };
+    const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
+    if (!inScope(url, scope))
+      return { status: 403, error: "url is outside the run's approved scope" };
+    if (kind === "html") return pageHtml(this.env, url);
+    const result = await this.capture({
+      mode: "first_look",
+      scope: { origin: scope.origin, paths: [new URL(url).pathname] },
+    });
+    const items = result.status === "captured" ? result.items : [];
+    const shot = items.find((i) => i.label === "observed");
+    const file = shot && (await this.evidenceFile(shot.id));
+    return file
+      ? { png: file.content }
+      : {
+          status: 502,
+          error: items[0]?.limitations.join(" ") || "screenshot not observed",
+        };
   }
 
   /** Phase 1: create the run, take a first look, open the conversation. */
@@ -141,13 +185,20 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" });
     await this.addChat("user", `${url}\n${goal}`);
-    const cap = await this.traced("inspector.first_look", "TOOL", url, () =>
-      inspectPage(this.env, url, 1, { full: false }),
-    );
-    await this.storeEvidence(cap.evidence, cap.blobs);
-    const html = String(
-      Object.values(cap.blobs).find((b) => typeof b === "string") || "",
-    );
+    try {
+      await this.traced("inspector.first_look", "TOOL", url, () =>
+        this.capture({
+          mode: "first_look",
+          scope: captureScope(url, [new URL(url).pathname]).scope,
+        }),
+      );
+    } catch (e: any) {
+      // The conversation can start without the screenshot.
+      await this.emit("error", {
+        message: `First look screenshot failed: ${String(e?.message || e)}`,
+      });
+    }
+    const { html } = await pageHtml(this.env, url);
     const routes = routesFrom(html, url);
     await this.emit("evidence", {
       id: "routes",
@@ -179,6 +230,45 @@ export class Run extends DurableObject<Env> {
     this.s.pending = "inspect";
     await this.save();
     await this.emit("spec", this.s.spec);
+    await this.emit("phase", { phase: "inspecting" });
+    await this.ctx.storage.setAlarm(Date.now() + 100);
+    return this.s;
+  }
+
+  /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
+  async startSignIn() {
+    const result = await this.capture({
+      mode: "full_pack",
+      scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
+      signIn: "start",
+    });
+    if (result.status !== "awaiting_sign_in")
+      throw new Error("secure sign-in did not start");
+    return { liveViewUrl: result.liveViewUrl };
+  }
+
+  /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
+  async resumeSignIn() {
+    this.awaitingSignIn();
+    return this.continueInspection("resume_sign_in");
+  }
+
+  /** Plan without the stopped pages. */
+  async skipSignIn() {
+    this.awaitingSignIn();
+    return this.continueInspection("plan");
+  }
+
+  private awaitingSignIn() {
+    if (this.s.phase !== "awaiting_sign_in" || !this.s.signInPaths?.length)
+      throw new Error(`no sign-in is pending in phase ${this.s.phase}`);
+    return this.s.signInPaths;
+  }
+
+  private async continueInspection(pending: "resume_sign_in" | "plan") {
+    this.s.phase = "inspecting";
+    this.s.pending = pending;
+    await this.save();
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return this.s;
@@ -243,13 +333,18 @@ export class Run extends DurableObject<Env> {
   // ---------- alarm loop ----------
   async alarm() {
     try {
-      if (this.s.pending === "inspect") {
+      const pending = this.s.pending;
+      if (
+        pending === "inspect" ||
+        pending === "resume_sign_in" ||
+        pending === "plan"
+      ) {
         this.s.pending = undefined;
         await this.traced(
-          "phase.inspect_and_plan",
+          `phase.${pending}`,
           "CHAIN",
           JSON.stringify(this.s.spec),
-          () => this.inspectAndPlan(),
+          () => this.inspectAndPlan(pending),
         );
       } else if (this.s.pending === "build_setup") {
         this.s.pending = undefined;
@@ -390,53 +485,78 @@ Set userApproved=true only if the user's last message clearly approves the spec.
   }
 
   // ---------- phase 2+3: inspect and plan ----------
-  private async storeEvidence(
-    evidence: Evidence[],
-    blobs: Record<string, ArrayBuffer | string>,
-  ) {
-    for (const e of evidence) {
-      const b = blobs[e.id];
-      if (b && (typeof b === "string" ? b.length : b.byteLength) < 1_900_000) {
-        await this.ctx.storage.put(
-          `blob:${e.id}`,
-          typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
-        );
-        if (e.kind === "screenshot")
-          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
-      }
+  /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
+  private capture(request: CaptureRequest) {
+    return capture(this.env, this.s.id, request, async (e) => {
       this.s.evidence.push(e);
+      await this.save();
       await this.emit("evidence", e);
       if (e.status !== "not_observed") {
         await remember(
           this.env,
           this.memScope(),
-          `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}${e.page}: ${e.summary}. Limits: ${e.limits}.`,
+          `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
         );
       }
-    }
-    await this.save();
+    });
   }
 
-  private async inspectAndPlan() {
-    const origin = new URL(this.s.spec.url).origin;
-    for (const p of this.s.spec.pages.filter((p) => p.confirmed)) {
-      const cap = await inspectPage(
-        this.env,
-        origin + p.path,
-        this.s.evidence.length + 1,
-        { full: true },
+  private approvedPaths() {
+    const confirmed = this.s.spec.pages
+      .filter((p) => p.confirmed)
+      .map((p) => p.path);
+    return confirmed.length ? confirmed : [new URL(this.s.spec.url).pathname];
+  }
+
+  /** The DOM of the first captured page, or "" when none was observed. */
+  private async originalHtml() {
+    const dom = this.s.evidence.find(
+      (e) => e.kind === "dom" && e.status === "observed",
+    );
+    const file = dom && (await this.evidenceFile(dom.id));
+    return file ? new TextDecoder().decode(file.content) : "";
+  }
+
+  private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
+    if (step !== "plan") {
+      const signedIn = step === "resume_sign_in";
+      const { scope, dropped } = captureScope(
+        this.s.spec.url,
+        signedIn ? this.s.signInPaths || [] : this.approvedPaths(),
       );
-      await this.storeEvidence(cap.evidence, cap.blobs);
+      if (dropped.length)
+        await this.addChat(
+          "assistant",
+          `Evidence covers the first ${maxPaths} pages; not captured: ${dropped.join(", ")}.`,
+        );
+      let result: Awaited<ReturnType<typeof capture>>;
+      try {
+        result = await this.capture({
+          mode: "full_pack",
+          scope,
+          signIn: signedIn ? "resume" : undefined,
+        });
+      } catch (e) {
+        // No sign-in session to resume: the user can open sign-in again or skip.
+        if (!(signedIn && e instanceof CaptureError)) throw e;
+        await this.awaitSignIn(this.s.signInPaths || [], e.message);
+        return;
+      }
+      const stopped =
+        result.status === "captured" ? stoppedPages(result.items) : [];
+      if (stopped.length) {
+        await this.awaitSignIn(
+          stopped,
+          `Capture stopped on ${stopped.join(", ")}: the page left the approved scope, which usually means it needs an account.`,
+        );
+        return;
+      }
     }
+    this.s.signInPaths = undefined;
     this.s.phase = "planning";
     await this.emit("phase", { phase: "planning" });
 
-    const htmlEv = this.s.evidence.filter((e) => e.kind === "html").at(-1);
-    const html = htmlEv
-      ? new TextDecoder().decode(
-          (await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!,
-        )
-      : "";
+    const html = await this.originalHtml();
     const plan = await llmJson<{
       tasks: Omit<Task, "status" | "attempts" | "branch">[];
     }>(this.env, {
@@ -525,6 +645,17 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
   }
 
+  private async awaitSignIn(paths: string[], why: string) {
+    this.s.phase = "awaiting_sign_in";
+    this.s.signInPaths = paths;
+    await this.save();
+    await this.emit("phase", { phase: "awaiting_sign_in", pages: paths });
+    await this.addChat(
+      "assistant",
+      `${why} Open secure sign-in and sign in yourself (Reversy never sees your password), then resume capture. Or skip sign-in to plan without ${paths.length > 1 ? "these pages" : "this page"}.`,
+    );
+  }
+
   // ---------- phase 4: build ----------
   private async setupSandbox() {
     const sb = await this.daytona.create({
@@ -545,13 +676,9 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
     for (const e of this.s.evidence) {
       if (!e.path) continue;
-      const b = await this.ctx.storage.get<ArrayBuffer>(`blob:${e.id}`);
-      if (b)
-        await this.daytona.writeFile(
-          id,
-          `/home/daytona/${e.path}`,
-          e.kind === "screenshot" ? b : new TextDecoder().decode(b),
-        );
+      const file = await this.evidenceFile(e.id);
+      if (!file) throw new Error(`evidence ${e.id} is missing from storage`);
+      await this.daytona.writeFile(id, `/home/daytona/${e.path}`, file.content);
     }
     await this.daytona.writeFile(
       id,
@@ -664,12 +791,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         merged: this.s.tasks.filter((t) => t.status === "merged").length,
         failed: this.s.tasks.filter((t) => t.status === "failed").length,
       });
-      const htmlEv = this.s.evidence.find((e) => e.kind === "html");
-      const original = htmlEv
-        ? new TextDecoder().decode(
-            (await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!,
-          )
-        : "";
+      const original = await this.originalHtml();
       const fv = await verifyFinal(
         this.env,
         this.s.spec,

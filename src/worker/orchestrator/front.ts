@@ -124,7 +124,16 @@ async function runRoute(
     if (action === "override") {
       return call(`${base}/override`, await readJson(request, OverrideRequest));
     }
-    if (["approve", "build", "stop"].includes(action)) {
+    // sign-in answers {liveViewUrl}: Anchor's one-time live view, where the user signs in themselves.
+    const actions = [
+      "approve",
+      "build",
+      "stop",
+      "sign-in",
+      "sign-in/resume",
+      "sign-in/skip",
+    ];
+    if (actions.includes(action)) {
       return call(`${base}/${action}`, {});
     }
   }
@@ -178,8 +187,12 @@ async function forward(
 }
 
 // The orchestrator allows any origin; only this site may read its replies.
+// Evidence files are captured site content, so they never run as a page here.
 function withoutCors(response: Response) {
-  const headers = new Headers();
+  const headers = new Headers({
+    "content-security-policy": "sandbox; default-src 'none'",
+    "x-content-type-options": "nosniff",
+  });
   const type = response.headers.get("content-type");
   if (type) headers.set("content-type", type);
   return new Response(response.body, { status: response.status, headers });
