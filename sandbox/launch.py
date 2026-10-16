@@ -23,7 +23,9 @@ BRIEF = (
     "in /home/daytona/evidence (the original site is not reachable from this machine). "
     "Split it into ship tasks: first a foundation task (skeleton, design tokens, shared layout, one placeholder per "
     "section), then one task per landing-page section in parallel once the foundation merges. "
-    "Dispatch them to Codex crewmates and merge approved work. Report each task's outcome."
+    "Dispatch them to Codex crewmates and merge approved work. Report each task's outcome. "
+    "The captain reads you through the web app: after every reply, also run `reversy say \"<your reply>\"`. "
+    "Network access (Anchor captures, Agent Memory) goes through the `reversy` CLI; see projects/rebuild/AGENTS.md."
 )
 
 
@@ -51,7 +53,9 @@ def main():
     print(sh(sb, "export PATH=$HOME/go/bin:$PATH; test -x $HOME/go/bin/tea && tea pulls --help >/dev/null 2>&1 || "
                  "GOTOOLCHAIN=auto go install gitea.dev/tea@v0.16.0 2>&1 | tail -3; tea --version", 900))
     sb.fs.upload_file((HERE / "setup-run.sh").read_bytes(), "/home/daytona/setup-run.sh")
-    print(sh(sb, "bash /home/daytona/setup-run.sh 2>&1 | tail -25"))
+    sb.fs.upload_file((HERE / "reversy").read_bytes(), "/home/daytona/reversy")
+    gw = f"REVERSY_GATEWAY_URL={os.environ['REVERSY_GATEWAY_URL']} REVERSY_GATEWAY_TOKEN={os.environ['GATEWAY_TOKEN']} RUN_ID={os.getenv('RUN_ID', 'local')}"
+    print(sh(sb, f"{gw} bash /home/daytona/setup-run.sh 2>&1 | tail -25"))
     print(sh(sb, "export PATH=$HOME/go/bin:$PATH; tea --version; tmux ls"))
 
     time.sleep(8)

@@ -15,6 +15,8 @@ export interface Env {
   ANCHORBROWSER_API_KEY?: string;
   EVENTS_WEBHOOK_URL?: string;
   ARIZE_API_KEY?: string;
+  GATEWAY_TOKEN?: string;
+  OPERATOR_TOKEN?: string;
   ARIZE_SPACE_ID?: string;
 }
 

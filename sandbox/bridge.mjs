@@ -11,6 +11,8 @@ const FM = process.env.FM_HOME || `${process.env.HOME}/firstmate`;
 const LEDGER = `${FM}/state/fleet-ledger.jsonl`;
 const STATE = `${FM}/state/bridge-cursor.json`;
 const OUTBOX = `${FM}/state/bridge-outbox.jsonl`;
+const CAPTAIN = `${FM}/state/captain-outbox.jsonl`; // written by `reversy say`
+const CAPTAIN_CURSOR = `${FM}/state/bridge-captain-cursor.json`;
 const { RUN_ID = "local", API_URL, BRIDGE_TOKEN } = process.env;
 
 // Kanban columns from the spec: Queued, Building, In review, Merged (+ failed/stopped)
@@ -96,9 +98,37 @@ function poll() {
   }
 }
 
+// first mate -> captain chat messages
+function pollCaptain() {
+  if (!existsSync(CAPTAIN)) return;
+  let cursor = existsSync(CAPTAIN_CURSOR) ? JSON.parse(readFileSync(CAPTAIN_CURSOR, "utf8")).lines : 0;
+  const lines = readFileSync(CAPTAIN, "utf8").split("\n").filter(Boolean);
+  for (let i = cursor; i < lines.length; i++) {
+    try {
+      const m = JSON.parse(lines[i]);
+      const env = {
+        schemaVersion: 1,
+        eventId: createHash("sha256").update(`${RUN_ID}:chat:${i}:${lines[i]}`).digest("hex").slice(0, 32),
+        sequence: 1_000_000 + i,
+        runId: RUN_ID,
+        timestamp: new Date(m.ts * 1000).toISOString(),
+        type: "chat.message",
+        state: "assistant",
+        message: m.text,
+        artifactRefs: [],
+      };
+      appendFileSync(OUTBOX, `${JSON.stringify(env)}\n`);
+      console.log(`[bridge] chat -> captain: ${m.text.slice(0, 100)}`);
+    } catch {}
+    cursor = i + 1;
+  }
+  writeFileSync(CAPTAIN_CURSOR, JSON.stringify({ lines: cursor }));
+}
+
 console.log(`[bridge] run ${RUN_ID} -> ${API_URL || "(no API_URL yet: queueing to outbox)"}`);
 for (;;) {
   poll();
+  pollCaptain();
   await flush();
   await new Promise((r) => setTimeout(r, 3000));
 }

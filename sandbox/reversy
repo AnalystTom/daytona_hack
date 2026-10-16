@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# reversy: the crew's way out of the sandbox. Network work goes through the Cloudflare gateway,
+# which holds the Anchor and SurrealDB keys; the sandbox only has REVERSY_GATEWAY_TOKEN.
+#
+#   reversy capture <url> [desktop|mobile] <out.png>   screenshot via Anchor (observed evidence)
+#   reversy html <url> <out.html>                      rendered HTML via Anchor
+#   reversy remember "<observation or decision, with its sources>"
+#   reversy recall "<question>"
+#   reversy say "<message to the captain>"             shows in the user's chat
+set -euo pipefail
+[ -n "${REVERSY_GATEWAY_URL:-}" ] || . "$HOME/.reversy.env"  # agent shells skip .bashrc
+: "${REVERSY_GATEWAY_URL:?}" "${REVERSY_GATEWAY_TOKEN:?}"
+RUN_ID=${RUN_ID:-local}
+FM=${FM_HOME:-$HOME/firstmate}
+post() { curl -sS --fail-with-body --max-time 180 -X POST "$REVERSY_GATEWAY_URL/gateway/$1" \
+  -H "Authorization: Bearer $REVERSY_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$2" "${@:3}"; }
+js() { node -e 'console.log(JSON.stringify(Object.fromEntries(process.argv.slice(1).map(a=>a.split(/=(.*)/s).slice(0,2)))))' "$@"; }
+
+case "${1:-}" in
+  capture)
+    size=${3:-desktop}; w=1440; h=900; [ "$size" = mobile ] && { w=390; h=844; }
+    post capture "$(node -e 'console.log(JSON.stringify({url:process.argv[1],kind:"screenshot",width:+process.argv[2],height:+process.argv[3]}))' "$2" $w $h)" -o "$4"
+    echo "saved $4 ($(wc -c < "$4") bytes, $size ${w}px, tool=anchor)";;
+  html)
+    post capture "$(js url="$2" kind=html)" -o "$3"; echo "saved $3 ($(wc -c < "$3") bytes)";;
+  remember)
+    post remember "$(js runId="$RUN_ID" text="$2")"; echo;;
+  recall)
+    post recall "$(js runId="$RUN_ID" query="$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).context||"(nothing)"))';;
+  say)
+    mkdir -p "$FM/state"
+    node -e 'console.log(JSON.stringify({ts:Math.floor(Date.now()/1000),text:process.argv[1]}))' "$2" >> "$FM/state/captain-outbox.jsonl"
+    echo "queued for the captain";;
+  *) sed -n '2,11p' "$0"; exit 1;;
+esac
