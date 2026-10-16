@@ -17,7 +17,7 @@ import { checkCaller, handleSession } from "./session";
 export interface OrchestratorEnv extends AccessEnv, StoreEnv {
   ORCHESTRATOR?: Fetcher;
   OPERATOR_TOKEN?: string;
-  // Limits for Cloudflare Access users (the operator has none); unset or invalid means the default.
+  // Admission limits for Cloudflare Access users; unset or invalid means the default.
   RUNS_PER_DAY?: string;
   ACTIVE_RUNS?: string;
   // Must match the orchestrator's RUN_MAX_MINUTES; expired slots need confirmed cancellation.

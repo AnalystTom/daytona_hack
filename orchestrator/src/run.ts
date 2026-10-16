@@ -220,7 +220,6 @@ export class Run extends DurableObject<Env> {
 
   /** A signed link to the private sandbox preview, or undefined before the build serves one. */
   async previewLink(seconds = PREVIEW_LINK_SECONDS) {
-    // An unknown run has no state; a stopped one has no sandbox.
     if (!this.s?.sandboxId || !this.s.previewUrl) return undefined;
     return this.daytona.signedPreviewUrl(this.s.sandboxId, 3000, seconds);
   }

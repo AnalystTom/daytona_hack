@@ -14,7 +14,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 |---|---|---|
 | `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
 | `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewUrl, error}` |
-| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
+| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 when the run has no sandbox preview |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | One of the run's evidence files (PNG, MP4, HTML or JSON), served sandboxed so captured pages never run |
 | `POST /runs/:id/messages` | `{text}` | User chat message. The orchestrator replies and updates the spec. If the user clearly approves, it starts inspection |
