@@ -28,7 +28,7 @@ export const askForUrl =
 // A bare host like wikipedia.com/wiki: dotted labels ending in a common or two-letter TLD, not part of an email.
 // shortcut: fixed TLD list, so rarer gTLDs need https:// — widen the list if users hit it.
 const bareHost =
-  /(?<![@\w.-])(?:[a-z0-9-]+\.)+(?!(?:js|ts|py|md|rs|sh|go)\b)(?:com|org|net|io|dev|app|ai|co|edu|gov|info|xyz|site|tech|cloud|[a-z]{2})(?![\w@-])(?:\/[^\s<>"]*)?/i;
+  /(?<![@\w.-])(?:[a-z0-9-]+\.)+(?!(?:js|ts|py|md|rs|sh|go)\b)(?:com|org|net|io|dev|app|ai|co|edu|gov|info|xyz|site|tech|cloud|[a-z]{2})(?::\d+)?(?:[/?#][^\s<>"]*)?(?![\w@:/?#-]|\.[a-z0-9-])/i;
 
 // Splits a brief into the target URL and the goal around it; undefined when there is no URL.
 export function parseBrief(
