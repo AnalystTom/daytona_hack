@@ -341,6 +341,9 @@ export class Run extends DurableObject<Env> {
 
   /** Chat: the orchestrator refines the spec with the user. */
   async message(text: string) {
+    // Chat calls the model directly, outside the alarm loop that stops an over-time run.
+    const overTime = this.overTime();
+    if (overTime) throw new Error(`This run ${overTime}; start a new one.`);
     await this.addChat("user", text);
     await this.converse();
     return this.s;
@@ -473,16 +476,21 @@ export class Run extends DurableObject<Env> {
     return t;
   }
 
+  /** Says why the run is past RUN_MAX_MINUTES (default 120) since it started, if it is. */
+  private overTime() {
+    const set = Number(this.env.RUN_MAX_MINUTES);
+    const minutes = Number.isInteger(set) && set > 0 ? set : 120;
+    return this.s.startedAt && Date.now() - this.s.startedAt > minutes * 60_000
+      ? `reached its ${minutes}-minute limit`
+      : undefined;
+  }
+
   // ---------- alarm loop ----------
   async alarm() {
     // Runs spend money while they work, so one that outlives its time limit is stopped.
-    const set = Number(this.env.RUN_MAX_MINUTES);
-    const limitMinutes = Number.isInteger(set) && set > 0 ? set : 120;
-    if (
-      this.s.startedAt &&
-      Date.now() - this.s.startedAt > limitMinutes * 60_000
-    ) {
-      this.s.error = `Stopped: the run reached its ${limitMinutes}-minute limit.`;
+    const overTime = this.overTime();
+    if (overTime) {
+      this.s.error = `Stopped: ${overTime}.`;
       await this.emit("error", { message: this.s.error });
       await this.stop();
       return;

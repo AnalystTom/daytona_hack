@@ -33,7 +33,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
-A run still working `RUN_MAX_MINUTES` (default 120) after it started is stopped with an `error` event saying so.
+A run still working `RUN_MAX_MINUTES` (default 120) after it started is stopped with an `error` event saying so, and from then on refuses chat messages.
 
 ## Events
 
