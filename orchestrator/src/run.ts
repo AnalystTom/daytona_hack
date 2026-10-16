@@ -6,6 +6,7 @@ import { Daytona, shq } from "./daytona";
 import {
   capture,
   captureScope,
+  endSavedSignIn,
   evidenceStore,
   isStoredEvidenceId,
   maxPaths,
@@ -31,6 +32,9 @@ const WT = "/home/daytona/wt";
 const EV = "/home/daytona/evidence";
 const LOGS = "/home/daytona/logs";
 const TICK_MS = 10_000;
+// The app's link lasts a working session; the verifier's only one fetch.
+const PREVIEW_LINK_SECONDS = 30 * 60;
+const PREVIEW_CHECK_SECONDS = 120;
 
 interface State {
   id: string;
@@ -162,6 +166,13 @@ export class Run extends DurableObject<Env> {
         };
   }
 
+  /** A signed link to the private sandbox preview, or undefined before the build serves one. */
+  async previewLink(seconds = PREVIEW_LINK_SECONDS) {
+    // An unknown run has no state; a stopped one has no sandbox.
+    if (!this.s?.sandboxId || !this.s.previewUrl) return undefined;
+    return this.daytona.signedPreviewUrl(this.s.sandboxId, 3000, seconds);
+  }
+
   /** Phase 1: create the run, take a first look, open the conversation. */
   async start(id: string, url: string, goal: string) {
     this.s = {
@@ -255,6 +266,7 @@ export class Run extends DurableObject<Env> {
   /** Plan without the stopped pages. */
   async skipSignIn() {
     this.awaitingSignIn();
+    await endSavedSignIn(this.env, this.s.id);
     return this.continueInspection("plan");
   }
 
@@ -299,6 +311,8 @@ export class Run extends DurableObject<Env> {
       await this.daytona
         .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
         .catch(() => {});
+    if (this.s.signInPaths?.length)
+      await endSavedSignIn(this.env, this.s.id).catch(() => {});
     this.s.phase = "stopped";
     await this.save();
     await this.emit("phase", { phase: "stopped" });
@@ -697,7 +711,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
     this.s.previewUrl = await this.daytona.previewUrl(id, 3000);
     await this.save();
-    await this.emit("preview", { url: this.s.previewUrl, sandboxId: id });
+    // The sandbox is private: the app asks /runs/:id/preview for a signed link when it shows the preview.
+    await this.emit("preview", { sandboxId: id });
     await remember(
       this.env,
       this.memScope(),
@@ -796,13 +811,13 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         this.s.spec,
         this.s.evidence,
         this.s.tasks,
-        this.s.previewUrl,
+        await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
         original,
       );
       await this.verified(fv);
       await this.addChat(
         "assistant",
-        `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. Preview: ${this.s.previewUrl}`,
+        `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is in the app.`,
       );
       return;
     }
@@ -990,14 +1005,14 @@ Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the t
     t.status = "merged";
     t.nextAction = undefined;
     await this.emit("task", t);
-    await this.emit("preview", { url: this.s.previewUrl, mergedTask: t.id });
+    await this.emit("preview", { mergedTask: t.id });
     await this.verified(
       await verifyTask(
         this.env,
         this.s.spec,
         this.s.evidence,
         t,
-        this.s.previewUrl,
+        await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
       ),
     );
   }

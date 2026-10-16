@@ -38,7 +38,7 @@ export class Daytona {
         env: opts.env || {},
         snapshot: opts.snapshot,
         labels: opts.labels || {},
-        public: true, // preview URLs embed in the canvas without a token
+        public: false, // the preview is reached only through short-lived signed links
         autoStopInterval: 60,
       }),
     });
@@ -65,6 +65,14 @@ export class Daytona {
   async previewUrl(id: string, port: number): Promise<string> {
     const r = await this.call(
       `${this.env.DAYTONA_API_URL}/sandbox/${id}/ports/${port}/preview-url`,
+    );
+    return r.url;
+  }
+
+  /** A preview link that works without headers until it expires. */
+  async signedPreviewUrl(id: string, port: number, seconds: number) {
+    const r = await this.call<{ url: string }>(
+      `${this.env.DAYTONA_API_URL}/sandbox/${id}/ports/${port}/signed-preview-url?expiresInSeconds=${seconds}`,
     );
     return r.url;
   }

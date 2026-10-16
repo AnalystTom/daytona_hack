@@ -7,22 +7,24 @@ import { askForUrl, type ChatEntry, deliver, takeIncomingBrief } from "./chat";
 import type { WorkspaceFixture } from "./fixtures";
 import { Mark } from "./Mark";
 import { chatEntries, type OrchestratorEvent, runView } from "./orchestrator";
+import { PreviewView } from "./PreviewView";
 import {
   fetchEvents,
-  operatorToken,
   overrideVerdict,
   type RunCallError,
   type RunCallResult,
   runAction,
+  signIn,
   startSignIn,
 } from "./runClient";
 import { SpecView } from "./SpecView";
 import "./workspace.css";
 
-type View = "spec" | "build";
+type View = "spec" | "build" | "preview";
 const VIEWS: { id: View; label: string }[] = [
   { id: "spec", label: "Spec" },
   { id: "build", label: "Build" },
+  { id: "preview", label: "Preview" },
 ];
 
 const PHASES: Record<string, string> = {
@@ -206,9 +208,20 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     void send(id, entry.text);
   };
 
-  // Saving the token resends the message it stopped, if any; a refused action is pressed again.
-  const onSaveToken = (token: string, noticeId: string) => {
-    operatorToken.set(token);
+  // Signing in resends the message the notice stopped, if any; a refused action is pressed again.
+  const onSaveToken = async (token: string, noticeId: string) => {
+    const result = await signIn(token);
+    if (!result.ok) {
+      const { error, detail } = result;
+      setEntries((list) =>
+        list.map((e) =>
+          e.id === noticeId && e.kind === "notice"
+            ? { ...e, error, detail }
+            : e,
+        ),
+      );
+      return;
+    }
     const messageId = noticeId.replace(/-notice$/, "");
     if (messageId !== noticeId) return onRetry(messageId);
     setEntries((list) => list.filter((e) => e.id !== noticeId));
@@ -246,6 +259,12 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
                 type="button"
                 className="ws-view"
                 aria-pressed={view === id}
+                disabled={id === "preview" && !run.hasPreview}
+                title={
+                  id === "preview" && !run.hasPreview
+                    ? "Available once the build serves a preview"
+                    : undefined
+                }
                 onClick={() => setView(id)}
               >
                 {label}
@@ -257,16 +276,6 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
               <span className="ws-phase" role="status">
                 {PHASES[run.phase] ?? run.phase}
               </span>
-            )}
-            {run.previewUrl && (
-              <a
-                className="button"
-                href={run.previewUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open preview
-              </a>
             )}
             {signingIn && runId && (
               <>
@@ -310,10 +319,12 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
         </header>
         <main
           className="ws-canvas"
-          aria-label={view === "spec" ? "Spec canvas" : "Build canvas"}
+          aria-label={`${VIEWS.find((v) => v.id === view)?.label} canvas`}
         >
           {view === "spec" ? (
             <SpecView canvas={canvas} />
+          ) : view === "preview" && runId ? (
+            <PreviewView runId={runId} onRefused={(e) => addNotice(e)} />
           ) : (
             <BuildView
               draftSpec={canvas.draftSpec}

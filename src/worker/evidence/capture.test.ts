@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureEvent, EvidenceRecord } from "../../shared/evidence";
-import { CaptureError, captureRun, recordingCapMs } from "./capture";
+import { CaptureError, captureRun, endSignIn, recordingCapMs } from "./capture";
 import {
   executeCodeResponse,
   fixturePageFacts,
@@ -487,5 +487,24 @@ describe("captureRun session cleanup", () => {
       }),
     );
     expect(memory.signIns.get("run_1")?.sessionId).toBe(fixtureSession.data.id);
+  });
+
+  it("ends and forgets a run's saved sign-in session", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    memory.signIns.set("run_1", {
+      sessionId: "old-session",
+      origin: "https://example.com",
+    });
+
+    await endSignIn({ anchorApiKey: "key", store: memory.store }, "run_1");
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        method: "DELETE",
+        path: "/v1/sessions/old-session",
+      }),
+    ]);
+    expect(memory.signIns.has("run_1")).toBe(false);
   });
 });

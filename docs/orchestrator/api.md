@@ -12,6 +12,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 |---|---|---|
 | `POST /runs` | `{url, goal}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
 | `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewUrl, error}` |
+| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | One of the run's evidence files from SurrealDB (PNG, MP4, HTML or JSON), served sandboxed so captured pages never run |
 | `POST /runs/:id/messages` | `{text}` | User chat message. The orchestrator replies and updates the spec. If the user clearly approves, it starts inspection |
@@ -45,7 +46,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
-| `preview` | `{url, sandboxId?, mergedTask?}` | Live preview of the integration branch (Daytona port 3000, public) |
+| `preview` | `{sandboxId?, mergedTask?}` | The integration branch's preview changed (Daytona port 3000, private); fetch `GET /runs/:id/preview` for a signed link |
 | `phase` | `{phase, ...}` | Header state; enable Start build on `planned` |
 | `verification` | `{target, taskId?, pass, summary, findings}` | Verifier verdict on the plan, a merged task, or the final rebuild |
 | `error` | `{message}` | Inline error state |
@@ -73,6 +74,7 @@ A failure is also posted to chat as steering.
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
 the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
 (reads included; `sandboxId` is dropped from every `/api/v1/runs` JSON reply, state and events included).
+`/api/v1/runs/*` also accepts the signed session cookie that `POST /api/v1/session` sets on this site (see the README's Run API).
 `orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
 
 ## Evidence capture

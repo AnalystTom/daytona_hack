@@ -53,6 +53,18 @@ const signedInLimit =
 const signedInSkipped =
   "Signed-in DOM, assets and network are not captured until masking exists.";
 
+// Ends the run's saved sign-in session, if any; an end failure is left to Anchor's timeout.
+export async function endSignIn(
+  deps: Pick<CaptureDeps, "anchorApiKey" | "store">,
+  runId: string,
+) {
+  const signIn = await deps.store.takeSignIn(runId);
+  if (signIn)
+    await anchor
+      .endSession(deps.anchorApiKey, signIn.sessionId)
+      .catch(() => {});
+}
+
 // Captures evidence for every approved path, or starts/resumes a secure sign-in.
 export async function captureRun(
   deps: CaptureDeps,
@@ -70,9 +82,7 @@ export async function captureRun(
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
     try {
-      const previous = await deps.store.takeSignIn(runId);
-      if (previous)
-        await anchor.endSession(key, previous.sessionId).catch(() => {});
+      await endSignIn(deps, runId);
       await deps.store.saveSignIn(runId, {
         sessionId: session.id,
         origin: scope.origin,
