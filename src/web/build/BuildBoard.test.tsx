@@ -1,0 +1,45 @@
+import { renderToStaticMarkup } from "react-dom/server";
+import { describe, expect, it } from "vitest";
+import { BuildBoard } from "./BuildBoard";
+
+const noop = () => {};
+
+describe("BuildBoard", () => {
+  it("shows the empty state and a disabled Stop build before any task", () => {
+    const html = renderToStaticMarkup(
+      <BuildBoard events={[]} onStopBuild={noop} />,
+    );
+    expect(html).toContain("No build started.");
+    expect(html).toContain("Tasks appear after the spec is approved.");
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Stop build<\/button>/);
+  });
+
+  it("keeps a failed task visible with its reason and next action", () => {
+    // Test fixture only.
+    const html = renderToStaticMarkup(
+      <BuildBoard
+        onStopBuild={noop}
+        events={[
+          {
+            schemaVersion: 1,
+            eventId: "evt_1",
+            sequence: 1,
+            runId: "run_1",
+            taskId: "task_hero",
+            timestamp: "2026-10-16T12:00:00Z",
+            type: "task.state_changed",
+            state: "failed",
+            message: "Tests failed twice",
+            artifactRefs: [],
+            detail: { title: "Hero section" },
+          },
+        ]}
+      />,
+    );
+    expect(html).not.toContain("No build started.");
+    expect(html).toContain("Hero section");
+    expect(html).toContain("Failed");
+    expect(html).toContain("Tests failed twice");
+    expect(html).toContain("Reply in chat to decide what happens next.");
+  });
+});
