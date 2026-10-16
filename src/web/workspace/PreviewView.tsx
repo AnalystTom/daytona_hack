@@ -17,7 +17,6 @@ const STATUS: Record<VariantView["status"], string> = {
 const FRAME_SANDBOX = "allow-scripts allow-forms allow-same-origin";
 
 export function PreviewView({
-  previewUrl,
   runId,
   onRefused,
   phase,
@@ -25,9 +24,8 @@ export function PreviewView({
   onMakeVariants,
   onPromote,
 }: {
-  previewUrl?: string;
-  runId?: string;
-  onRefused?: (error: RunCallError) => void;
+  runId: string;
+  onRefused: (error: RunCallError) => void;
   phase?: string;
   variants: readonly VariantView[];
   onMakeVariants: () => void;
@@ -39,20 +37,19 @@ export function PreviewView({
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reloads on run change, promotion or Reload, not on every render's callback
   useEffect(() => {
-    if (!runId) return;
     let live = true;
     setLink(undefined);
     void fetchPreviewLink(runId).then((result) => {
       if (!live) return;
       setLink(result);
-      if (!result.ok && result.error === "operator_token") onRefused?.(result);
+      if (!result.ok && result.error === "operator_token") onRefused(result);
     });
     return () => {
       live = false;
     };
   }, [runId, attempt, promotedId]);
 
-  if (runId && !link?.ok) {
+  if (!link?.ok) {
     return (
       <div className="empty-state">
         <h2>{link ? "Preview unavailable" : "Opening the preview"}</h2>
@@ -69,15 +66,7 @@ export function PreviewView({
       </div>
     );
   }
-  const url = runId && link?.ok ? link.value : previewUrl;
-  if (!url) {
-    return (
-      <div className="empty-state">
-        <h2>No preview yet</h2>
-        <p>The rebuild shows here once the first task merges.</p>
-      </div>
-    );
-  }
+  const url = link.value;
   const finished = phase === "done";
   const promoted = variants.some((v) => v.status === "promoted");
   return (
@@ -86,21 +75,14 @@ export function PreviewView({
         <div className="preview-head">
           <h2>Your rebuild</h2>
           <div className="preview-actions">
-            {runId && (
-              <button
-                type="button"
-                className="button"
-                onClick={() => setAttempt((n) => n + 1)}
-              >
-                Reload
-              </button>
-            )}
-            <a
+            <button
+              type="button"
               className="button"
-              href={url}
-              target="_blank"
-              rel="noreferrer"
+              onClick={() => setAttempt((n) => n + 1)}
             >
+              Reload
+            </button>
+            <a className="button" href={url} target="_blank" rel="noreferrer">
               Open in a new tab
             </a>
             <button
@@ -114,8 +96,8 @@ export function PreviewView({
           </div>
         </div>
         <p id="deploy-note" className="muted">
-          Deploying live is not set up yet. Rebuild links last 30 minutes; reload
-          for a fresh rebuild link.
+          Deploying live is not set up yet. Rebuild links last 30 minutes;
+          reload for a fresh rebuild link.
         </p>
         <iframe
           className="preview-frame"

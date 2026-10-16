@@ -85,9 +85,20 @@ export class Daytona {
 
   /** Stops the sandbox (it keeps its disk and can be started again). */
   async stop(id: string) {
-    await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
-      method: "POST",
-    });
+    const current = await this.get(id);
+    if (current.state === "stopped") return;
+    if (current.state !== "stopping")
+      await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
+        method: "POST",
+      });
+    for (let i = 0; i < 60; i++) {
+      const s = await this.get(id);
+      if (s.state === "stopped") return;
+      if (s.state === "error" || s.state === "build_failed")
+        throw new Error(`sandbox ${id} ${s.state}`);
+      await sleep(2000);
+    }
+    throw new Error(`sandbox ${id} did not stop`);
   }
 
   async previewUrl(id: string, port: number): Promise<string> {

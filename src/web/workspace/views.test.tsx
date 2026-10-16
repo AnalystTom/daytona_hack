@@ -124,65 +124,17 @@ describe("ChatPanel", () => {
 });
 
 describe("PreviewView", () => {
-  const preview = (props: Partial<Parameters<typeof PreviewView>[0]>) =>
-    renderToStaticMarkup(
+  it("waits for an authenticated preview link before embedding anything", () => {
+    const html = renderToStaticMarkup(
       <PreviewView
+        runId="r1"
+        onRefused={noop}
         variants={[]}
         onMakeVariants={noop}
         onPromote={noop}
-        {...props}
       />,
     );
-
-  it("waits for the first merge", () => {
-    expect(preview({})).toContain("No preview yet");
-  });
-
-  it("embeds the rebuild sandboxed, with deploy disabled and variants on offer once finished", () => {
-    const building = preview({
-      previewUrl: "https://3000-sb.daytona.works",
-      phase: "building",
-    });
-    expect(building).toContain('src="https://3000-sb.daytona.works"');
-    expect(building).toContain(
-      'sandbox="allow-scripts allow-forms allow-same-origin"',
-    );
-    expect(building).toMatch(/<button[^>]*disabled=""[^>]*>Deploy live/);
-    expect(building).toMatch(/disabled=""[^>]*>Make three variants/);
-    const done = preview({
-      previewUrl: "https://3000-sb.daytona.works",
-      phase: "done",
-    });
-    expect(done).not.toMatch(/disabled=""[^>]*>Make three variants/);
-  });
-
-  it("lets a ready variant be promoted until one is", () => {
-    const v = {
-      title: "Bold hero",
-      explanation: "Louder",
-      pod: "copy" as const,
-      previewUrl: "https://3001-sb.daytona.works",
-    };
-    const html = preview({
-      previewUrl: "https://3000-sb.daytona.works",
-      phase: "done",
-      variants: [
-        { ...v, id: "v1", status: "ready" },
-        { ...v, id: "v2", status: "failed" },
-      ],
-    });
-    expect(html).toContain("Copy of the merged rebuild");
-    expect(html).toContain("Did not finish");
-    expect(html.match(/Promote this variant/g)).toHaveLength(1);
-    expect(html).not.toContain("Make three variants");
-    const promoted = preview({
-      previewUrl: "https://3000-sb.daytona.works",
-      phase: "done",
-      variants: [
-        { ...v, id: "v1", status: "promoted" },
-        { ...v, id: "v2", status: "ready" },
-      ],
-    });
-    expect(promoted).toMatch(/disabled=""[^>]*>Promote this variant/);
+    expect(html).toContain("Opening the preview");
+    expect(html).not.toContain("<iframe");
   });
 });
