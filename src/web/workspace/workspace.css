@@ -71,11 +71,6 @@
   max-width: 72ch;
 }
 
-.example-banner .button-primary {
-  background: var(--pistachio);
-  color: var(--aubergine);
-}
-
 .example-preview {
   box-sizing: border-box;
   height: 100%;
@@ -102,10 +97,6 @@
 .example-preview figcaption {
   margin-top: 0.4rem;
   font-size: 0.8125rem;
-}
-
-.composer-closed .composer-hint {
-  margin: 0;
 }
 
 .ss-example {
@@ -214,6 +205,11 @@
 .button-primary {
   border-color: var(--persimmon);
   background: var(--persimmon);
+}
+
+.example-banner .button-primary {
+  background: var(--pistachio);
+  color: var(--aubergine);
 }
 
 .button-primary:hover:not(:disabled) {
@@ -611,6 +607,10 @@
   margin: 0 0 0.4rem;
   color: var(--muted);
   font-size: 0.8125rem;
+}
+
+.composer-closed .composer-hint {
+  margin: 0;
 }
 
 .composer-box {

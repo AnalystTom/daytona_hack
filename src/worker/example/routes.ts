@@ -20,7 +20,8 @@ import {
 export type ExampleEnv = OrchestratorEnv & StoreEnv;
 
 const SaveRequest = z.object({ runId: z.string().regex(EXAMPLE_ID) });
-const ROUTE = /^\/api\/v1\/example(?:\/([\w-]{1,100})\/evidence\/([\w-]{1,100}))?$/;
+const ROUTE =
+  /^\/api\/v1\/example(?:\/([\w-]{1,100})\/evidence\/([\w-]{1,100}))?$/;
 
 // GET /api/v1/example and /api/v1/example/:runId/evidence/:id are public and read-only: the saved
 // copy cannot reach the run, so nothing here can steer, approve, build or spend.

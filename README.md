@@ -22,7 +22,7 @@ In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sa
 
 ## Workspace
 
-**Start a project** opens `/workspace`, which shows the saved example run (also at `/workspace/example` and first in the session menu) until a session is started. **Start your own** opens an empty session. The header's session menu offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
+**Start a project** opens `/workspace`, which shows the saved example run when the browser history entry has no session. The example is always available at `/workspace/example` and through **Example run** in the session menu. **Start your own** opens an empty session. The header's session menu also offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
 
 The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
 
@@ -33,11 +33,13 @@ Use **Spec** or **Build** to work on the canvas:
 - Drag a card's non-interactive area to move it. For keyboard movement, activate its **Move** button, use arrow keys (Shift moves further), and press Enter or Escape to finish.
 - **Reset layout** clears the run's saved card positions. Pan and zoom are temporary and reset when changing views or reopening a session.
 
-**Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
+In a live session, **Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
 
 ### Example run
 
 The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
+
+Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
 
 Save or replace it with one command, after the Worker is deployed:
 
@@ -45,7 +47,7 @@ Save or replace it with one command, after the Worker is deployed:
 OPERATOR_TOKEN=... npm run example:save -- [runId]
 ```
 
-`runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Runs that have not finished are refused. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it.
+`runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Only runs in `done`, `stopped` or `failed` phase can be saved. An optional second argument selects the site; its default is in the script. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it. Saving requires `ORCHESTRATOR`, `OPERATOR_TOKEN` and the `SURREALDB_*` bindings below; public reads require only the SurrealDB bindings.
 
 Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
 

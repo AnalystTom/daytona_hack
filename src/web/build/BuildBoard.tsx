@@ -13,7 +13,6 @@ type Props = {
   events: readonly (EventEnvelope & { detail?: unknown })[];
   // What the run is doing, shown in place of the empty board while no tasks exist yet.
   status?: string;
-  // Without it the board is read-only and Stop build stays disabled.
   onStopBuild?: () => void;
   onOverride?: (override: Override) => void;
 };
