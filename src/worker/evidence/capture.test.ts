@@ -222,7 +222,7 @@ describe("captureRun (fixture Anchor responses)", () => {
       label: "not_observed",
     });
     expect(items[0]?.limitations.at(-1)).toContain("signed-in session");
-    for (const kind of ["dom", "network"]) {
+    for (const kind of ["dom", "assets", "network"]) {
       const skipped = items.filter((i) => i.kind === kind);
       expect(skipped).toHaveLength(2);
       for (const item of skipped) {

@@ -185,7 +185,7 @@ Only the approved origin and paths are captured; a page that redirects anywhere 
 Until the run API's event function is on `main`, capture events are returned in the capture response, and `captureRun` takes an `emit` function.
 Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. Per-run ownership comes with the run API.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
-In a signed-in capture the DOM and network log are stored as `not_observed` until masking exists.
+In a signed-in capture the DOM, assets and network log are stored as `not_observed` until masking exists.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 
 Worker bindings (secrets, set with `wrangler secret put`):

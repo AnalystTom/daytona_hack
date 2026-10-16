@@ -47,7 +47,7 @@ async function sha256(bytes: Uint8Array) {
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";
 const signedInSkipped =
-  "Signed-in DOM and network are not captured until masking exists.";
+  "Signed-in DOM, assets and network are not captured until masking exists.";
 
 // Captures evidence for every approved path, or starts/resumes a secure sign-in.
 export async function captureRun(
@@ -185,9 +185,11 @@ export async function captureRun(
           await take("application/json", json(facts.styles), [
             "Most frequent computed values on up to 5000 elements, plus :root custom properties from readable stylesheets; names are not the site's own tokens.",
           ]);
-          await take("application/json", json(facts.assets), [
-            "Images, icons and fonts present after load; reuse needs permission.",
-          ]);
+          if (signedIn) await skip(signedInSkipped);
+          else
+            await take("application/json", json(facts.assets), [
+              "Images, icons and fonts present after load; reuse needs permission.",
+            ]);
           if (signedIn) await skip(signedInSkipped);
           else
             await take("application/json", json(facts.network), [
