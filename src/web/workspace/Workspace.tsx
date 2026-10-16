@@ -37,6 +37,8 @@ const PHASES: Record<string, string> = {
 const POLL_MS = 2000;
 // A finished run changes only when someone acts on it, so it is checked less often.
 const IDLE_POLL_MS = 15000;
+const EVENTS_TOKEN_NOTICE = "events-token";
+
 const idle = (phase?: string) =>
   phase === "done" || phase === "stopped" || phase === "failed";
 
@@ -73,7 +75,18 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
       const result = await fetchEvents(runId, since);
       busy = false;
       if (!live) return;
-      setOffline(!result.ok);
+      setOffline(!result.ok && result.error !== "operator_token");
+      if (!result.ok && result.error === "operator_token") {
+        const { error, detail } = result;
+        setEntries((list) =>
+          list.some((e) => e.id === EVENTS_TOKEN_NOTICE)
+            ? list
+            : [
+                ...list,
+                { kind: "notice", id: EVENTS_TOKEN_NOTICE, error, detail },
+              ],
+        );
+      }
       if (result.ok) {
         const fresh = result.value.filter((event) => event.seq > since);
         if (fresh.length > 0) {
@@ -175,6 +188,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     const messageId = noticeId.replace(/-notice$/, "");
     if (messageId !== noticeId) return onRetry(messageId);
     setEntries((list) => list.filter((e) => e.id !== noticeId));
+    pollSoon.current?.();
   };
 
   const onOverride = (override: Override) => {

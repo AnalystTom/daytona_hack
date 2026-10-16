@@ -24,11 +24,9 @@ const OverrideRequest = z.object({
 const RUNS = /^\/api\/v1\/runs(?:\/([\w-]{1,100})(?:\/(.+))?)?$/;
 const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
-const GATEWAY_PREFIX = "/api/v1/gateway";
 
-// Handles /api/v1/runs/* (the workspace's run API), /api/v1/orchestrator/* (operator testing)
-// and /api/v1/gateway/* (the run sandbox's network gateway).
-// Every run POST starts, steers or stops paid work, so each one needs the operator token.
+// Handles /api/v1/runs/* (the workspace's run API) and /api/v1/orchestrator/* (operator testing).
+// Runs spend money and hold the target's data, so every route needs the operator token.
 export async function handleOrchestrator(
   request: Request,
   env: OrchestratorEnv,
@@ -38,19 +36,10 @@ export async function handleOrchestrator(
     url.pathname === OPERATOR_PREFIX ||
     url.pathname.startsWith(`${OPERATOR_PREFIX}/`);
   const run = url.pathname.match(RUNS);
-  const gateway = url.pathname.startsWith(`${GATEWAY_PREFIX}/`);
-  if (!operator && !run && !gateway) return null;
+  if (!operator && !run) return null;
   try {
-    if (operator || (run && request.method === "POST")) {
-      await checkToken(request, env, "OPERATOR_TOKEN");
-    }
+    await checkToken(request, env, "OPERATOR_TOKEN");
     if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
-    if (gateway) {
-      // The orchestrator checks the sandbox's own GATEWAY_TOKEN, so the header goes through as sent.
-      if (request.method !== "POST") throw notFound();
-      const path = `/gateway${url.pathname.slice(GATEWAY_PREFIX.length)}`;
-      return await passThrough(request, env.ORCHESTRATOR, path);
-    }
     if (operator) {
       const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
       return await passThrough(
@@ -65,8 +54,8 @@ export async function handleOrchestrator(
   }
 }
 
-// Forwards the request as is, bearer token included: the orchestrator's /sandboxes and
-// /gateway routes check it themselves.
+// Forwards the request as is, bearer token included: the orchestrator's /sandboxes routes
+// check it themselves.
 async function passThrough(
   request: Request,
   orchestrator: Fetcher,
@@ -110,7 +99,12 @@ async function runRoute(
       if ((await response.clone().text()) === "") {
         throw new Failure(404, "run_not_found", `Run ${runId} not found.`);
       }
-      return response;
+      // The browser has no use for the sandbox id.
+      const { sandboxId: _, ...state } = (await response.json()) as Record<
+        string,
+        unknown
+      >;
+      return Response.json(state);
     }
     if (action === "events") {
       const since = url.searchParams.get("since") ?? "0";

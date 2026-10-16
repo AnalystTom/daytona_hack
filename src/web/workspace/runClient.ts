@@ -2,7 +2,7 @@ import { z } from "zod";
 import { OrchestratorEvent } from "./orchestrator";
 
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
-// Every POST starts, steers or stops paid work, so it carries the operator token.
+// Runs spend money and hold the target's data, so every call carries the operator token.
 
 export type RunCallError = {
   ok: false;
@@ -41,23 +41,20 @@ const tokenNeeded: RunCallError = {
   ok: false,
   error: "operator_token",
   detail:
-    "Runs spend money, so only operators can start or steer them. Paste the operator token to continue.",
+    "Runs spend money, so only operators can start, steer or follow them. Paste the operator token to continue.",
 };
 
 async function call<T>(
   method: "GET" | "POST",
   path: string,
   body: unknown,
-  parse: (json: unknown) => T,
+  parse: (response: Response) => Promise<T>,
   fetchImpl: typeof fetch,
 ): Promise<RunCallResult<T>> {
-  const headers: Record<string, string> = {};
-  if (method === "POST") {
-    const token = operatorToken.get();
-    if (!token) return tokenNeeded;
-    headers.authorization = `Bearer ${token}`;
-    headers["content-type"] = "application/json";
-  }
+  const token = operatorToken.get();
+  if (!token) return tokenNeeded;
+  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  if (method === "POST") headers["content-type"] = "application/json";
   let response: Response;
   try {
     response = await fetchImpl(path, {
@@ -72,10 +69,9 @@ async function call<T>(
       detail: "Reversy's run service could not be reached.",
     };
   }
-  const json: unknown = await response.json().catch(() => undefined);
   if (response.ok) {
     try {
-      return { ok: true, value: parse(json) };
+      return { ok: true, value: await parse(response) };
     } catch {
       return {
         ok: false,
@@ -84,6 +80,7 @@ async function call<T>(
       };
     }
   }
+  const json: unknown = await response.json().catch(() => undefined);
   const reason = ErrorBody.safeParse(json);
   const detail = reason.success ? reason.data : `HTTP ${response.status}`;
   if (response.status === 401) {
@@ -114,7 +111,7 @@ export function createRun(
     "POST",
     "/api/v1/runs",
     brief,
-    (json) => ({ runId: CreatedRun.parse(json).id }),
+    async (r) => ({ runId: CreatedRun.parse(await r.json()).id }),
     fetchImpl,
   );
 }
@@ -128,7 +125,7 @@ export function sendMessage(
     "POST",
     runPath(runId, "messages"),
     { text },
-    () => undefined,
+    async () => undefined,
     fetchImpl,
   );
 }
@@ -138,7 +135,13 @@ export function runAction(
   action: "build" | "stop",
   fetchImpl: typeof fetch = fetch,
 ) {
-  return call("POST", runPath(runId, action), {}, () => undefined, fetchImpl);
+  return call(
+    "POST",
+    runPath(runId, action),
+    {},
+    async () => undefined,
+    fetchImpl,
+  );
 }
 
 export function overrideVerdict(
@@ -150,7 +153,7 @@ export function overrideVerdict(
     "POST",
     runPath(runId, "override"),
     override,
-    () => undefined,
+    async () => undefined,
     fetchImpl,
   );
 }
@@ -165,9 +168,18 @@ export function fetchEvents(
     "GET",
     `${runPath(runId, "events")}?since=${since}`,
     undefined,
-    (json) => z.array(z.unknown()).parse(json).flatMap(validEvent),
+    async (r) =>
+      z
+        .array(z.unknown())
+        .parse(await r.json())
+        .flatMap(validEvent),
     fetchImpl,
   );
+}
+
+// An evidence file; <img> cannot send the token, so the page shows it from a blob.
+export function fetchEvidence(path: string, fetchImpl: typeof fetch = fetch) {
+  return call("GET", path, undefined, (r) => r.blob(), fetchImpl);
 }
 
 const validEvent = (value: unknown) => {

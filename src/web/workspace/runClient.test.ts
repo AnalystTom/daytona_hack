@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createRun,
   fetchEvents,
+  fetchEvidence,
   operatorToken,
   overrideVerdict,
   runAction,
@@ -111,7 +112,7 @@ describe("run client", () => {
     ]);
   });
 
-  it("reads events without the token and drops malformed ones", async () => {
+  it("reads events with the token and drops malformed ones", async () => {
     const good = { seq: 3, ts: "2026-10-16T12:00:00Z", type: "chat", data: {} };
     const fetchImpl = reply(200, [good, { seq: "x" }]);
     expect(await fetchEvents("run_1", 2, fetchImpl)).toEqual({
@@ -122,9 +123,37 @@ describe("run client", () => {
       "/api/v1/runs/run_1/events?since=2",
       {
         method: "GET",
-        headers: {},
+        headers: { authorization: "Bearer op-token" },
         body: undefined,
       },
     );
+  });
+
+  it("asks for the token before reading events or evidence without one", async () => {
+    vi.stubGlobal("localStorage", { getItem: () => null });
+    const fetchImpl = reply(200, []);
+    expect(await fetchEvents("run_1", 0, fetchImpl)).toMatchObject({
+      ok: false,
+      error: "operator_token",
+    });
+    expect(
+      await fetchEvidence("/api/v1/runs/run_1/evidence/ev_1", fetchImpl),
+    ).toMatchObject({ ok: false, error: "operator_token" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("fetches evidence with the token as a blob", async () => {
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response("png", { headers: { "content-type": "image/png" } }),
+    ) as unknown as typeof fetch;
+    const result = await fetchEvidence(
+      "/api/v1/runs/run_1/evidence/ev_1",
+      fetchImpl,
+    );
+    expect(result.ok && (await result.value.text())).toBe("png");
+    expect(vi.mocked(fetchImpl).mock.calls[0]?.[1]?.headers).toEqual({
+      authorization: "Bearer op-token",
+    });
   });
 });

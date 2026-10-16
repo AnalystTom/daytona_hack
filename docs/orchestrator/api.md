@@ -67,10 +67,9 @@ A failure is also posted to chat as steering.
 ## Deployed
 
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
-the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*` with `Authorization: Bearer <OPERATOR_TOKEN>`.
+the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
+(reads included; `GET /api/v1/runs/:id` drops `sandboxId`).
 `orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
-Run sandboxes reach the gateway at `https://<reversy host>/api/v1/gateway/*`; the `reversy` Worker forwards those POSTs to the binding unchanged,
-and the orchestrator checks `GATEWAY_TOKEN` itself.
 
 ## Not built yet
 

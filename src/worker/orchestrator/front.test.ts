@@ -109,41 +109,17 @@ describe("operator pass-through", () => {
   });
 });
 
-describe("sandbox gateway", () => {
-  it("forwards POSTs with the sandbox's own token for the orchestrator to check", async () => {
-    const { env, seen } = setup(
-      () => new Response("png", { headers: { "content-type": "image/png" } }),
-    );
-    const response = await call(
-      "/api/v1/gateway/capture",
-      {
-        method: "POST",
-        headers: { authorization: "Bearer gateway-secret" },
-        json: { url: "https://example.com", kind: "screenshot" },
-      },
-      env,
-    );
-    expect(response?.headers.get("content-type")).toBe("image/png");
-    expect(seen[0]?.url).toBe("https://orchestrator/gateway/capture");
-    expect(seen[0]?.headers.get("authorization")).toBe("Bearer gateway-secret");
-    expect(JSON.parse(seen[0]?.body ?? "")).toEqual({
-      url: "https://example.com",
-      kind: "screenshot",
-    });
-  });
-
-  it("passes the orchestrator's refusal through and accepts only POST", async () => {
-    const { env, seen } = setup(() =>
-      Response.json({ error: "unauthorized" }, { status: 401 }),
-    );
-    const refused = await call(
-      "/api/v1/gateway/recall",
-      { method: "POST", json: { query: "x" } },
-      env,
-    );
-    expect(refused?.status).toBe(401);
-    expect((await call("/api/v1/gateway/recall", {}, env))?.status).toBe(404);
-    expect(seen).toHaveLength(1);
+describe("removed sandbox gateway", () => {
+  it("is not reachable through reversy", async () => {
+    const { env, seen } = setup();
+    expect(
+      await call(
+        "/api/v1/gateway/capture",
+        { method: "POST", headers: { authorization: "Bearer x" }, json: {} },
+        env,
+      ),
+    ).toBeNull();
+    expect(seen).toHaveLength(0);
   });
 });
 
@@ -247,25 +223,38 @@ describe("run routes", () => {
     ]);
   });
 
-  it("reads state, events and evidence without a token", async () => {
+  it("needs the operator token to read state, events and evidence", async () => {
+    const { env, seen } = setup();
+    for (const path of [
+      "/api/v1/runs/r1",
+      "/api/v1/runs/r1/events?since=0",
+      "/api/v1/runs/r1/evidence/ev_001",
+    ]) {
+      expect((await call(path, {}, env))?.status).toBe(401);
+      expect(
+        (await call(path, { headers: { authorization: "Bearer nope" } }, env))
+          ?.status,
+      ).toBe(401);
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it("reads state without the sandbox id, events and evidence with the token", async () => {
     const { env, seen } = setup((s) =>
       s.url.includes("evidence")
         ? new Response("png", { headers: { "content-type": "image/png" } })
-        : Response.json({ id: "r1", phase: "brief" }),
+        : Response.json({ id: "r1", phase: "brief", sandboxId: "sb_1" }),
     );
-    expect((await call("/api/v1/runs/r1", {}, env))?.status).toBe(200);
-    expect(
-      (await call("/api/v1/runs/r1/events?since=7", {}, env))?.status,
-    ).toBe(200);
-    const shot = await call("/api/v1/runs/r1/evidence/ev_001", {}, env);
+    const get = (path: string) => call(path, { headers: operator }, env);
+    const state = await get("/api/v1/runs/r1");
+    expect(state?.status).toBe(200);
+    expect(await state?.json()).toEqual({ id: "r1", phase: "brief" });
+    expect((await get("/api/v1/runs/r1/events?since=7"))?.status).toBe(200);
+    const shot = await get("/api/v1/runs/r1/evidence/ev_001");
     expect(shot?.headers.get("content-type")).toBe("image/png");
     expect(await shot?.text()).toBe("png");
-    expect(
-      (await call("/api/v1/runs/r1/events?since=x", {}, env))?.status,
-    ).toBe(400);
-    expect((await call("/api/v1/runs/r1/evidence/../x", {}, env))?.status).toBe(
-      404,
-    );
+    expect((await get("/api/v1/runs/r1/events?since=x"))?.status).toBe(400);
+    expect((await get("/api/v1/runs/r1/evidence/../x"))?.status).toBe(404);
     expect(seen.map((s) => s.url)).toEqual([
       "https://orchestrator/runs/r1",
       "https://orchestrator/runs/r1/events?since=7",
@@ -275,7 +264,11 @@ describe("run routes", () => {
 
   it("answers 404 for a run the orchestrator does not know", async () => {
     const { env } = setup(() => new Response(undefined, { status: 200 }));
-    const response = await call("/api/v1/runs/missing", {}, env);
+    const response = await call(
+      "/api/v1/runs/missing",
+      { headers: operator },
+      env,
+    );
     expect(response?.status).toBe(404);
     expect(await response?.json()).toMatchObject({ code: "run_not_found" });
   });
