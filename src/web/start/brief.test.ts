@@ -42,9 +42,17 @@ describe("readBrief", () => {
     expect(readBrief(keepBrief(brief))).toBe(brief);
   });
 
+  it("gives every kept brief its own id", () => {
+    const a = keepBrief({ text: "a", files: [] });
+    const b = keepBrief({ text: "b", files: [] });
+    expect(a.brief).not.toBe(b.brief);
+    expect(readBrief(a)?.text).toBe("a");
+  });
+
   it("is null for state that refers to no kept brief", () => {
     expect(readBrief(null)).toBeNull();
-    expect(readBrief({ brief: 999 })).toBeNull();
+    expect(readBrief({ brief: 1 })).toBeNull();
+    expect(readBrief({ brief: "from-an-earlier-page-load" })).toBeNull();
     expect(readBrief({ brief: { text: "a", files: [] } })).toBeNull();
   });
 });

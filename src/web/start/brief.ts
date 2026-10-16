@@ -51,11 +51,11 @@ export const starters: Record<StarterId, Starter> = {
 
 // Briefs live in memory and history entries hold only their id: Chrome drops history state
 // that contains Files when the user goes back, and attachments must never be asked for twice.
-const briefs = new Map<number, Brief>();
+const briefs = new Map<string, Brief>();
 
 /** Keeps a brief for the session and returns the history state that refers to it. */
 export function keepBrief(brief: Brief) {
-  const id = briefs.size + 1;
+  const id = crypto.randomUUID();
   briefs.set(id, brief);
   return { brief: id };
 }
@@ -63,7 +63,7 @@ export function keepBrief(brief: Brief) {
 /** The brief a history entry's state refers to, or null (fresh entry, reload or foreign state). */
 export function readBrief(historyState: unknown): Brief | null {
   const id = (historyState as { brief?: unknown } | null)?.brief;
-  return (typeof id === "number" && briefs.get(id)) || null;
+  return (typeof id === "string" && briefs.get(id)) || null;
 }
 
 /** The draft Entry A opens with: the one kept on this history entry, else the `?starter=` prompt, else empty. */
