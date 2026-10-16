@@ -267,6 +267,7 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
+<<<<<<< HEAD
     await this.beforeWork();
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
@@ -304,6 +305,12 @@ export class Run extends DurableObject<Env> {
       this.s.demo = isGoldmanDemo(url, goal);
       this.s.spec.approved = this.s.demo;
       this.s.spec.pages[0].confirmed = this.s.demo;
+=======
+    if (isGoldmanDemo(url, goal)) {
+      this.s.demo = true;
+      this.s.spec.approved = true;
+      this.s.spec.pages[0].confirmed = true;
+>>>>>>> 3078c86 (no-mistakes(review): Fix report provenance, numeric validation, routing, and replay)
       this.s.spec.pages[0].notes =
         "Report figures, editable investment breakdown, source locations and bounded online source research";
       this.s.spec.flows = [];
@@ -313,9 +320,7 @@ export class Run extends DurableObject<Env> {
       await this.emit("phase", { phase: this.s.phase }, signal);
       await this.addChat(
         "assistant",
-        this.s.demo
-          ? "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed."
-          : "Capturing the report and researching its original sources. Unavailable figures and datasets will be marked not observed.",
+        "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed.",
         signal,
       );
       await this.save(signal);
@@ -473,20 +478,14 @@ export class Run extends DurableObject<Env> {
     await this.beforeWork();
     const signal = this.inspection.signal;
     signal.throwIfAborted();
-    if (isReportGoal(this.s.spec.goal))
-      throw new Error(
-        "Report dissection runs automatically; no build plan required",
-      );
     if (this.s.phase !== "brief")
       throw new Error(`cannot approve in phase ${this.s.phase}`);
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
-    this.s.pending = "inspect";
-    await this.save(signal);
-    await this.emit("spec", this.s.spec, signal);
-    await this.emit("phase", { phase: "inspecting" }, signal);
+    const signal = this.inspection.signal;
     signal.throwIfAborted();
+<<<<<<< HEAD
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return this.s;
   }
@@ -535,6 +534,8 @@ export class Run extends DurableObject<Env> {
     await this.beforeWork();
     this.s.phase = "inspecting";
     this.s.pending = pending;
+=======
+>>>>>>> 3078c86 (no-mistakes(review): Fix report provenance, numeric validation, routing, and replay)
     await this.save();
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);

@@ -281,6 +281,25 @@ const object = (properties: Record<string, unknown>) => ({
 });
 const array = (items: unknown) => ({ type: "array", items });
 
+function sourceIdentity(url: string) {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.hostname.replace(/^www\./, "").replace(/\.$/, "")}:${parsed.port}${decodeURIComponent(parsed.pathname).replace(/\/+$/, "")}`;
+  } catch {
+    return null;
+  }
+}
+
+function containsValue(quote: string, value: string) {
+  const normalized = cleanText(value);
+  if (!/\d/.test(normalized)) return false;
+  const escaped = normalized.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_.,+−-])${escaped}(?![\\p{L}\\p{N}_]|[.,]\\d)`,
+    "u",
+  ).test(cleanText(quote));
+}
+
 export async function dissect(
   env: Env,
   runId: string,
@@ -437,17 +456,18 @@ For each figure return a trace: matches only if original source states the SAME 
     Awaited<ReturnType<typeof sourceFetch>> | null
   >();
   const articleNormalized = cleanText(body);
+  const excludedSources = new Set(
+    [
+      article.url,
+      ...embeds.map(
+        (e) => new URL(e[1].replace(/&amp;/g, "&"), article.url).href,
+      ),
+      ...sources.flatMap((s) => (s.url ? [s.url] : [])),
+    ].map(sourceIdentity),
+  );
   // Direct quote validation prevents search summaries or model guesses becoming observed sources.
   const verify = async (url: string, quote: string) => {
-    if (
-      !quote ||
-      !url ||
-      url.split("#")[0] === article.url.split("#")[0] ||
-      embeds.some(
-        (e) => new URL(e[1].replace(/&amp;/g, "&"), article.url).href === url,
-      )
-    )
-      return null;
+    if (!quote || !url || excludedSources.has(sourceIdentity(url))) return null;
     if (!captures.has(url) && captures.size < 6) {
       try {
         captures.set(url, await sourceFetch(url));
@@ -457,7 +477,10 @@ For each figure return a trace: matches only if original source states the SAME 
     }
     const cap = captures.get(url);
     const normalized = cleanText(quote);
-    return cap && normalized && cleanText(cap.html).includes(normalized)
+    return cap &&
+      !excludedSources.has(sourceIdentity(cap.url)) &&
+      normalized &&
+      cleanText(cap.html).includes(normalized)
       ? cap
       : null;
   };
@@ -493,7 +516,7 @@ For each figure return a trace: matches only if original source states the SAME 
       t &&
       t.status !== "not_found" &&
       t.value &&
-      cleanText(t.quote).includes(cleanText(t.value))
+      containsValue(t.quote, t.value)
         ? await verify(t.url, t.quote)
         : null;
     if (

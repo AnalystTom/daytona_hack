@@ -65,7 +65,7 @@ export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
 
 export async function latestReport(env: Env): Promise<Snapshot | undefined> {
   const [rows] = await store(env).query(
-    `SELECT snapshot FROM report_run WHERE demo = true AND successful = true AND target = $target ORDER BY completedAt DESC LIMIT 1`,
+    `SELECT snapshot, completedAt FROM report_run WHERE demo = true AND successful = true AND target = $target ORDER BY completedAt DESC LIMIT 1`,
     { target: GOLDMAN_URL },
   );
   const row = (rows as { snapshot: string }[])[0];

@@ -18,5 +18,4 @@ export function articleText(html: string, max = 20000) {
   return out.join("\n").slice(0, max);
 }
 
-export const isReportGoal = (goal: string) =>
-  /\b(report|reconstruct|figures?|numbers?|forecast|research)\b/i.test(goal);
+export const isReportGoal = (goal: string) => /\breport\b/i.test(goal);
