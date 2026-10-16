@@ -1,8 +1,15 @@
+import { GOLDMAN_BRIEF } from "../../shared/report";
+
 // The brief Entry A carries into the workspace chat, and the starter prompts that pre-fill it.
 
 export type Brief = { text: string; files: File[] };
 
-export type StarterId = "daytona" | "landing-page" | "interaction" | "inspect";
+export type StarterId =
+  | "goldman"
+  | "daytona"
+  | "landing-page"
+  | "interaction"
+  | "inspect";
 
 export type Starter = {
   id: StarterId;
@@ -12,6 +19,12 @@ export type Starter = {
 };
 
 export const starters: Record<StarterId, Starter> = {
+  goldman: {
+    id: "goldman",
+    title: "Goldman Sachs report",
+    hint: "Dissect figures and research their sources",
+    draft: GOLDMAN_BRIEF,
+  },
   daytona: {
     id: "daytona",
     title: "Rebuild Daytona's landing page",

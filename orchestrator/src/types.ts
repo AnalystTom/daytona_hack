@@ -4,6 +4,11 @@ import type { StoreEnv } from "../../src/worker/store";
 // SURREALDB_* (StoreEnv) hold evidence records and files.
 export interface Env extends StoreEnv {
   RUNS: DurableObjectNamespace;
+  SURREALDB_URL?: string;
+  SURREALDB_NAMESPACE?: string;
+  SURREALDB_DATABASE?: string;
+  SURREALDB_USER?: string;
+  SURREALDB_PASSWORD?: string;
   DAYTONA_API_URL: string;
   DAYTONA_TARGET: string;
   DAYTONA_API_KEY: string;
@@ -111,6 +116,7 @@ export interface RunEvent {
   seq: number;
   ts: string;
   type:
+    | "report"
     | "chat"
     | "spec"
     | "evidence"

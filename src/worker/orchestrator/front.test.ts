@@ -372,3 +372,31 @@ describe("run routes", () => {
     });
   });
 });
+
+it("validates and forwards report edits behind the existing operator gate", async () => {
+  const { env, seen } = setup();
+  const path = "/api/v1/runs/report-run/report-edit";
+  const json = { figureId: "f1", edit: { label: "User label", value: "580" } };
+  expect((await call(path, { method: "POST", json }, env))?.status).toBe(401);
+  expect(seen).toHaveLength(0);
+  expect(
+    (await call(path, { method: "POST", headers: operator, json }, env))
+      ?.status,
+  ).toBe(200);
+  expect(seen[0]?.url).toBe("https://orchestrator/runs/report-run/report-edit");
+  expect(JSON.parse(seen[0]?.body ?? "")).toEqual(json);
+  expect(
+    (
+      await call(
+        path,
+        {
+          method: "POST",
+          headers: operator,
+          json: { ...json, edit: { label: "", value: "1" } },
+        },
+        env,
+      )
+    )?.status,
+  ).toBe(400);
+  expect(seen).toHaveLength(1);
+});

@@ -14,6 +14,8 @@ export async function llmJson<T>(
     name: string;
     beforeCall?: () => Promise<void>;
     effort?: string;
+    webSearch?: number;
+    onSearchCalls?: (calls: number) => void;
     model?: string;
   },
 ): Promise<T> {
@@ -43,6 +45,8 @@ async function llmCall<T>(
     name: string;
     beforeCall?: () => Promise<void>;
     effort?: string;
+    webSearch?: number;
+    onSearchCalls?: (calls: number) => void;
   },
   model: string,
   set?: (a: Record<string, string | number>) => void,
@@ -59,6 +63,13 @@ async function llmCall<T>(
       reasoning: { effort: opts.effort || "high" },
       instructions: opts.instructions,
       input: opts.input,
+      ...(opts.webSearch
+        ? {
+            tools: [{ type: "web_search", search_context_size: "low" }],
+            max_tool_calls: opts.webSearch,
+            max_output_tokens: 16000,
+          }
+        : {}),
       text: {
         format: {
           type: "json_schema",
@@ -74,6 +85,14 @@ async function llmCall<T>(
     throw new Error(
       `openai ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
     );
+  if (opts.webSearch) {
+    const calls =
+      body.output?.filter(
+        (item: { type: string }) => item.type === "web_search_call",
+      ).length ?? 0;
+    if (!calls) throw new Error("Online source search did not run");
+    opts.onSearchCalls?.(calls);
+  }
   const text =
     body.output_text ??
     body.output

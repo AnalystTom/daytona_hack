@@ -232,7 +232,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
 - Run access: see section 8.
-- Out of the demo for now: financial reports. Backend inspection and REA limits are in section 6.
+- The report demo captures the Goldman Sachs article and embedded investment chart, stores figure/source provenance and edits in SurrealDB, and searches online with at most four OpenAI web-search calls and six original-source fetches. It starts no build workers. Only the exact starter automatically approves scope. Live failures replay a successful demo only with its original run ID and time shown. REA, variants and changes to login are out of this report demo.
 
 ## 14. Open questions
 

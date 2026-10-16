@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportDissection } from "../../shared/report";
 import { OrchestratorEvent } from "./orchestrator";
 
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
@@ -260,3 +261,18 @@ const validEvent = (value: unknown) => {
   const event = OrchestratorEvent.safeParse(value);
   return event.success ? [event.data] : [];
 };
+
+export function saveReportEdit(
+  runId: string,
+  figureId: string,
+  edit: { label: string; value: string },
+  fetchImpl: typeof fetch = fetch,
+) {
+  return call(
+    "POST",
+    runPath(runId, "report-edit"),
+    { figureId, edit },
+    async (r) => ReportDissection.parse(await r.json()),
+    fetchImpl,
+  );
+}
