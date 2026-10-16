@@ -5,7 +5,7 @@ import { handleRunsApi, type RunsEnv } from "./runs/api";
 import { handleVerify, type VerifierEnv } from "./verifier/route";
 
 export default {
-  async fetch(request, env) {
+  async fetch(request: Request, env: VerifierEnv & EvidenceEnv) {
     const { pathname } = new URL(request.url);
     if (request.method === "GET" && pathname === "/api/health") {
       return Response.json({ ok: true, version });
