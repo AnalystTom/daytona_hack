@@ -1227,6 +1227,7 @@ describe("Run entered-URL redirects", () => {
         "sandbox-1",
         "w-t01-0",
         expect.stringContaining(`-i /home/daytona/evidence/${record.id}.png`),
+        expect.any(Function),
       );
     }
   });
