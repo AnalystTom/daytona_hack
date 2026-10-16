@@ -47,12 +47,13 @@ vi.mock("react", async (original) => {
     ...actual,
     useState: (initial: unknown) => {
       const i = hooks.index++;
-      const slot = (hooks.slots[i] ??= {
+      hooks.slots[i] ??= {
         value:
           typeof initial === "function"
             ? (initial as () => unknown)()
             : initial,
-      });
+      };
+      const slot = hooks.slots[i];
       return [
         slot.value,
         (update: unknown) => {
@@ -75,7 +76,8 @@ vi.mock("react", async (original) => {
       const i = hooks.index++;
       const old = hooks.slots[i];
       if (old && !changed(old.deps, deps)) return;
-      const slot = (hooks.slots[i] = { deps, cleanup: old?.cleanup });
+      hooks.slots[i] = { deps, cleanup: old?.cleanup };
+      const slot = hooks.slots[i];
       hooks.effects.push(() => {
         slot.cleanup?.();
         const cleanup = effect();
