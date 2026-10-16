@@ -8,6 +8,7 @@ import {
 import {
   reportContractExample,
   uncertainQuantityExamples,
+  incompleteQuantityExamples,
 } from "./report.test-data";
 
 describe("report dashboard contract", () => {
@@ -123,6 +124,19 @@ it("does not label bare integers as years or match them without currency", () =>
     { value: "2026", unit: "number" },
   ]);
 });
+
+it.each(incompleteQuantityExamples)(
+  "never verifies an amount with an unconsumed unit: $quote",
+  ({ quote, value, unit }) => {
+    const figure = ReportDissection.parse(reportContractExample).figures[0]!;
+    expect(
+      exactQuoteEvidence(
+        { ...figure, quote, value, unit },
+        { quote, value, completePassage: true },
+      ),
+    ).toBe(false);
+  },
+);
 
 it.each([
   ["USD 35 billion", "USD billion", "Investment reaches CAD 35 billion."],

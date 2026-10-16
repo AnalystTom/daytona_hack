@@ -1,5 +1,23 @@
 import { GOLDMAN_URL } from "./report";
 
+export const incompleteQuantityExamples = [
+  {
+    quote: "Investment was USD 35 billion/year.",
+    value: "USD 35",
+    unit: "USD number",
+  },
+  {
+    quote: "Investment was USD 35 billion /year.",
+    value: "USD 35 billion",
+    unit: "USD billion",
+  },
+  {
+    quote: "Investment was USD 35 billion per year.",
+    value: "USD 35 billion",
+    unit: "USD billion",
+  },
+];
+
 export const uncertainQuantityExamples = [
   { quote: "Loss was (USD 35 billion).", value: "35 billion", unit: "billion" },
   { quote: "Loss was -USD 35 billion.", value: "35 billion", unit: "billion" },

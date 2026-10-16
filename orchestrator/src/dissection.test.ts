@@ -8,7 +8,10 @@ import {
 } from "./dissection";
 import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
-import { uncertainQuantityExamples } from "../../src/shared/report.test-data";
+import {
+  uncertainQuantityExamples,
+  incompleteQuantityExamples,
+} from "../../src/shared/report.test-data";
 
 vi.mock("./services", async (original) => ({
   ...(await original<typeof import("./services")>()),
@@ -649,6 +652,41 @@ it.each(uncertainQuantityExamples)(
       status: "not_found",
       value: "",
       quote,
+      completePassage: true,
+    });
+  },
+);
+
+it.each(incompleteQuantityExamples)(
+  "keeps unconsumed units unverified in new comparisons: $quote",
+  async ({ quote, value, unit }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(`<p>${quote}</p>`)),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [],
+      traces: [
+        {
+          figureId: "article_f1",
+          url: "https://independent.example/research",
+          status: "matches",
+          quote,
+          value,
+        },
+      ],
+    });
+    const report = await dissect(env, "run", {
+      html: `<p>${quote}</p>`,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(report.figures[0]).toMatchObject({ quote, value, unit });
+    expect(report.traces[0]).toMatchObject({
+      status: "not_found",
+      quote,
+      value: "",
       completePassage: true,
     });
   },

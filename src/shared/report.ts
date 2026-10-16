@@ -135,8 +135,11 @@ export function exactQuoteEvidence(
     text(trace.quote) !== text(figure.quote)
   )
     return false;
-  const evidence = (quote: string) =>
-    reportQuantities(text(quote)).filter(
+  const evidence = (quote: string) => {
+    const passage = text(quote);
+    const tail = passage.slice(passage.lastIndexOf(value) + value.length);
+    if (!/^[.!?]*$/.test(tail)) return [];
+    return reportQuantities(passage).filter(
       (quantity) =>
         quantity.status === "observed" &&
         !!quantity.currency &&
@@ -144,6 +147,7 @@ export function exactQuoteEvidence(
         quantity.unit === figure.unit &&
         !/[-−–]/.test(quantity.value),
     );
+  };
   const article = evidence(figure.quote);
   const source = evidence(trace.quote);
   return (
