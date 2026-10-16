@@ -45,15 +45,20 @@ describe("readBrief", () => {
   it("gives every kept brief its own id", () => {
     const a = keepBrief({ text: "a", files: [] });
     const b = keepBrief({ text: "b", files: [] });
-    expect(a.brief).not.toBe(b.brief);
+    expect(a.draft).not.toBe(b.draft);
     expect(readBrief(a)?.text).toBe("a");
+  });
+
+  it("is null for the workspace's brief text", () => {
+    const kept = keepBrief({ text: "a", files: [] });
+    expect(readBrief({ brief: kept.draft })).toBeNull();
   });
 
   it("is null for state that refers to no kept brief", () => {
     expect(readBrief(null)).toBeNull();
-    expect(readBrief({ brief: 1 })).toBeNull();
-    expect(readBrief({ brief: "from-an-earlier-page-load" })).toBeNull();
-    expect(readBrief({ brief: { text: "a", files: [] } })).toBeNull();
+    expect(readBrief({ draft: 1 })).toBeNull();
+    expect(readBrief({ draft: "from-an-earlier-page-load" })).toBeNull();
+    expect(readBrief({ draft: { text: "a", files: [] } })).toBeNull();
   });
 });
 

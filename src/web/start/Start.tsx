@@ -45,7 +45,7 @@ export function Start() {
       const kept = keepBrief(brief);
       // Kept on this entry as well, so Back from the workspace returns to the same draft.
       window.history.replaceState(kept, "");
-      navigate("/workspace", kept);
+      navigate("/workspace", { brief: brief.text, files: brief.files });
     } catch {
       sending.current = false;
       setError(
