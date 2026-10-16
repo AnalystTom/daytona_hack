@@ -11,7 +11,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | Method and path | Body | Does |
 |---|---|---|
 | `POST /runs` | `{url, goal}` | Creates a run, takes a first look (HTML, routes, screenshot if Anchor is set), returns state with the first chat reply |
-| `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewReady, error}` |
+| `GET /runs/:id` | | Run state, defined by `State` in [`run.ts`](../../orchestrator/src/run.ts); the site front door removes `sandboxId` fields |
 | `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | Screenshot PNG for an evidence card |
@@ -58,7 +58,7 @@ Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pen
 
 ## How a build runs
 
-- One Daytona sandbox per run (`daytona-medium`). The rebuild repo is at `/home/daytona/app` on `main`.
+- The main rebuild starts in a Daytona sandbox (`daytona-medium`). The rebuild repo is at `/home/daytona/app` on `main`; additional sandboxes may be forked for [variants](#variants).
 - Evidence is copied to `/home/daytona/evidence` and made read-only before any worker starts.
 - Each task gets its own git worktree and branch `task/<id>`. A Codex worker (`gpt-6.1-sol`, high reasoning) runs there.
   Codex's own sandbox cannot start inside the Daytona container, so the Daytona sandbox is the isolation boundary.
@@ -66,7 +66,7 @@ Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pen
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
 - If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it, publishes task/variant outcomes, and schedules the build loop before reporting to Agent Memory. Reporting failures do not block the next build step or roll back merged work.
-- Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
+- Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<first 12 characters of the run ID>`.
 - Events remain in the run's Durable Object event log. External SurrealDB run records (run, events, tasks, steering, approvals)
   use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
   Failed writes can leave missing events or partial projections, including steering, approvals and run updates; there is no durable replay or projection repair.
@@ -88,7 +88,7 @@ Starting that plan reuses the promoted sandbox and its merged files instead of c
 
 The verifier is a GPT model: it runs on `VERIFIER_MODEL` (OpenAI, like every model in the demo) from Cloudflare,
 outside the sandbox, with its own instructions. Its events carry the model name. It checks the plan before build, each merged task (against the live preview)
-and the final rebuild, and emits `verification` events `{target: "plan"|"task"|"final", taskId?, pass, summary, findings[]}`.
+and the final rebuild, and emits the `verification` events described [above](#events).
 A failed verdict is also posted to chat as steering. Tasks retain the boolean result in `verification`; absence means no completed check.
 A task verifier-request error marks the task `failed` with its reason and a next action to approve its review to retry verification; the merged code stays in place.
 No fix task is generated from an unavailable verifier. A plan-request failure leaves the run `failed`; final-check request failures keep the build active for its next alarm instead of announcing completion.
@@ -103,7 +103,7 @@ the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrat
 
 ## Not built yet
 
-- Anchor screenshots and recordings: the code calls `POST /v1/tools/screenshot` once `ANCHORBROWSER_API_KEY` is set. Until then, screenshot evidence is `not_observed` and HTML comes from a plain fetch.
+- Full Anchor evidence-pack integration into the run lifecycle, including recordings, network evidence and confirmed flows. The current inspector calls `POST /v1/tools/screenshot` when `ANCHORBROWSER_API_KEY` is set; without it, screenshot evidence is `not_observed`. HTML uses Anchor's webpage fetch when configured and successful, otherwise a plain fetch. The separate [evidence capture API](../../README.md#evidence-capture) is not yet wired into this lifecycle.
 - Secure sign-in.
 - Deploy live: the Preview tab shows a disabled Deploy live control until there is a deploy target.
 

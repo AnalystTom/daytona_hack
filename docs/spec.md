@@ -53,7 +53,7 @@ Rules:
 
 The app shell is minimal: a canvas plus a right-hand chat.
 There is no left navigation sidebar, giant title, numbered stepper, decorative mascot scene or separate Compare screen.
-The header holds the Reversy name, two canvas views (**Spec** and **Build**) and a **Start build** button.
+The header holds the Reversy name, three canvas views (**Spec**, **Build** and **Preview**) and a **Start build** button.
 
 **Chat is how the user and Reversy talk.**
 The user gives a URL and a goal, then refines the scope in conversation; questions and follow-ups stay in the chat panel, not in a form.
@@ -61,7 +61,7 @@ Answers update the living spec on the canvas.
 The chat stays visible while Reversy inspects, plans and builds, and is where the user steers and clarifies scope.
 
 **The canvas holds the work.**
-Spec and Build show different objects in the same environment.
+Spec, Build and Preview show different objects in the same environment; [workspace usage](../README.md#run-api) describes the preview and promotion controls.
 
 ## 3. Spec view: refine the brief in chat, build the spec on the canvas
 
@@ -140,7 +140,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
 | Daytona | Runs the Codex workers in one sandbox per run (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; VM fork for variants once enabled |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
-| SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
+| SurrealDB | External records and Agent Memory; storage ownership and guarantees are in the [agent system's records section](orchestrator/spec.md#12-records) |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
 | GPT 6.1 via the OpenAI API | Orchestrator (also the chat agent), Codex workers, review and the verifier; all models are OpenAI |
 
@@ -159,8 +159,8 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
 - Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
-- SurrealDB is the main store as well as Agent Memory, not an optional extra.
-- UI: the minimal canvas workspace (chat on the right; Spec and Build views; kanban) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
+- Storage: see the [agent system's records section](orchestrator/spec.md#12-records).
+- UI: the minimal canvas workspace described in section 2 replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.
 
 Still open: the hard spend cap, and which sponsor accounts actually work.

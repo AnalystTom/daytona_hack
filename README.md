@@ -2,11 +2,12 @@
 
 Reversy takes a site apart and rebuilds it with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
 
-This repository is one TypeScript project deployed as a single Cloudflare Worker named `reversy`:
+This repository contains the `reversy` Cloudflare Worker and its private orchestrator:
 
 - `src/web/`: React front end, built with Vite and served as Workers static assets.
 - `src/worker/`: the Worker, which handles `/api/*` (for example `GET /api/health`).
 - `src/shared/`: contracts used by both, as zod schemas with their TypeScript types.
+- `orchestrator/`: the separately built `reversy-orchestrator` Worker; its [API reference](docs/orchestrator/api.md) owns the run lifecycle and persistence guarantees.
 
 ## Setup
 
@@ -41,9 +42,9 @@ The workspace is at `/workspace`; in development only (`npm run dev`), `/workspa
 
 Set a secret with `npx wrangler secret put <NAME>`.
 
-## Verifier
+## Standalone verifier
 
-`POST /api/v1/runs/:id/verify` checks the orchestrator's output with `claude-opus-5-5` at high effort (`docs/orchestrator/spec.md` section 9).
+`POST /api/v1/runs/:id/verify` checks supplied output with `claude-opus-5-5` at high effort. This is separate from the demo orchestrator's [OpenAI verifier](docs/orchestrator/api.md#verifier).
 The body is `{kind: "plan" | "task" | "final", spec, evidence, findings, screenshots, plan}`, plus `task` for `kind: "task"` and `rebuildEvidenceIds` for `kind: "final"`; the schemas are in `src/shared/verifier.ts`.
 It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs.
 A model error, refusal, truncated reply or malformed verdict returns 502, never a pass.
@@ -59,8 +60,10 @@ Both need an `Origin` header naming this site. A run request whose `Origin` name
 The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
 
-The API assigns each stored event its `sequence` (1, 2, ...) in arrival order and writes it to SurrealDB before any stream sends it.
+For the active run API's event storage and external projection guarantees, see [How a build runs](docs/orchestrator/api.md#how-a-build-runs).
 Errors are `{code, message, retryable, requestId}`.
+
+In the workspace's Preview tab, use **Reload** for a fresh rebuild link. Once the build finishes, **Make three variants** starts the alternatives; their previews appear when ready. Choose **Promote this variant**, describe the next changes in chat, approve the follow-up spec, then press **Start build**. **Deploy live** is disabled until deployment is set up.
 
 ### Bindings
 
@@ -87,7 +90,7 @@ The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (wit
 ## Deploy
 
 GitHub Actions (`.github/workflows/ci.yml`) runs format, lint, typecheck, test and build on every pull request and push.
-On a push to `main`, once CI passes, the Cloudflare wrangler action deploys `reversy-orchestrator` (`orchestrator/`) and then this Worker, which binds to it.
+On a push to `main`, once CI passes, the Cloudflare wrangler action deploys `reversy` first, exposing its `Records` entrypoint, then `reversy-orchestrator` (`orchestrator/`), which binds to it for external run records.
 
 The deploy jobs need two repository secrets:
 
@@ -96,9 +99,9 @@ The deploy jobs need two repository secrets:
 
 Without them the deploy job fails, so a merge to `main` that did not deploy shows red.
 
-## Run sandbox (Daytona)
+## Firstmate sandbox (second engine)
 
-Each run gets one Daytona sandbox that holds the agent system (the second engine, `docs/orchestrator/spec.md` section 11): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+The second engine (`docs/orchestrator/spec.md` section 11) uses a Daytona sandbox holding Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge. The demo engine's sandbox lifecycle is documented in the [orchestrator API](docs/orchestrator/api.md#how-a-build-runs).
 The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
 
 - `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).

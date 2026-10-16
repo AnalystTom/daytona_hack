@@ -187,8 +187,7 @@ A failed or stopped task stays on the board with its reason and next action.
 - The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
 - Each run is limited to 2 hours.
-- If the sandbox dies, the run is marked failed; the records in SurrealDB keep everything captured so far.
-- Every steer, override, approval and failure is recorded with the run.
+- Run state and events remain in the Durable Object; external record availability follows the [API's persistence guarantees](api.md#how-a-build-runs).
 
 ## 11. Second engine (later): Firstmate in Daytona
 
@@ -199,10 +198,9 @@ The same evidence, verifier and records apply.
 
 ## 12. Records
 
-The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
+The agents' code runs on Daytona; the service lives on Cloudflare. Current storage ownership and external projection limits are defined in the [API's persistence guarantees](api.md#how-a-build-runs).
 
-- **SurrealDB** stores runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task).
-  It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
+- **SurrealDB** holds external run projections, the separate evidence capture API's records and files, and Agent Memory. See the API reference for the projection guarantees and Agent Memory namespace.
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
 ## 13. Decided

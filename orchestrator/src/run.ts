@@ -75,8 +75,7 @@ export class Run extends DurableObject<Env> {
 
   private get tracer() {
     if (
-      !this._tracer ||
-      !this._tracer.traceId.startsWith(this.s.id.replace(/-/g, "").slice(0, 8))
+      !this._tracer?.traceId.startsWith(this.s.id.replace(/-/g, "").slice(0, 8))
     ) {
       this._tracer = new RunTracer(this.env, this.ctx, this.s.id);
     }
@@ -656,7 +655,8 @@ export class Run extends DurableObject<Env> {
       }
       this.live();
     } catch (e: any) {
-      if (this.s.phase === "stopped" && !this.s.expired) {
+      // Stop can change the phase while an awaited operation yields.
+      if ((this.s.phase as Phase) === "stopped" && !this.s.expired) {
         await this.stopWorkers();
         await this.save();
         return;
