@@ -37,7 +37,7 @@ Rules:
 ![Entry A: chat start with the beaver and starter prompts](screens/board-entry-a.png)
 
 - A centred greeting ("What would you like to make yours?", "Share a website and a goal. We'll refine the rest in chat."), one composer and the beaver.
-- Four starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Work from screenshots, Inspect a website.
+- Four starters, which are prompt suggestions rather than past projects: Goldman Sachs report, Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Inspect a website.
 - A starter fills an editable draft; Send carries the same brief into the workspace chat.
 - Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
 
@@ -47,6 +47,7 @@ Rules:
 
 - Opening the workspace directly shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
 - No questionnaire or input form, and no spec, capture or task card until it actually exists.
+- The empty Spec canvas also offers the report starter described in the [README](../README.md#report-demo).
 - A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
 
 ## 2. Session workspaces: canvas on the left, chat on the right
@@ -115,12 +116,10 @@ The current demo target is Goldman Sachs' global AI investment article:
 The Goldman Sachs starter fixes and approves its report-only scope and research plan automatically.
 It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
 The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
-Figures, sources and edits are stored per run in SurrealDB. A failed live demo can replay only the most recent successful demo run and labels its run ID and time.
-This path starts no build workers or variants. The website workflow remains available separately.
-
-Reversy can reconstruct financial reports as well as websites.
-Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
-For this report demo, the approved scope goes directly through capture and source research to the saved canvas dashboard; it does not start a code-build plan.
+Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.
+"Observed" means read from the article or its embedded chart; it does not establish independent verification. "Exact source quote match" requires the [bounded quote-evidence rule](orchestrator/spec.md#report-dissection); uncertain comparisons show "Unverified online" with both available quotations retained.
+Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. A failed live demo can replay only the most recent successful demo run and labels its original run ID, completion time and live failure reason; without one, the run fails explicitly.
+This path starts no build workers or variants; REA and changes to login or account management are out of scope. The website workflow remains available separately.
 A figure Reversy could not read is marked "not observed", never filled in.
 
 ## 6. Mascot
@@ -165,7 +164,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
 - Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of this report demo: REA, variants, and changes to login or account management.
+- Report demo scope and exclusions: see [Financial report demo](#financial-report-demo).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

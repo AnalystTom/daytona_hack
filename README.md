@@ -1,8 +1,8 @@
 # Reversy
 
-Reversy takes a site apart and rebuilds it with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
+Reversy takes sites and reports apart with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
 
-This repository is one TypeScript project deployed as a single Cloudflare Worker named `reversy`:
+The web app is deployed as a Cloudflare Worker named `reversy`, backed by the private `reversy-orchestrator` Worker:
 
 - `src/web/`: React front end, built with Vite and served as Workers static assets.
 - `src/worker/`: the Worker, which handles `/api/*` (for example `GET /api/health`).
@@ -34,6 +34,13 @@ Use **Spec** or **Build** to work on the canvas:
 - **Reset layout** clears the run's saved card positions. Pan and zoom are temporary and reset when changing views or reopening a session.
 
 **Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
+
+## Report demo
+
+At `/start`, choose **Goldman Sachs report** and send its draft unchanged, or use the same button in an empty `/workspace` to submit it immediately.
+Enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
+Keep the workspace's `?run=<id>` URL to reopen that run after a reload.
+See the [financial report demo](docs/spec.md#financial-report-demo) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
 

@@ -18,7 +18,7 @@ const snapshot = () => ({
   evidence: [],
 });
 
-it("passes captured originals to storage and accepts the returned snapshot receipt", async () => {
+it("passes the snapshot to storage and accepts the returned receipt", async () => {
   const query = vi
     .spyOn(SurrealRunStore.prototype, "query")
     .mockResolvedValueOnce([])
@@ -28,8 +28,6 @@ it("passes captured originals to storage and accepts the returned snapshot recei
     id: "test-run",
     demo: true,
     successful: true,
-    figures: snapshot().report.figures,
-    sources: snapshot().report.sources,
     snapshot: JSON.stringify(snapshot()),
   });
   expect(query.mock.calls[1]?.[1]).toEqual({ id: "test-run" });
@@ -59,7 +57,7 @@ it("parses a returned replay snapshot and rejects missing storage configuration"
   await expect(latestReport({} as Env)).rejects.toThrow("not configured");
 });
 
-it("passes an edit and its run and figure identity to storage", async () => {
+it("passes an edit's run and figure identity to storage", async () => {
   const query = vi
     .spyOn(SurrealRunStore.prototype, "query")
     .mockResolvedValue([]);
@@ -67,8 +65,6 @@ it("passes an edit and its run and figure identity to storage", async () => {
   expect(query.mock.calls[0]?.[1]).toEqual({
     runId: "test-run",
     figureId: "f1",
-    label: "Updated",
-    value: "580",
   });
 });
 
