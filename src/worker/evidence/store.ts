@@ -73,7 +73,11 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify({ id: 1, method: "query", params: [`${defineTables} ${sql}`, vars] }),
+      body: JSON.stringify({
+        id: 1,
+        method: "query",
+        params: [`${defineTables} ${sql}`, vars],
+      }),
     });
     if (!response.ok) {
       throw new Error(`SurrealDB request failed with ${response.status}`);

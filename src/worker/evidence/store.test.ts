@@ -122,7 +122,10 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
         const sql: string = JSON.parse(String(init.body)).params[0];
-        const statements = sql.split(";").map((s) => s.trim()).filter(Boolean);
+        const statements = sql
+          .split(";")
+          .map((s) => s.trim())
+          .filter(Boolean);
         const defined = new Set<string>();
         return Response.json({
           id: 1,
@@ -134,7 +137,10 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
             }
             const target = /(?:FROM|DELETE) (\w+):/.exec(statement)?.[1];
             return target && !defined.has(target)
-              ? { status: "ERR", result: `The table '${target}' does not exist` }
+              ? {
+                  status: "ERR",
+                  result: `The table '${target}' does not exist`,
+                }
               : { status: "OK", result: [] };
           }),
         });
