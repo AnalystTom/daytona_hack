@@ -8,7 +8,7 @@ import {
 import { Icon } from "./icons";
 import "./intro.css";
 
-const seenKey = "reversy:intro-seen:v3";
+const seenKey = "reversy:intro-seen:v4";
 
 export function shouldShowIntro() {
   if (typeof window === "undefined") return false;
