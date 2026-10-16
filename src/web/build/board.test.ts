@@ -186,6 +186,11 @@ describe("deriveBoard", () => {
           review: { verdict: "rejected", reason: "Hero spacing off" },
         },
       }),
+      event({
+        sequence: 2,
+        state: "in_review",
+        message: "Orchestrator sending task back to builder",
+      }),
     ]);
     expect(board.tasks[0]).toMatchObject({
       nextAction: "Builder will rework the hero",
