@@ -220,15 +220,13 @@ async function admit(
   const maxMinutes = limit(env.RUN_MAX_MINUTES, 120);
   const recent = await owners.list(user, 0);
   const ended: RunOwner[] = [];
-  for (const owned of recent) {
+  for (const owned of recent.filter((record) => record.active !== false)) {
     const reply = await forward(orchestrator, "GET", `/runs/${owned.runId}`);
     const { phase, pending } = JSON.parse((await reply.text()) || "{}") as {
       phase?: string;
       pending?: string;
     };
-    if (pending === "stop" || owned.busy) continue;
-    if (phase && ENDED.includes(phase)) ended.push(owned);
-    else if (now - owned.createdAt >= maxMinutes * 60_000) {
+    if (now - owned.createdAt >= maxMinutes * 60_000) {
       if (phase) {
         const stopped = await forward(
           orchestrator,
@@ -240,11 +238,20 @@ async function admit(
           phase?: string;
           pending?: string;
         };
-        if (result.phase === "stopped" && result.pending !== "stop")
-          ended.push(owned);
-      } else ended.push(owned);
+        if (result.phase !== "stopped" || result.pending === "stop") continue;
+      }
+      await owners.finish(owned.runId, user);
+      ended.push(owned);
+    } else if (
+      !owned.busy &&
+      pending !== "stop" &&
+      phase &&
+      ENDED.includes(phase)
+    ) {
+      ended.push(owned);
     }
   }
+
   const refusal = await owners.reserve(
     run,
     limit(env.ACTIVE_RUNS, 1),

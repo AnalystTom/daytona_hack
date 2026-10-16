@@ -4,7 +4,12 @@ import type { Run } from "../../shared/runs";
 import { MemoryRunStore } from "./memory";
 import { surrealOwners } from "../orchestrator/owners";
 import { type SurrealConfig, SurrealRunStore } from "./surreal";
-import type { RunStore } from "./types";
+import { type RunStore, StoreError } from "./types";
+import {
+  handleOrchestrator,
+  type OrchestratorEnv,
+} from "../orchestrator/front";
+import { AUD, accessJwt, certs, TEAM } from "../orchestrator/access-fixtures";
 
 // The same behaviour is required of every store. The SurrealDB suite runs only when
 // SURREALDB_TEST_URL points at a server with root credentials (SURREALDB_TEST_USER/PASSWORD);
@@ -317,5 +322,116 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.reserve(next, 1, 1, [current])).toBeUndefined();
     expect(await owners.reserve(a, 1, 1, [])).toBe("active_run_limit");
     expect(await owners.get(a.runId)).toMatchObject({ ...a, busy: false });
+  });
+  it("recovers expired busy admission through confirmed stop and the real store without resetting its charge", async () => {
+    let storageUnavailable = false;
+    const store = new SurrealRunStore(
+      surreal as SurrealConfig,
+      async (input, init) => {
+        if (storageUnavailable) throw new Error("test database unavailable");
+        return fetch(input, init);
+      },
+    );
+    const owners = surrealOwners(store);
+    const original = {
+      runId: crypto.randomUUID(),
+      owner: `${crypto.randomUUID()}@example.com`,
+      createdAt: Date.now() - 60_000,
+    };
+    expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
+    expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
+    const abandoned = (await owners.get(original.runId))!;
+    storageUnavailable = true;
+    await expect(
+      owners.finish(original.runId, original.owner),
+    ).rejects.toBeInstanceOf(StoreError);
+    storageUnavailable = false;
+    expect(await owners.get(original.runId)).toMatchObject({
+      busy: true,
+      active: true,
+    });
+    let cancellationFails = true;
+    let pendingStop = false;
+    let paidStarts = 0;
+    const env: OrchestratorEnv = {
+      ACCESS_TEAM_DOMAIN: TEAM,
+      ACCESS_AUD: AUD,
+      RUN_MAX_MINUTES: "1",
+      RUNS_PER_DAY: "2",
+      ORCHESTRATOR: {
+        async fetch(input: string, init: RequestInit = {}) {
+          const request = new Request(input, init);
+          const path = new URL(request.url).pathname;
+          if (request.method === "POST" && path === "/runs") {
+            const { id } = (await request.json()) as { id: string };
+            paidStarts++;
+            return Response.json({ id, phase: "brief" }, { status: 201 });
+          }
+          if (request.method === "POST" && path.endsWith("/stop")) {
+            pendingStop = true;
+            if (cancellationFails)
+              return Response.json(
+                { error: "cancellation unavailable" },
+                { status: 503 },
+              );
+            pendingStop = false;
+            return Response.json({ phase: "stopped" });
+          }
+          return Response.json({
+            phase: "brief",
+            pending: pendingStop ? "stop" : undefined,
+          });
+        },
+      } as unknown as Fetcher,
+    };
+    const headers = {
+      origin: "https://reversy.test",
+      "cf-access-jwt-assertion": await accessJwt({ email: original.owner }),
+    };
+    const start = () =>
+      handleOrchestrator(
+        new Request("https://reversy.test/api/v1/runs", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ url: "https://example.com", goal: "Rebuild" }),
+        }),
+        env,
+        { owners, fetcher: certs },
+      );
+    expect((await start())?.status).toBe(502);
+    expect(await owners.get(original.runId)).toMatchObject({
+      busy: true,
+      active: true,
+    });
+    expect(paidStarts).toBe(0);
+    cancellationFails = false;
+    expect((await start())?.status).toBe(201);
+    expect(paidStarts).toBe(1);
+    expect(await owners.get(original.runId)).toMatchObject({
+      ...original,
+      revision: abandoned.revision,
+      busy: false,
+      active: false,
+    });
+    const history = await handleOrchestrator(
+      new Request("https://reversy.test/api/v1/runs", { headers }),
+      env,
+      { owners, fetcher: certs },
+    );
+    const rows = (await history!.json()) as { id: string; createdAt: string }[];
+    expect(rows).toHaveLength(2);
+    expect(rows).toContainEqual({
+      id: original.runId,
+      createdAt: new Date(original.createdAt).toISOString(),
+    });
+    const day = new Date(original.createdAt).toISOString().slice(0, 10);
+    const newDay = rows
+      .find((row) => row.id !== original.runId)!
+      .createdAt.slice(0, 10);
+    const [charged] = await store.query(
+      "SELECT VALUE runs FROM ONLY type::record('run_quota', [$owner, $day])",
+      { owner: original.owner, day },
+    );
+    expect(Number(charged)).toBe(day === newDay ? 2 : 1);
   });
 });

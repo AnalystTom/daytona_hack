@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AUD, accessJwt, certs, TEAM } from "./access-fixtures";
 import { handleOrchestrator, type OrchestratorEnv } from "./front";
 import type { Owners, RunOwner } from "./owners";
+import { StoreError } from "../store/types";
 
 const SITE = "https://reversy.test";
 
@@ -294,21 +295,27 @@ describe("Cloudflare Access users", () => {
   });
 
   it.each(["brief", "building", "done", "failed", "stopped"])(
-    "holds admission for a %s run with pending cancellation, even after expiry",
+    "holds pending cancellation for a %s run until deadline recovery confirms stop",
     async (phase) => {
       vi.useFakeTimers({ toFake: ["Date"] });
       try {
-        const { start, phases, pending, calls } = setup();
+        const { start, phases, pending, calls, setStop } = setup();
         const { id } = (await (await start("ada@example.com")).json()) as {
           id: string;
         };
         phases.set(id, phase);
         pending.set(id, "stop");
-        vi.setSystemTime(Date.now() + 121 * 60_000);
+        vi.setSystemTime(Date.now() + 119 * 60_000);
         expect((await start("ada@example.com")).status).toBe(429);
         expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+        setStop(async () =>
+          Response.json({ phase: "stopped", pending: "stop" }),
+        );
+        vi.setSystemTime(Date.now() + 60_000);
+        expect((await start("ada@example.com")).status).toBe(429);
         pending.delete(id);
         phases.set(id, "stopped");
+        setStop(async () => Response.json({ phase: "stopped" }));
         expect((await start("ada@example.com")).status).toBe(201);
       } finally {
         vi.useRealTimers();
@@ -510,6 +517,160 @@ describe("Cloudflare Access users", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("recovers failed continuation cleanup only after the original deadline and confirmed cancellation", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-16T12:00:00Z"));
+      const { start, as, phases, pending, owners, setAction, setStop, calls } =
+        setup({ RUNS_PER_DAY: "2", RUN_MAX_MINUTES: "30" });
+      const { id } = (await (await start("ada@example.com")).json()) as {
+        id: string;
+      };
+      const original = (await owners.get(id))!;
+      const finish = owners.finish;
+      let storageUnavailable = true;
+      owners.finish = async (...args) => {
+        if (storageUnavailable) throw new StoreError("cleanup unavailable");
+        return finish(...args);
+      };
+      let paid = 0;
+      setAction(async () => {
+        paid++;
+      });
+      expect(
+        (
+          await as("ada@example.com", "POST", `/api/v1/runs/${id}/messages`, {
+            text: "Continue",
+          })
+        ).status,
+      ).toBe(503);
+      const abandoned = (await owners.get(id))!;
+      expect(abandoned).toMatchObject({
+        runId: id,
+        createdAt: original.createdAt,
+        busy: true,
+        active: true,
+      });
+      expect((await start("ada@example.com")).status).toBe(429);
+      expect(
+        (
+          await as("ada@example.com", "POST", `/api/v1/runs/${id}/messages`, {
+            text: "Continue",
+          })
+        ).status,
+      ).toBe(429);
+      expect(paid).toBe(1);
+      expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+      expect(
+        (await as("ada@example.com", "GET", `/api/v1/runs/${id}`)).status,
+      ).toBe(200);
+      const history = await as("ada@example.com", "GET", "/api/v1/runs");
+      expect(await history.json()).toEqual([
+        { id, createdAt: new Date(original.createdAt).toISOString() },
+      ]);
+      let stopFails = true;
+      setStop(async () => {
+        pending.set(id, "stop");
+        if (stopFails)
+          return Response.json(
+            { error: "cancellation unavailable" },
+            { status: 503 },
+          );
+        phases.set(id, "stopped");
+        pending.delete(id);
+        return Response.json({ phase: "stopped" });
+      });
+      vi.setSystemTime(original.createdAt + 30 * 60_000);
+      const cancellationFailure = await start("ada@example.com");
+      expect(cancellationFailure.status).toBe(502);
+      expect(await cancellationFailure.json()).toMatchObject({
+        message: "cancellation unavailable",
+      });
+      expect(await owners.get(id)).toMatchObject({ busy: true, active: true });
+      stopFails = false;
+      expect((await start("ada@example.com")).status).toBe(503);
+      expect(await owners.get(id)).toMatchObject({ busy: true, active: true });
+      storageUnavailable = false;
+      const recovered = await start("ada@example.com");
+      expect(recovered.status).toBe(201);
+      const next = (await recovered.json()) as { id: string };
+      expect(await owners.get(id)).toMatchObject({
+        runId: id,
+        owner: original.owner,
+        createdAt: original.createdAt,
+        revision: abandoned.revision,
+        busy: false,
+        active: false,
+      });
+      phases.set(next.id, "done");
+      const daily = await start("ada@example.com");
+      expect(daily.status).toBe(429);
+      expect(await daily.json()).toMatchObject({ code: "daily_run_limit" });
+      expect(
+        (
+          await as("ada@example.com", "POST", `/api/v1/runs/${id}/messages`, {
+            text: "Continue",
+          })
+        ).status,
+      ).toBe(409);
+      expect(paid).toBe(1);
+      expect(calls.filter((c) => c === "POST /runs")).toHaveLength(2);
+      const all = await as("ada@example.com", "GET", "/api/v1/runs");
+      expect(await all.json()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retires an expired busy reservation with missing run state without resetting its metadata", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { start, owners, phases, calls } = setup();
+      const { id } = (await (await start("ada@example.com")).json()) as {
+        id: string;
+      };
+      const original = (await owners.get(id))!;
+      await owners.reserve(original, 1, 3, []);
+      phases.delete(id);
+      vi.setSystemTime(original.createdAt + 120 * 60_000);
+      expect((await start("ada@example.com")).status).toBe(201);
+      expect(await owners.get(id)).toMatchObject({
+        createdAt: original.createdAt,
+        busy: false,
+        active: false,
+      });
+      expect(calls).not.toContain(`POST /runs/${id}/stop`);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips retired reservations for admission but keeps every run in history", async () => {
+    const { start, as, phases, calls } = setup();
+    const ids: string[] = [];
+    for (let i = 0; i < 3; i++) {
+      const created = await start("ada@example.com");
+      expect(created.status).toBe(201);
+      const { id } = (await created.json()) as { id: string };
+      ids.push(id);
+      if (i < 2) phases.set(id, "done");
+    }
+    const before = calls.length;
+    expect(
+      (
+        await as("ada@example.com", "POST", `/api/v1/runs/${ids[2]}/messages`, {
+          text: "Continue",
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      calls.slice(before).filter((call) => call.startsWith("GET /runs/")),
+    ).toEqual([`GET /runs/${ids[2]}`]);
+    const history = await as("ada@example.com", "GET", "/api/v1/runs");
+    const rows = (await history.json()) as { id: string }[];
+    expect(rows.map((row) => row.id).sort()).toEqual(ids.sort());
   });
 
   it("disables bearer, old cookies, session creation and the operator proxy in Access mode", async () => {

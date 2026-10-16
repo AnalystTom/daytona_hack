@@ -9,6 +9,7 @@ export interface RunOwner {
   createdAt: number;
   revision?: number;
   busy?: boolean;
+  active?: boolean;
 }
 
 export interface Owners {
@@ -24,7 +25,7 @@ export interface Owners {
 }
 
 const fields =
-  "record::id(id) AS runId, owner, createdAt, (revision ?? 0) AS revision, (busy ?? false) AS busy";
+  "record::id(id) AS runId, owner, createdAt, (revision ?? 0) AS revision, (busy ?? false) AS busy, (active ?? true) AS active";
 
 export function surrealOwners(db: SurrealRunStore): Owners {
   return {
