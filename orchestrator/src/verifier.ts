@@ -74,7 +74,7 @@ export async function verifyPlan(
   const v = await check(
     env,
     "verify_plan",
-    `Check the plan before build: every task traces to evidence (or is declared a deliberate change), nothing in scope is missing, nothing out of scope crept in, dependencies make sense.`,
+    `Check the plan before build: every task traces to evidence (or is declared a deliberate change), nothing in scope is missing, nothing out of scope crept in (spec.scope says whether the run covers the frontend, the back end or both), dependencies make sense.`,
     {
       spec,
       evidence: evidenceList(evidence),
@@ -110,9 +110,9 @@ export async function verifyTask(
   const v = await check(
     env,
     "verify_task",
-    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview HTML is the live integration branch after the merge.`,
+    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview is the root response of the live integration branch after the merge.`,
     {
-      spec: { url: spec.url, goal: spec.goal },
+      spec: { url: spec.url, goal: spec.goal, scope: spec.scope },
       task: {
         id: task.id,
         title: task.title,
@@ -147,7 +147,9 @@ export async function verifyFinal(
   const v = await check(
     env,
     "verify_final",
-    `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section. Call out what is missing or wrong.`,
+    spec.scope === "backend"
+      ? `Check the final back-end rebuild against the agreed spec: every route, status, response shape and delivery header the evidence observed is reproduced with mock data, and nothing inferred is presented as observed. Call out what is missing or wrong.`
+      : `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section${spec.scope === "both" ? ", then the observed routes and response shapes against the rebuilt service" : ""}. Call out what is missing or wrong.`,
     {
       spec,
       evidence: evidenceList(evidence),

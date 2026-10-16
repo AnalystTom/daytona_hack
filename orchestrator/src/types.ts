@@ -35,12 +35,15 @@ export type Phase =
   | "stopped"
   | "failed";
 
+// What a run reverse engineers; set from each run's brief and chat, never fixed per version.
+export type Scope = "frontend" | "backend" | "both";
+
 export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 
 export interface Evidence {
   id: string;
   page: string; // URL path and state, e.g. "/ @ desktop 1440"
-  kind: EvidenceRecord["kind"] | "html" | "redirects";
+  kind: EvidenceRecord["kind"] | "html" | "code" | "redirects";
   tool: string;
   status: EvidenceStatus;
   capturedAt: string;
@@ -55,6 +58,7 @@ export interface Spec {
   url: string;
   goal: string;
   redirects?: string[]; // the entered URL's redirect chain, entered URL first, when it redirected
+  scope: Scope;
   pages: { path: string; confirmed: boolean; notes?: string }[];
   flows: { name: string; confirmed: boolean; notes?: string }[];
   openQuestions: string[];

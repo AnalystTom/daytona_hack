@@ -220,3 +220,172 @@ export function outline(html: string, max = 12000): string {
     .replace(/\s+/g, " ")
     .slice(0, max);
 }
+
+/** Keys and value types of a JSON value, never its content. */
+export function shapeOf(v: unknown, depth = 0): unknown {
+  if (Array.isArray(v)) return v.length ? [shapeOf(v[0], depth + 1)] : [];
+  if (v && typeof v === "object") {
+    if (depth > 3) return "object";
+    return Object.fromEntries(
+      Object.entries(v)
+        .slice(0, 30)
+        .map(([k, x]) => [k, shapeOf(x, depth + 1)]),
+    );
+  }
+  return v === null ? "null" : typeof v;
+}
+
+const DELIVERY_HEADERS =
+  /^(content-type|cache-control|age|etag|last-modified|vary|server|via|x-cache|cf-cache-status|x-powered-by|content-encoding|location|set-cookie|access-control-allow-origin|strict-transport-security|content-security-policy)$/i;
+
+/** What the HTML tells about the back end: bundles, API URLs it references, embedded data. */
+export function backendFacts(html: string, base: string) {
+  const abs = (u: string) => {
+    try {
+      return new URL(u, base).toString();
+    } catch {
+      return "";
+    }
+  };
+  const scripts = [
+    ...new Set(
+      [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => abs(m[1])),
+    ),
+  ]
+    .filter(Boolean)
+    .slice(0, 40);
+  const endpoints = [
+    ...new Set(
+      [
+        ...html.matchAll(
+          /["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b[^"'`\s<>]*)["'`]/g,
+        ),
+      ].map((m) => abs(m[1])),
+    ),
+  ]
+    .filter(Boolean)
+    .slice(0, 40);
+  const data: { type: string; shape: unknown }[] = [];
+  for (const m of html.matchAll(
+    /<script[^>]+type="(application\/(?:ld\+)?json)"[^>]*>([\s\S]*?)<\/script>/g,
+  )) {
+    try {
+      data.push({ type: m[1], shape: shapeOf(JSON.parse(m[2])) });
+    } catch {}
+    if (data.length >= 10) break;
+  }
+  return { scripts, endpoints, data };
+}
+
+/** Back-end evidence for one route: the response itself, the APIs it points at, crawl files, code analysis. */
+export async function inspectBackend(
+  url: string,
+  startId: number,
+): Promise<Capture> {
+  const page = new URL(url).pathname;
+  const origin = new URL(url).origin;
+  const evidence: Evidence[] = [];
+  const blobs: Capture["blobs"] = {};
+  let n = startId;
+  const id = () => `ev_${String(n++).padStart(3, "0")}`;
+  const add = async (
+    e: Omit<Evidence, "id" | "page" | "capturedAt" | "hash" | "path">,
+    blob?: string,
+  ) => {
+    const eid = id();
+    if (blob) blobs[eid] = blob;
+    evidence.push({
+      id: eid,
+      page,
+      capturedAt: now(),
+      hash: blob ? await sha256(blob) : "",
+      ...(blob ? { path: `evidence/${eid}.json` } : {}),
+      ...e,
+    });
+  };
+
+  let html = "";
+  try {
+    const res = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      redirect: "manual",
+    });
+    html = await res.text();
+    const headers = Object.fromEntries(
+      [...res.headers].filter(([k]) => DELIVERY_HEADERS.test(k)),
+    );
+    await add(
+      {
+        kind: "network",
+        tool: "fetch",
+        status: "observed",
+        limits:
+          "one GET from Cloudflare without a browser session; calls made by client JavaScript were not observed",
+        summary: `GET ${page} -> ${res.status} ${headers["content-type"] || ""} (${Math.round(html.length / 1024)} KB)`,
+      },
+      JSON.stringify(
+        { request: { method: "GET", url }, status: res.status, headers },
+        null,
+        1,
+      ),
+    );
+  } catch (e) {
+    await add({
+      kind: "network",
+      tool: "fetch",
+      status: "not_observed",
+      limits: `request failed: ${String(e)}`.slice(0, 300),
+      summary: `GET ${page} could not be observed`,
+    });
+  }
+
+  const facts = backendFacts(html, url);
+  await add(
+    {
+      kind: "network",
+      tool: "fetch",
+      status: "inferred",
+      limits:
+        "API URLs referenced in the HTML were not called; embedded JSON shows keys and types only",
+      summary: `${facts.endpoints.length} API URLs referenced, ${facts.data.length} embedded data blocks, ${facts.scripts.length} script bundles`,
+    },
+    JSON.stringify(facts, null, 1),
+  );
+
+  for (const file of ["/robots.txt", "/sitemap.xml"]) {
+    try {
+      const res = await fetch(origin + file);
+      const body = res.ok ? (await res.text()).slice(0, 200_000) : "";
+      const routes = [
+        ...new Set(
+          [
+            ...body.matchAll(/<loc>([^<]+)<\/loc>|^(?:dis)?allow:\s*(\S+)/gim),
+          ].map((m) => (m[1] || m[2]).trim()),
+        ),
+      ].slice(0, 200);
+      await add(
+        {
+          kind: "links",
+          tool: "fetch",
+          status: res.ok ? "observed" : "not_observed",
+          limits: res.ok ? "listed routes only" : `HTTP ${res.status}`,
+          summary: res.ok
+            ? `${file}: ${routes.length} routes`
+            : `${file} not available`,
+        },
+        res.ok ? JSON.stringify({ file, routes }, null, 1) : undefined,
+      );
+    } catch {}
+  }
+
+  // shortcut: REA is not installed in the sandbox yet, so code-level evidence is recorded as not observed; capture it once REA runs there.
+  await add({
+    kind: "code",
+    tool: "rea",
+    status: "not_observed",
+    limits:
+      "REA analysis of shipped JavaScript bundles is not available in this build",
+    summary: `REA analysis of ${facts.scripts.length} script bundles not run`,
+  });
+  return { evidence, blobs };
+}
