@@ -146,6 +146,66 @@ describe("stoppedPages", () => {
 });
 
 describe("capture", () => {
+  it("does not publish a record whose storage finishes after cancellation", async () => {
+    let enter!: () => void;
+    const entered = new Promise<void>((done) => {
+      enter = done;
+    });
+    let release!: () => void;
+    const pending = new Promise<void>((done) => {
+      release = done;
+    });
+    const ended: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init: RequestInit = {}) => {
+        const url = new URL(input);
+        const body = init.body ? JSON.parse(String(init.body)) : undefined;
+        if (url.host === "db.example.test") {
+          if (body.params[0].startsWith("CREATE evidence:")) {
+            enter();
+            await pending;
+          }
+          return Response.json(surrealOk([]));
+        }
+        if (url.pathname === "/v1/sessions")
+          return Response.json(fixtureSession);
+        if (url.pathname === "/v1/tools/execute-code")
+          return Response.json(
+            executeCodeResponse({
+              finalUrl: "https://example.com/",
+              png: fixturePngBase64,
+            }),
+          );
+        if (init.method === "DELETE") {
+          ended.push(url.pathname);
+          return Response.json({ data: { status: "ok" } });
+        }
+        return new Response("unexpected", { status: 500 });
+      }),
+    );
+    const controller = new AbortController();
+    const landed = vi.fn();
+    const owned = vi.fn();
+    const result = capture(
+      env,
+      "run-1",
+      {
+        mode: "first_look",
+        scope: { origin: "https://example.com", paths: ["/"] },
+      },
+      landed,
+      { signal: controller.signal, onSession: owned },
+    );
+    await entered;
+    controller.abort();
+    expect(owned).toHaveBeenCalledOnce();
+    expect(ended).toEqual([`/v1/sessions/${fixtureSession.data.id}`]);
+    release();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(landed).not.toHaveBeenCalled();
+  });
+
   it("names a missing Anchor key or SurrealDB binding instead of capturing", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);

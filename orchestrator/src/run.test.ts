@@ -8,12 +8,16 @@ import {
   leftScope,
 } from "../../src/worker/evidence/capture";
 import type { EvidenceStore, SignIn } from "../../src/worker/evidence/store";
+import {
+  fixturePageFacts,
+  fixturePngBase64,
+} from "../../src/worker/evidence/fixtures";
 import { Daytona } from "./daytona";
 import { capture, endSavedSignIn, evidenceStore, toEvidence } from "./inspect";
 import { Run } from "./run";
 import { llmJson } from "./services";
 import type { Env, Evidence, Phase } from "./types";
-import { verifyFinal } from "./verifier";
+import { verifyFinal, verifyPlan } from "./verifier";
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
@@ -49,12 +53,12 @@ vi.mock("./services", () => ({
   ),
 }));
 vi.mock("./verifier", () => ({
-  verifyPlan: async () => ({
+  verifyPlan: vi.fn(async () => ({
     target: "plan",
     pass: true,
     summary: "",
     findings: [],
-  }),
+  })),
   verifyFinal: vi.fn(async () => ({
     target: "final",
     pass: true,
@@ -107,10 +111,11 @@ const redirected: EvidenceRecord = {
 
 beforeEach(() => {
   captureMock.mockReset();
-  vi.mocked(endSavedSignIn).mockReset();
+  vi.mocked(endSavedSignIn).mockReset().mockResolvedValue(undefined);
   vi.mocked(evidenceStore).mockReset();
   vi.mocked(llmJson).mockClear();
   vi.mocked(verifyFinal).mockClear();
+  vi.mocked(verifyPlan).mockClear();
 });
 
 afterEach(() => vi.restoreAllMocks());
@@ -148,6 +153,48 @@ async function persistedRun(
   const run = new Run(ctx as never, {} as Env);
   await ctx.loaded();
   return { run, ctx };
+}
+
+function bindCapture(signIn: SignIn | null = null) {
+  const records = new Map<string, EvidenceRecord>();
+  const store: EvidenceStore = {
+    putEvidence: async (record) => {
+      records.set(record.id, record);
+    },
+    getEvidence: async (id) => records.get(id) ?? null,
+    getContent: async () => null,
+    saveSignIn: async (_id, value) => {
+      signIn = value;
+    },
+    takeSignIn: async () => {
+      const saved = signIn;
+      signIn = null;
+      return saved;
+    },
+  };
+  captureMock.mockImplementation((_env, id, request, landed, control) =>
+    captureRun(
+      {
+        ...control,
+        anchorApiKey: "test-key",
+        store: {
+          ...store,
+          putEvidence: async (record, bytes, signal) => {
+            await store.putEvidence(record, bytes, signal);
+            control?.signal?.throwIfAborted();
+            await landed(toEvidence(record));
+          },
+        },
+        emit: () => {},
+      },
+      id,
+      request,
+    ),
+  );
+  vi.mocked(endSavedSignIn).mockImplementation((_env, id) =>
+    endSignIn({ anchorApiKey: "test-key", store }, id),
+  );
+  return { store, records, saved: () => signIn };
 }
 
 describe("Run sign-in handoff", () => {
@@ -342,6 +389,285 @@ describe("Run sign-in handoff", () => {
     expect(endSavedSignIn).toHaveBeenCalledWith(expect.anything(), "run-1");
     expect(state.phase).toBe("stopped");
   });
+});
+
+describe("Run inspection cancellation and recovery", () => {
+  it.each([
+    ["resume", "success"],
+    ["resume", "redirect"],
+    ["resume", "failure"],
+    ["inspect", "success"],
+    ["gateway", "success"],
+    ["first_look", "success"],
+  ] as const)(
+    "stays stopped after %s capture settles with %s",
+    async (kind, outcome) => {
+      const { run, ctx } = await persistedRun(
+        [],
+        kind === "resume" ? "awaiting_sign_in" : "brief",
+      );
+      const memory = bindCapture(
+        kind === "resume"
+          ? { sessionId: "active-session", origin: "https://example.com" }
+          : null,
+      );
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "active-session",
+        liveViewUrl: "https://live.example.test/session",
+      });
+      const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockImplementation(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "failure")
+            throw new anchor.AnchorError("Session was closed");
+          return fixturePageFacts(
+            outcome === "redirect"
+              ? "https://example.com/login"
+              : kind === "first_look"
+                ? "https://example.com/"
+                : "https://example.com/account",
+          );
+        });
+      let operation: Promise<unknown>;
+      if (kind === "resume") {
+        await run.resumeSignIn();
+        operation = run.alarm();
+      } else if (kind === "inspect") {
+        await run.approveSpec();
+        operation = run.alarm();
+      } else if (kind === "gateway") {
+        operation = run.gatewayCapture("https://example.com/account");
+      } else {
+        operation = run.start("run-1", "https://example.com/", "copy it");
+      }
+      const settled = operation.then(
+        () => null,
+        (error: Error) => error,
+      );
+      await entered.promise;
+      await run.stop();
+      expect(close).toHaveBeenCalledExactlyOnceWith(
+        "test-key",
+        "active-session",
+      );
+      const state = structuredClone(await run.getState());
+      const events = structuredClone(ctx.events());
+      release.resolve();
+      const error = await settled;
+      if (kind === "gateway") expect(error?.name).toBe("AbortError");
+      else expect(error).toBeNull();
+      expect(await run.getState()).toEqual(state);
+      expect((await run.getState()).phase).toBe("stopped");
+      expect(ctx.events()).toEqual(events);
+      expect(memory.records.size).toBe(0);
+      expect(memory.saved()).toBeNull();
+      expect(snippet).toHaveBeenCalledTimes(1);
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("closes a session whose creation finishes after Stop", async () => {
+    const { run, ctx } = await persistedRun([], "brief");
+    bindCapture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(anchor, "createSession").mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return {
+        id: "late-session",
+        liveViewUrl: "https://live.example.test/late",
+      };
+    });
+    const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+    const snippet = vi
+      .spyOn(anchor, "runSnippet")
+      .mockRejectedValue(new Error("Unexpected browser call"));
+    await run.approveSpec();
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
+    expect(snippet).not.toHaveBeenCalled();
+    expect((await run.getState()).phase).toBe("stopped");
+    expect(ctx.events()).toEqual(events);
+  });
+
+  it("closes a resumed session taken from storage after Stop", async () => {
+    const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+    const memory = bindCapture({
+      sessionId: "late-session",
+      origin: "https://example.com",
+    });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const take = memory.store.takeSignIn;
+    vi.spyOn(memory.store, "takeSignIn").mockImplementationOnce(async (id) => {
+      const saved = await take(id);
+      entered.resolve();
+      await release.promise;
+      return saved;
+    });
+    const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+    const snippet = vi
+      .spyOn(anchor, "runSnippet")
+      .mockRejectedValue(new Error("Unexpected browser call"));
+    await run.resumeSignIn();
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
+    expect(snippet).not.toHaveBeenCalled();
+    expect(memory.saved()).toBeNull();
+    expect((await run.getState()).phase).toBe("stopped");
+    expect(ctx.events()).toEqual(events);
+  });
+
+  it("suppresses sign-in recovery events when Stop interrupts their state save", async () => {
+    const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
+    });
+    await run.resumeSignIn();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const put = ctx.storage.put;
+    vi.spyOn(ctx.storage, "put").mockImplementationOnce(async (key, value) => {
+      await put(key, value);
+      entered.resolve();
+      await release.promise;
+    });
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const state = structuredClone(await run.getState());
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(await run.getState()).toEqual(state);
+    expect(ctx.events()).toEqual(events);
+  });
+
+  it.each([
+    ["plan", "resolve"],
+    ["plan", "reject"],
+    ["verify", "resolve"],
+    ["verify", "reject"],
+  ] as const)(
+    "discards an in-flight %s %s after Stop",
+    async (stage, outcome) => {
+      const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      if (stage === "plan") {
+        vi.mocked(llmJson).mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "reject") throw new Error("Late plan failure");
+          return {
+            tasks: [
+              {
+                id: "t01",
+                title: "Late task",
+                brief: "late",
+                outOfScope: "",
+                acceptance: [],
+                evidence: [],
+                owns: [],
+                dependsOn: [],
+              },
+            ],
+          };
+        });
+      } else {
+        vi.mocked(verifyPlan).mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "reject") throw new Error("Late verifier failure");
+          return {
+            target: "plan",
+            pass: false,
+            summary: "Late verdict",
+            findings: [],
+          };
+        });
+      }
+      await run.skipSignIn();
+      const inspection = run.alarm();
+      await entered.promise;
+      await run.stop();
+      const state = structuredClone(await run.getState());
+      const events = structuredClone(ctx.events());
+      release.resolve();
+      await inspection;
+      expect((await run.getState()).phase).toBe("stopped");
+      expect(await run.getState()).toEqual(state);
+      expect(ctx.events()).toEqual(events);
+      if (stage === "plan") expect(verifyPlan).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["retry", "skip"] as const)(
+    "recovers from an expired resumed session through %s",
+    async (action) => {
+      const { run } = await persistedRun([], "awaiting_sign_in");
+      const memory = bindCapture({
+        sessionId: "expired-session",
+        origin: "https://example.com",
+      });
+      const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "new-session",
+        liveViewUrl: "https://live.example.test/new",
+      });
+      let calls = 0;
+      vi.spyOn(anchor, "runSnippet").mockImplementation(async () => {
+        if (++calls === 1)
+          throw new anchor.AnchorError(
+            "Anchor POST execute-code failed with 404",
+          );
+        return (calls - 2) % 3 === 0
+          ? fixturePageFacts("https://example.com/account")
+          : { finalUrl: "https://example.com/account", png: fixturePngBase64 };
+      });
+      await run.resumeSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("awaiting_sign_in");
+      expect((await run.getState()).signInPaths).toEqual(["/account"]);
+      expect((await run.getState()).chat.at(-1)?.text).toContain(
+        "open secure sign-in again",
+      );
+      expect(memory.saved()).toBeNull();
+      expect(memory.records.size).toBe(0);
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledWith("test-key", "expired-session");
+      if (action === "retry") {
+        await expect(run.startSignIn()).resolves.toEqual({
+          liveViewUrl: "https://live.example.test/new",
+        });
+        await run.resumeSignIn();
+      } else await run.skipSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("planned");
+      expect((await run.getState()).signInPaths).toBeUndefined();
+      expect(memory.saved()).toBeNull();
+      if (action === "retry")
+        expect(close).toHaveBeenCalledWith("test-key", "new-session");
+    },
+  );
 });
 
 describe("Run persisted evidence", () => {

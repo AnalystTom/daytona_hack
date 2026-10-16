@@ -6,6 +6,7 @@ import {
   type EvidenceRecord,
 } from "../../src/shared/evidence";
 import {
+  type CaptureDeps,
   captureRun,
   endSignIn,
   leftScope,
@@ -119,6 +120,7 @@ export async function capture(
   runId: string,
   request: CaptureRequest,
   landed: (evidence: Evidence) => Promise<void>,
+  control: Pick<CaptureDeps, "signal" | "onSession"> = {},
 ) {
   if (!env.ANCHORBROWSER_API_KEY)
     throw new Error(
@@ -127,11 +129,14 @@ export async function capture(
   const store = evidenceStore(env);
   return captureRun(
     {
+      ...control,
       anchorApiKey: env.ANCHORBROWSER_API_KEY,
       store: {
         ...store,
-        async putEvidence(record, content) {
-          await store.putEvidence(record, content);
+        async putEvidence(record, content, signal) {
+          control.signal?.throwIfAborted();
+          await store.putEvidence(record, content, signal);
+          control.signal?.throwIfAborted();
           await landed(toEvidence(record));
         },
       },

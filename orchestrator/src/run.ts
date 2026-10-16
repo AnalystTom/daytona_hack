@@ -58,6 +58,8 @@ export class Run extends DurableObject<Env> {
   private daytona: Daytona;
   private _tracer?: RunTracer;
   private signInTransition = Promise.resolve();
+  private inspection = new AbortController();
+  private captureSessions = new Set<() => Promise<void>>();
 
   private serializeSignIn<T>(action: () => Promise<T>) {
     const result = this.signInTransition.then(action);
@@ -105,14 +107,22 @@ export class Run extends DurableObject<Env> {
   }
 
   // ---------- persistence and events ----------
-  private async save() {
+  private async save(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.ctx.storage.put("state", this.s);
   }
 
-  private async emit(type: RunEvent["type"], data: unknown) {
+  private async emit(
+    type: RunEvent["type"],
+    data: unknown,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const ev: RunEvent = { seq: ++this.seq, ts: now(), type, data };
     await this.ctx.storage.put(`ev:${String(ev.seq).padStart(8, "0")}`, ev);
+    signal?.throwIfAborted();
     await this.ctx.storage.put("seq", this.seq);
+    signal?.throwIfAborted();
     if (this.env.EVENTS_WEBHOOK_URL) {
       this.ctx.waitUntil(
         fetch(this.env.EVENTS_WEBHOOK_URL, {
@@ -199,6 +209,7 @@ export class Run extends DurableObject<Env> {
 
   /** Phase 1: create the run, take a first look, open the conversation. */
   async start(id: string, url: string, goal: string) {
+    const signal = this.inspection.signal;
     this.s = {
       id,
       phase: "brief",
@@ -215,10 +226,10 @@ export class Run extends DurableObject<Env> {
         revision: 0,
       },
     };
-    await this.save();
+    await this.save(signal);
     this.tracer.root(`${url}\n${goal}`);
-    await this.emit("phase", { phase: "brief" });
-    await this.addChat("user", `${url}\n${goal}`);
+    await this.emit("phase", { phase: "brief" }, signal);
+    await this.addChat("user", `${url}\n${goal}`, signal);
     try {
       await this.traced("inspector.first_look", "TOOL", url, () =>
         this.capture({
@@ -227,22 +238,34 @@ export class Run extends DurableObject<Env> {
         }),
       );
     } catch (e: any) {
+      if (signal.aborted) return this.s;
       // The conversation can start without the screenshot.
-      await this.emit("error", {
-        message: `First look screenshot failed: ${String(e?.message || e)}`,
-      });
+      await this.emit(
+        "error",
+        {
+          message: `First look screenshot failed: ${String(e?.message || e)}`,
+        },
+        signal,
+      );
     }
+    if (signal.aborted) return this.s;
     const { html } = await pageHtml(this.env, url);
+    if (signal.aborted) return this.s;
     const routes = routesFrom(html, url);
-    await this.emit("evidence", {
-      id: "routes",
-      page: "/",
-      kind: "links",
-      summary: `${routes.length} same-site routes`,
-      routes,
-    });
+    await this.emit(
+      "evidence",
+      {
+        id: "routes",
+        page: "/",
+        kind: "links",
+        summary: `${routes.length} same-site routes`,
+        routes,
+      },
+      signal,
+    );
     await this.converse(
       `First look done. Main routes found: ${routes.join(", ")}`,
+      signal,
     );
     return this.s;
   }
@@ -256,15 +279,18 @@ export class Run extends DurableObject<Env> {
 
   /** User approved the spec in chat or via button: inspect fully, then plan. */
   async approveSpec() {
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
     if (this.s.phase !== "brief")
       throw new Error(`cannot approve in phase ${this.s.phase}`);
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
     this.s.pending = "inspect";
-    await this.save();
-    await this.emit("spec", this.s.spec);
-    await this.emit("phase", { phase: "inspecting" });
+    await this.save(signal);
+    await this.emit("spec", this.s.spec, signal);
+    await this.emit("phase", { phase: "inspecting" }, signal);
+    signal.throwIfAborted();
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return this.s;
   }
@@ -331,6 +357,8 @@ export class Run extends DurableObject<Env> {
 
   stop() {
     return this.serializeSignIn(async () => {
+      this.inspection.abort();
+      await Promise.all([...this.captureSessions].map((close) => close()));
       for (const t of this.s.tasks) {
         if (t.status === "queued" || t.status === "building") {
           t.status = "stopped";
@@ -418,6 +446,7 @@ export class Run extends DurableObject<Env> {
         );
       }
     } catch (e: any) {
+      if (this.inspection.signal.aborted) return;
       this.s.error = String(e?.message || e);
       await this.emit("error", { message: this.s.error });
       if (this.s.phase === "inspecting" || this.s.phase === "planning")
@@ -425,35 +454,44 @@ export class Run extends DurableObject<Env> {
       if (this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }
+    if (this.inspection.signal.aborted) return;
     await this.save();
   }
 
   // ---------- phase 1: conversation ----------
-  private async addChat(role: ChatMessage["role"], text: string) {
+  private async addChat(
+    role: ChatMessage["role"],
+    text: string,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const m = { role, text, ts: now() };
     this.s.chat.push(m);
-    await this.save();
-    await this.emit("chat", m);
+    await this.save(signal);
+    await this.emit("chat", m, signal);
   }
 
-  private async converse(note?: string) {
+  private async converse(note?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     return this.traced(
       "orchestrator.chat_turn",
       "AGENT",
       this.s.chat.at(-1)?.text || "",
-      (set) => this.converseInner(set, note),
+      (set) => this.converseInner(set, note, signal),
     );
   }
 
   private async converseInner(
     set: (a: Record<string, string>) => void,
     note?: string,
+    signal?: AbortSignal,
   ) {
     const memory = await recall(
       this.env,
       this.memScope(),
       this.s.chat.at(-1)?.text || this.s.spec.goal,
     );
+    signal?.throwIfAborted();
     const out = await llmJson<{
       reply: string;
       spec: Omit<Spec, "approved" | "revision" | "url" | "goal">;
@@ -523,27 +561,48 @@ Set userApproved=true only if the user's last message clearly approves the spec.
         },
       },
     });
+    signal?.throwIfAborted();
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
-    await this.emit("spec", this.s.spec);
-    await this.addChat("assistant", out.reply);
+    await this.emit("spec", this.s.spec, signal);
+    await this.addChat("assistant", out.reply, signal);
+    signal?.throwIfAborted();
     if (out.userApproved) await this.approveSpec();
   }
 
   // ---------- phase 2+3: inspect and plan ----------
   /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
   private capture(request: CaptureRequest) {
-    return capture(this.env, this.s.id, request, async (e) => {
-      this.s.evidence.push(e);
-      await this.save();
-      await this.emit("evidence", e);
-      if (e.status !== "not_observed") {
-        await remember(
-          this.env,
-          this.memScope(),
-          `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
-        );
-      }
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
+    let closeSession: (() => Promise<void>) | undefined;
+    return capture(
+      this.env,
+      this.s.id,
+      request,
+      async (e) => {
+        signal.throwIfAborted();
+        this.s.evidence.push(e);
+        await this.save(signal);
+        await this.emit("evidence", e, signal);
+        signal.throwIfAborted();
+        if (e.status !== "not_observed") {
+          await remember(
+            this.env,
+            this.memScope(),
+            `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
+          );
+        }
+      },
+      {
+        signal,
+        onSession: (close) => {
+          closeSession = close;
+          this.captureSessions.add(close);
+        },
+      },
+    ).finally(() => {
+      if (closeSession) this.captureSessions.delete(closeSession);
     });
   }
 
@@ -564,6 +623,8 @@ Set userApproved=true only if the user's last message clearly approves the spec.
   }
 
   private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
     if (step !== "plan") {
       const signedIn = step === "resume_sign_in";
       const { scope, dropped } = captureScope(
@@ -574,6 +635,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
         await this.addChat(
           "assistant",
           `Evidence covers the first ${maxPaths} pages; not captured: ${dropped.join(", ")}.`,
+          signal,
         );
       let result: Awaited<ReturnType<typeof capture>>;
       try {
@@ -583,26 +645,31 @@ Set userApproved=true only if the user's last message clearly approves the spec.
           signIn: signedIn ? "resume" : undefined,
         });
       } catch (e) {
+        signal.throwIfAborted();
         // No sign-in session to resume: the user can open sign-in again or skip.
         if (!(signedIn && e instanceof CaptureError)) throw e;
-        await this.awaitSignIn(this.s.signInPaths || [], e.message);
+        await this.awaitSignIn(this.s.signInPaths || [], e.message, signal);
         return;
       }
+      signal.throwIfAborted();
       const stopped =
         result.status === "captured" ? stoppedPages(result.items) : [];
       if (stopped.length) {
         await this.awaitSignIn(
           stopped,
           `Capture stopped on ${stopped.join(", ")}: the page left the approved scope, which usually means it needs an account.`,
+          signal,
         );
         return;
       }
     }
+    signal.throwIfAborted();
     this.s.signInPaths = undefined;
     this.s.phase = "planning";
-    await this.emit("phase", { phase: "planning" });
+    await this.emit("phase", { phase: "planning" }, signal);
 
     const html = await this.originalHtml();
+    signal.throwIfAborted();
     const plan = await llmJson<{
       tasks: Omit<Task, "status" | "attempts" | "branch">[];
     }>(this.env, {
@@ -663,6 +730,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         },
       },
     });
+    signal.throwIfAborted();
     this.s.tasks = plan.tasks.map((t) => ({
       ...t,
       status: "queued",
@@ -670,35 +738,44 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       branch: `task/${t.id}`,
     }));
     this.s.phase = "planned";
-    await this.save();
-    await this.emit("plan", { tasks: this.s.tasks });
-    await this.emit("phase", { phase: "planned" });
+    await this.save(signal);
+    await this.emit("plan", { tasks: this.s.tasks }, signal);
+    await this.emit("phase", { phase: "planned" }, signal);
+    signal.throwIfAborted();
     await remember(
       this.env,
       this.memScope(),
       `Plan for ${this.s.spec.url}: ${this.s.tasks.map((t) => `${t.id} ${t.title} (evidence ${t.evidence.join(",")})`).join("; ")}`,
     );
+    signal.throwIfAborted();
     const pv = await verifyPlan(
       this.env,
       this.s.spec,
       this.s.evidence,
       this.s.tasks,
     );
-    await this.verified(pv);
+    await this.verified(pv, signal);
     await this.addChat(
       "assistant",
       `Plan ready: ${this.s.tasks.length} tasks. Verifier: ${pv.pass ? "pass" : "fail"}. Review it on the canvas, then press Start build.`,
+      signal,
     );
   }
 
-  private async awaitSignIn(paths: string[], why: string) {
+  private async awaitSignIn(paths: string[], why: string, signal: AbortSignal) {
+    signal.throwIfAborted();
     this.s.phase = "awaiting_sign_in";
     this.s.signInPaths = paths;
-    await this.save();
-    await this.emit("phase", { phase: "awaiting_sign_in", pages: paths });
+    await this.save(signal);
+    await this.emit(
+      "phase",
+      { phase: "awaiting_sign_in", pages: paths },
+      signal,
+    );
     await this.addChat(
       "assistant",
       `${why} Open secure sign-in and sign in yourself (Reversy never sees your password), then resume capture. Or skip sign-in to plan without ${paths.length > 1 ? "these pages" : "this page"}.`,
+      signal,
     );
   }
 
@@ -753,7 +830,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
   }
 
-  private async verified(v: Verdict) {
+  private async verified(v: Verdict, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.traced(
       `verifier.${v.target}`,
       "EVALUATOR",
@@ -761,7 +839,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       async (set) =>
         set({ "output.value": JSON.stringify(v), "eval.pass": v.pass }),
     );
-    await this.emit("verification", v);
+    await this.emit("verification", v, signal);
+    signal?.throwIfAborted();
     await remember(
       this.env,
       this.memScope(),
@@ -772,6 +851,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       await this.addChat(
         "assistant",
         `Verifier flagged ${v.taskId || v.target}: ${v.summary}`,
+        signal,
       );
     }
   }

@@ -25,6 +25,8 @@ export type CaptureResult =
 export interface CaptureDeps {
   anchorApiKey: string;
   store: EvidenceStore;
+  signal?: AbortSignal;
+  onSession?: (close: () => Promise<void>) => void;
   // Appends the event to the run; the caller adds the envelope (IDs, sequence, timestamp).
   emit: (event: CaptureEvent) => void | Promise<void>;
 }
@@ -71,6 +73,7 @@ export async function captureRun(
   runId: string,
   request: CaptureRequest,
 ): Promise<CaptureResult> {
+  deps.signal?.throwIfAborted();
   const { scope, mode } = request;
   const full = mode === "full_pack";
   const key = deps.anchorApiKey;
@@ -122,6 +125,9 @@ export async function captureRun(
   } else {
     sessionId = (await anchor.createSession(key, { recording: full })).id;
   }
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= anchor.endSession(key, sessionId).catch(() => {}));
   // Recordings are capped at 30 seconds: pause it then, however long the pages take.
   let capMissed = false;
   let pausing: Promise<void> | undefined;
@@ -133,6 +139,11 @@ export async function captureRun(
           });
         }, recordingCapMs)
       : undefined;
+  const abort = () => {
+    if (cap !== undefined) clearTimeout(cap);
+    void close();
+  };
+  deps.signal?.addEventListener("abort", abort, { once: true });
 
   const items: EvidenceRecord[] = [];
   const save = async (
@@ -142,6 +153,7 @@ export async function captureRun(
     content: Uint8Array,
     limitations: string[],
   ) => {
+    deps.signal?.throwIfAborted();
     const record: EvidenceRecord = {
       id: `ev_${crypto.randomUUID()}`,
       runId,
@@ -154,7 +166,9 @@ export async function captureRun(
       contentType,
       byteLength: content.length,
     };
-    await deps.store.putEvidence(record, content);
+    deps.signal?.throwIfAborted();
+    await deps.store.putEvidence(record, content, deps.signal);
+    deps.signal?.throwIfAborted();
     items.push(record);
     return record.id;
   };
@@ -164,6 +178,7 @@ export async function captureRun(
     save(expected, "not_observed", "text/plain", new Uint8Array(), [reason]);
 
   const capturePage = async (path: string) => {
+    deps.signal?.throwIfAborted();
     const url = `${scope.origin}${path}`;
     const shots = Object.entries(
       full ? viewports : { desktop: viewports.desktop },
@@ -209,6 +224,7 @@ export async function captureRun(
         sessionId,
         anchor.navigateSnippet(url, scope.origin, full),
       );
+      deps.signal?.throwIfAborted();
       if (!inScope(facts.finalUrl, scope)) {
         leave("Redirected to", facts.finalUrl);
       } else {
@@ -233,10 +249,12 @@ export async function captureRun(
             ]);
         }
         for (const [, viewport] of shots) {
+          deps.signal?.throwIfAborted();
           const shot = await anchor.runSnippet<{
             finalUrl: string;
             png: string;
           }>(key, sessionId, anchor.screenshotSnippet(viewport));
+          deps.signal?.throwIfAborted();
           if (!inScope(shot.finalUrl, scope)) {
             leave("Page moved to", shot.finalUrl);
             break;
@@ -247,13 +265,20 @@ export async function captureRun(
         }
       }
     } catch (error) {
+      deps.signal?.throwIfAborted();
       // Only browser failures become not_observed; storage failures must fail the capture.
       if (!(error instanceof anchor.AnchorError)) throw error;
+      if (signedIn)
+        throw new CaptureError(
+          "The sign-in session could not be captured; open secure sign-in again.",
+          409,
+        );
       stopped = `Capture failed: ${error.message}`;
       shown = stopped.replace(/[?#][^\s"']*/g, "");
     }
 
     while (pending.length) await skip(stopped ?? "");
+    deps.signal?.throwIfAborted();
     await deps.emit({
       type: stopped ? "evidence.page_stopped" : "evidence.page_captured",
       state: "capturing",
@@ -263,14 +288,18 @@ export async function captureRun(
   };
 
   try {
+    deps.onSession?.(close);
+    deps.signal?.throwIfAborted();
     for (const path of scope.paths) await capturePage(path);
   } finally {
+    deps.signal?.removeEventListener("abort", abort);
     if (cap !== undefined) clearTimeout(cap);
     await pausing;
     // Anchor also ends idle sessions itself, so a failed close only costs a few idle minutes.
-    await anchor.endSession(key, sessionId).catch(() => {});
+    await close();
   }
 
+  deps.signal?.throwIfAborted();
   if (full) {
     const recording: Expected = {
       kind: "recording",
@@ -315,6 +344,7 @@ export async function captureRun(
     }
   }
 
+  deps.signal?.throwIfAborted();
   await deps.emit({
     type: "evidence.capture_finished",
     state: "captured",

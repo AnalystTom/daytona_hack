@@ -475,6 +475,44 @@ describe("captureRun limits", () => {
 });
 
 describe("captureRun sign-in scope", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "requires sign-in again when the saved session expires at browser call %i",
+    async (failAt) => {
+      const calls = fakeAnchor();
+      const respond = vi.mocked(fetch).getMockImplementation()!;
+      let snippets = 0;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (
+          new URL(String(input)).pathname === "/v1/tools/execute-code" &&
+          ++snippets === failAt
+        )
+          return new Response("Session expired", { status: 404 });
+        return respond(input, init);
+      });
+      const memory = memoryStore();
+      memory.signIns.set("run_1", {
+        sessionId: "expired-session",
+        origin: scope.origin,
+      });
+      const { deps: d, events } = deps(memory.store);
+      await expect(
+        captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("open secure sign-in again"),
+      });
+      expect(memory.signIns.has("run_1")).toBe(false);
+      expect(calls.at(-1)).toMatchObject({
+        method: "DELETE",
+        path: "/v1/sessions/expired-session",
+      });
+      expect(snippets).toBe(failAt);
+      expect(events.some((e) => e.type === "evidence.capture_finished")).toBe(
+        false,
+      );
+    },
+  );
+
   it("refuses to resume a sign-in session on a different origin", async () => {
     const calls = fakeAnchor();
     const memory = memoryStore();
@@ -494,6 +532,54 @@ describe("captureRun sign-in scope", () => {
 });
 
 describe("captureRun session cleanup", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "closes on cancellation at browser call %i and discards its late result",
+    async (stopAt) => {
+      const calls = fakeAnchor();
+      const respond = vi.mocked(fetch).getMockImplementation()!;
+      let enter!: () => void;
+      const entered = new Promise<void>((done) => {
+        enter = done;
+      });
+      let release!: () => void;
+      const pending = new Promise<void>((done) => {
+        release = done;
+      });
+      let snippets = 0;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (
+          new URL(String(input)).pathname === "/v1/tools/execute-code" &&
+          ++snippets === stopAt
+        ) {
+          enter();
+          await pending;
+        }
+        return respond(input, init);
+      });
+      const memory = memoryStore();
+      const { deps: d, events } = deps(memory.store);
+      const controller = new AbortController();
+      const result = captureRun({ ...d, signal: controller.signal }, "run_1", {
+        mode: "full_pack",
+        scope,
+      });
+      await entered;
+      const ids = [...memory.records.keys()];
+      const emitted = [...events];
+      controller.abort();
+      expect(calls.at(-1)).toMatchObject({
+        method: "DELETE",
+        path: `/v1/sessions/${fixtureSession.data.id}`,
+      });
+      release();
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      expect([...memory.records.keys()]).toEqual(ids);
+      expect(events).toEqual(emitted);
+      expect(snippets).toBe(stopAt);
+      expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    },
+  );
+
   it("ends the new sign-in session when saving it fails", async () => {
     const calls = fakeAnchor();
     const { store } = memoryStore();
