@@ -179,6 +179,37 @@ describe("captureRun (fixture Anchor responses)", () => {
     expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
   });
 
+  it("keeps URL query strings in browser errors out of the event message", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string) => {
+        const { pathname } = new URL(input);
+        if (pathname === "/v1/sessions") return Response.json(fixtureSession);
+        if (pathname === "/v1/tools/execute-code") {
+          return Response.json({
+            success: false,
+            message: "failed",
+            error:
+              'Timeout navigating to "https://idp.test/cb?code=secret&state=x#frag"',
+          });
+        }
+        return Response.json({ data: { status: "ok" } });
+      }),
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: scope.origin, paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items[0]?.limitations[0]).toContain("?code=secret&state=x#frag");
+    expect(events[0]?.message).toBe(
+      '/: Capture failed: Anchor snippet failed: Timeout navigating to "https://idp.test/cb"',
+    );
+  });
+
   it("keeps an off-scope URL's query string out of the event message", async () => {
     fakeAnchor({
       "https://example.com/pricing":

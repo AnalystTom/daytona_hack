@@ -224,7 +224,8 @@ export async function captureRun(
     } catch (error) {
       // Only browser failures become not_observed; storage failures must fail the capture.
       if (!(error instanceof anchor.AnchorError)) throw error;
-      stopped = shown = `Capture failed: ${error.message}`;
+      stopped = `Capture failed: ${error.message}`;
+      shown = stopped.replace(/[?#][^\s"']*/g, "");
     }
 
     while (pending.length) await skip(stopped ?? "");
