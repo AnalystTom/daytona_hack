@@ -62,12 +62,17 @@ const mockModel = (response: Response) => {
   return fetchMock;
 };
 
-const env = { ANTHROPIC_API_KEY: "test-key" };
+const env = { ANTHROPIC_API_KEY: "test-key", VERIFIER_TOKEN: "test-token" };
 
-const callVerify = (body: unknown, bindings: object = env) =>
+const callVerify = (
+  body: unknown,
+  bindings: object = env,
+  authorization = "Bearer test-token",
+) =>
   worker.fetch(
     new Request("https://reversy.test/api/v1/runs/run_1/verify", {
       method: "POST",
+      headers: { authorization },
       body: JSON.stringify(body),
     }),
     bindings,
@@ -81,13 +86,34 @@ afterEach(() => {
 });
 
 describe("POST /api/v1/runs/:id/verify", () => {
-  it("returns 503 naming the missing binding without calling the model", async () => {
-    const fetchMock = mockModel(modelReply("{}"));
-    const response = await callVerify(planBody, {});
-    expect(response.status).toBe(503);
-    expect(await errorOf(response)).toContain("ANTHROPIC_API_KEY");
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
+  it.each([
+    ["VERIFIER_TOKEN", { ANTHROPIC_API_KEY: "test-key" }],
+    ["ANTHROPIC_API_KEY", { VERIFIER_TOKEN: "test-token" }],
+  ])(
+    "returns 503 naming a missing %s without calling the model",
+    async (name, bindings) => {
+      const fetchMock = mockModel(modelReply("{}"));
+      const response = await callVerify(planBody, bindings);
+      expect(response.status).toBe(503);
+      expect(await errorOf(response)).toContain(name);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ["no header", ""],
+    ["a wrong token", "Bearer wrong-token"],
+    ["a token prefix", "Bearer test-tok"],
+    ["the token without Bearer", "test-token"],
+  ])(
+    "returns 401 for %s without calling the model",
+    async (_, authorization) => {
+      const fetchMock = mockModel(modelReply("{}"));
+      const response = await callVerify(planBody, env, authorization);
+      expect(response.status).toBe(401);
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 
   it("rejects an invalid request", async () => {
     mockModel(modelReply("{}"));

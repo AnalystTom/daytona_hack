@@ -36,6 +36,7 @@ npm run dev
 | Binding | Used by | Without it |
 |---|---|---|
 | `ANTHROPIC_API_KEY` (secret) | The verifier, `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
+| `VERIFIER_TOKEN` (secret) | Callers of the verify endpoint send `Authorization: Bearer <VERIFIER_TOKEN>`; a wrong or missing token gets 401 | The endpoint returns 503 naming the missing binding |
 
 Set a secret with `npx wrangler secret put <NAME>`.
 
