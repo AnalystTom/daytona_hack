@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { inspectBackend } from "./inspect";
 import type { Env, Evidence, Spec, Task } from "./types";
 import { verifyFinal, verifyTask } from "./verifier";
 
@@ -22,7 +23,11 @@ const evidence = [
     ...ev("ev_001", "/api/articles", "observed"),
     response: {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "cache-control": "max-age=60",
+        vary: "Accept-Encoding",
+      },
       shape: { items: [{ id: "number", title: "string" }], total: "number" },
     },
   },
@@ -60,8 +65,23 @@ function stub() {
       });
     }
     requests.push({ url, method: init?.method ?? "GET" });
-    if (url === `${PREVIEW}api/articles`)
+    if (url.startsWith("https://site.example/api/articles?"))
       return Response.json({ items: [{ id: 1, title: "t" }], total: 1 });
+    if (
+      url === `${PREVIEW}api/articles` ||
+      url === `${PREVIEW}api/articles?id=1`
+    )
+      return Response.json(
+        { items: [{ id: 1, title: "t" }], total: 1 },
+        {
+          headers: {
+            "cache-control": "no-cache",
+            vary: "Origin",
+            "set-cookie": "session=private",
+            "x-private": "private",
+          },
+        },
+      );
     return Response.json({ error: "not found" }, { status: 404 });
   });
   return { requests, inputs };
@@ -88,12 +108,18 @@ describe("backend verification", () => {
       {
         path: "/api/articles",
         status: 200,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-cache",
+          vary: "Origin",
+        },
         contentType: "application/json",
         shape: { items: [{ id: "number", title: "string" }], total: "number" },
       },
       {
         path: "/api/v1/articles?id=1",
         status: 404,
+        headers: { "content-type": "application/json" },
         contentType: "application/json",
         shape: { error: "string" },
       },
@@ -112,10 +138,72 @@ describe("backend verification", () => {
     expect(inputs[0].routes).toContainEqual({
       path: "/api/search",
       status: 404,
+      headers: { "content-type": "application/json" },
       contentType: "application/json",
       shape: { error: "string" },
     });
+    expect(inputs[0].routes).toContainEqual(
+      expect.objectContaining({
+        path: "/api/articles",
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-cache",
+          vary: "Origin",
+        },
+      }),
+    );
   });
+
+  it.each(["backend", "both"] as const)(
+    "preserves observed query variants from capture through task and final checks for %s",
+    async (scope) => {
+      const { requests, inputs } = stub();
+      const captured: Evidence[] = [];
+      for (const id of [1, 2]) {
+        const capture = await inspectBackend(
+          `https://site.example/api/articles?id=${id}`,
+          captured.length + 1,
+        );
+        captured.push(...capture.evidence);
+      }
+      const observed = captured.filter(
+        (e) => e.kind === "network" && e.status === "observed",
+      );
+      expect(observed.map((e) => e.page)).toEqual([
+        "/api/articles?id=1",
+        "/api/articles?id=2",
+      ]);
+      const queryTask = { ...task, evidence: observed.map((e) => e.id) };
+      requests.length = 0;
+      await verifyTask(env, spec(scope), captured, queryTask, PREVIEW);
+      await verifyFinal(env, spec(scope), captured, [queryTask], PREVIEW);
+      const probes = requests.filter((r) => r.url !== PREVIEW);
+      expect(probes).toEqual([
+        { url: `${PREVIEW}api/articles?id=1`, method: "GET" },
+        { url: `${PREVIEW}api/articles?id=2`, method: "GET" },
+        { url: `${PREVIEW}api/articles?id=1`, method: "GET" },
+        { url: `${PREVIEW}api/articles?id=2`, method: "GET" },
+      ]);
+      for (const input of inputs) {
+        expect(input.routes).toEqual([
+          expect.objectContaining({
+            path: "/api/articles?id=1",
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "cache-control": "no-cache",
+              vary: "Origin",
+            },
+          }),
+          expect.objectContaining({
+            path: "/api/articles?id=2",
+            status: 404,
+            headers: { "content-type": "application/json" },
+          }),
+        ]);
+      }
+    },
+  );
 
   it("checks both the page and the routes for a both-scope run", async () => {
     const { requests } = stub();

@@ -1,7 +1,7 @@
 // Verifier: independent checks from Cloudflare, never from inside the sandbox.
 // Spec asks for Opus 5.5; we have no Anthropic key, so it runs on VERIFIER_MODEL (OpenAI)
 // with its own instructions and sees only the spec, evidence and the output being checked.
-import { outline, shapeOf } from "./inspect";
+import { DELIVERY_HEADERS, outline, shapeOf } from "./inspect";
 import { llmJson } from "./services";
 import type { Env, Evidence, Spec, Task } from "./types";
 
@@ -70,7 +70,6 @@ function routesOf(evidence: Evidence[]) {
   ].slice(0, MAX_ROUTES);
 }
 
-/** One bounded GET per route on the preview: status, content type and JSON shape, never more. */
 async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
   if (!previewUrl) return [];
   return Promise.all(
@@ -108,6 +107,9 @@ async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
         return {
           path,
           status: res.status,
+          headers: Object.fromEntries(
+            [...res.headers].filter(([k]) => DELIVERY_HEADERS.test(k)),
+          ),
           contentType,
           location: res.headers.get("location") || undefined,
           ...(shape === undefined
@@ -186,7 +188,7 @@ export async function verifyTask(
   const v = await check(
     env,
     "verify_task",
-    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview is the root response of the live integration branch after the merge; routes are GETs of the task's observed routes on it, to compare status codes, content types and JSON shapes with the evidence.`,
+    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview is the root response of the live integration branch after the merge; routes are GETs of the task's observed routes on it, to compare status codes, content types, delivery headers and JSON shapes with the evidence.`,
     {
       spec: { url: spec.url, goal: spec.goal, scope: spec.scope },
       task: {
@@ -228,7 +230,7 @@ export async function verifyFinal(
     "verify_final",
     spec.scope === "backend"
       ? `Check the final back-end rebuild against the agreed spec: every route, status, response shape and delivery header the evidence observed is reproduced with mock data (routes are GETs of the observed routes on the rebuilt service), and nothing inferred is presented as observed. Call out what is missing or wrong.`
-      : `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section${spec.scope === "both" ? ", then the observed routes and response shapes against the routes probed on the rebuilt service" : ""}. Call out what is missing or wrong.`,
+      : `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section${spec.scope === "both" ? ", then the observed routes, delivery headers and response shapes against the routes probed on the rebuilt service" : ""}. Call out what is missing or wrong.`,
     {
       spec,
       evidence: evidenceList(evidence),

@@ -235,7 +235,7 @@ export function shapeOf(v: unknown, depth = 0): unknown {
   return v === null ? "null" : typeof v;
 }
 
-const DELIVERY_HEADERS =
+export const DELIVERY_HEADERS =
   /^(content-type|cache-control|age|etag|last-modified|vary|server|via|x-cache|cf-cache-status|x-powered-by|content-encoding|location|access-control-allow-origin|strict-transport-security|content-security-policy)$/i;
 
 /** What the HTML tells about the back end: bundles, API URLs it references, embedded data. */
@@ -282,8 +282,9 @@ export async function inspectBackend(
   url: string,
   startId: number,
 ): Promise<Capture> {
-  const page = new URL(url).pathname;
-  const origin = new URL(url).origin;
+  const target = new URL(url);
+  const page = target.pathname + target.search;
+  const origin = target.origin;
   const evidence: Evidence[] = [];
   const blobs: Capture["blobs"] = {};
   let n = startId;
