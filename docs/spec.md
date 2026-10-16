@@ -138,7 +138,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Piece | Use |
 |---|---|
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
-| Daytona | Runs the Codex workers in one sandbox per run (Tier 3, full internet access); preview URLs; VM fork for variants once enabled |
+| Daytona | Runs the Codex workers in one sandbox per run (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; VM fork for variants once enabled |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
@@ -152,12 +152,12 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Hosting: Cloudflare Workers.
 - Build engine: the Reversy orchestrator, a Cloudflare Durable Object per run, enhanced with full Anchor capture, running Codex workers in one Daytona sandbox. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop. Firstmate in Daytona with no-mistakes review is a second engine for later.
 - The orchestrator is private: only our site calls it, and only we can test it.
-- Daytona Tier 3: the sandbox has full internet access.
+- Daytona Tier 3 or higher: the sandbox has full internet access.
 - Each run is limited to 2 hours.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
-- Runs are secure: a run ID alone never gives access; every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
-- Out of the demo for now: REA, financial reports, and user accounts beyond that operator session (the existing token gates stay).
+- Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+- Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the minimal canvas workspace (chat on the right; Spec and Build views; kanban) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

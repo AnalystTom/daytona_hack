@@ -31,7 +31,7 @@ Our Cloudflare Worker (web app + API, the only front door)
 Reversy orchestrator (Cloudflare Worker, one Durable Object per run)
    │  owns chat, inspect, plan, build, review; calls the verifier (GPT, from Cloudflare)
    ▼
-Daytona run sandbox (Tier 3, full internet access)
+Daytona run sandbox (Tier 3 or higher, full internet access)
    ├─ Codex workers (one task each, own git worktree and branch)
    ├─ Rebuild repo (main is the integration branch)
    ├─ Evidence (read-only to workers)
@@ -166,12 +166,12 @@ A failed or stopped task stays on the board with its reason and next action.
 
 - The orchestrator has no public access.
   Only our site calls it, through a Cloudflare service binding, and only we can test it, with our own operator token.
-- The Daytona sandbox runs on Tier 3 with full internet access, so workers can install packages and reach the rest of the architecture.
+- The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
   The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
 - Knowing a run ID is not enough to view or use a run.
-  Every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
-- There are no user accounts in the demo; the existing token gates stay.
+  Every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+- There are no user accounts, sign-ups or login system in the demo; the existing token gates stay.
 
 ## 9. Verifier
 
@@ -215,10 +215,10 @@ The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB hol
 - Variants: the user promotes a variant and building continues from its snapshot.
 - Arize stores the traces.
 - Recordings are capped at 30 seconds.
-- Daytona Tier 3: the sandbox has full internet access.
+- Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
-- Runs are secure: every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
-- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts beyond that operator session (the existing token gates stay; spending is kept low).
+- Runs are secure: every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low).
 
 ## 14. Open questions
 
