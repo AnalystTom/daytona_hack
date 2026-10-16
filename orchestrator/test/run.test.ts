@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Run } from "../src/run";
+import { runView } from "../../src/web/workspace/orchestrator";
 import { recordRunEvent } from "../../src/worker/records/records";
 import { MemoryRunStore } from "../../src/worker/store/memory";
 import type { Env, RunEvent, RunRecord, Task } from "../src/types";
@@ -315,26 +316,37 @@ describe("Run", () => {
     await ready;
     await run.alarm();
     expect(state()).toMatchObject({ phase: "planned", sandboxId: "sb1" });
+    expect(runView("run-1", await run.events(0)).phase).toBe("planned");
     expect(calls).not.toContain("DELETE https://daytona.test/sandbox/sb1");
+    await expect(run.startBuild()).resolves.toMatchObject({
+      phase: "building",
+    });
   });
 
-  it("refuses a partial variant proposal before creating any pods, allowing a retry", async () => {
-    mockFetch({
-      variants: [{ title: "Only one", change: "", explanation: "" }],
-    });
-    const { run, state, ready } = fakeRun({
-      ...baseState(new Date().toISOString(), "variants", []),
-      pending: "variants",
-    });
-    await ready;
-    await run.alarm();
-    expect(state()).toMatchObject({ phase: "done" });
-    expect(state().variants).toBeUndefined();
-    expect(calls.some((c) => c.includes("/fork"))).toBe(false);
-    await expect(run.makeVariants()).resolves.toMatchObject({
-      phase: "variants",
-    });
-  });
+  it.each(["partial", "unavailable"])(
+    "publishes retry readiness after a %s variant proposal",
+    async (failure) => {
+      mockFetch(
+        {
+          variants: [{ title: "Only one", change: "", explanation: "" }],
+        },
+        failure === "unavailable" ? 503 : 200,
+      );
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "variants", []),
+        pending: "variants",
+      });
+      await ready;
+      await run.alarm();
+      expect(state()).toMatchObject({ phase: "done" });
+      expect(runView("run-1", await run.events(0)).phase).toBe("done");
+      expect(state().variants).toBeUndefined();
+      expect(calls.some((c) => c.includes("/fork"))).toBe(false);
+      await expect(run.makeVariants()).resolves.toMatchObject({
+        phase: "variants",
+      });
+    },
+  );
 
   it("opens a fix task when the verifier fails a merged task, without rolling back", async () => {
     mockFetch({
@@ -348,9 +360,7 @@ describe("Run", () => {
       baseState(new Date().toISOString(), "done", [task("t02", "in_review")]),
     );
     await ready;
-    await (run as unknown as { merge(t: Task): Promise<void> }).merge(
-      state().tasks[0],
-    );
+    await run.override("t02", "approve", "Accept the merged work");
     const [merged, fix] = state().tasks;
     expect(merged.status).toBe("merged");
     expect(fix).toMatchObject({
@@ -1356,23 +1366,38 @@ describe("Run", () => {
     },
   );
 
-  it.each([undefined, "v1"])(
-    "persists the required fix before Agent Memory reporting fails (%s)",
-    async (variantId) => {
-      mockFetch({ pass: false, summary: "Needs repair", findings: [] });
+  it.each([
+    { variantId: undefined, pass: false },
+    { variantId: "v1", pass: false },
+    { variantId: undefined, pass: true },
+    { variantId: "v1", pass: true },
+  ])(
+    "finalizes and schedules a completed-run override before reporting fails ($variantId, $pass)",
+    async ({ variantId, pass }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch({
+        pass,
+        summary: pass ? "Verified" : "Needs repair",
+        findings: [],
+      });
       const provider = fetch;
       vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
         if (input.startsWith("https://memory.test"))
           throw new Error("memory unavailable");
         return provider(input, init);
       });
-      const { run, persisted, ready } = fakeRun(
+      const dependent = pass && !variantId;
+      const { run, persisted, ready, scheduled } = fakeRun(
         {
           ...baseState(new Date().toISOString(), "done", [
-            { ...task("t1", "in_review"), variant: variantId },
+            { ...task("t1", "failed"), variant: variantId },
+            ...(dependent
+              ? [{ ...task("t2", "queued"), dependsOn: ["t1"] }]
+              : []),
           ]),
           variants: variantId
-            ? [{ ...variant("v1", "copy"), status: "building" }]
+            ? [{ ...variant("v1", "copy"), status: "failed" }]
             : undefined,
         },
         { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
@@ -1381,17 +1406,191 @@ describe("Run", () => {
       await expect(run.override("t1", "approve", "Accept")).rejects.toThrow(
         "memory unavailable",
       );
-      const restored = fakeRun(persisted());
+      const active = !pass || dependent;
+      const phase = active ? (variantId ? "variants" : "building") : "done";
+      const view = runView("run-1", await run.events(0));
+      expect(persisted().phase).toBe(phase);
+      if (active) expect(view.phase).toBe(phase);
+      expect(persisted().tasks[0]).toMatchObject({
+        id: "t1",
+        status: "merged",
+        verification: pass,
+      });
+      if (variantId) {
+        const status = pass ? "ready" : "building";
+        expect(persisted().variants[0].status).toBe(status);
+        expect(view.variants[0]?.status).toBe(status);
+      }
+      if (!pass)
+        expect(persisted().tasks[1]).toMatchObject({
+          id: "t1-fix",
+          status: "queued",
+          fixFor: "t1",
+          variant: variantId,
+        });
+      const next = Date.now() + 100;
+      expect(scheduled()).toBe(next);
+      const restored = fakeRun(persisted(), {}, scheduled());
       await restored.ready;
-      expect((await restored.run.getState()).tasks).toMatchObject([
-        { id: "t1", status: "merged", verification: false },
-        { id: "t1-fix", status: "queued", fixFor: "t1", variant: variantId },
-      ]);
-      expect((await restored.run.getState()).phase).toBe(
-        variantId ? "variants" : "building",
-      );
+      expect(restored.scheduled()).toBe(next);
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      vi.setSystemTime(next);
+      await restored.run.alarm();
+      if (active) {
+        expect(
+          restored
+            .persisted()
+            .tasks.find((t: Task) => t.id === (dependent ? "t2" : "t1-fix"))
+            ?.status,
+        ).toBe("building");
+        expect(
+          calls.some((call) =>
+            /POST .*\/process\/session\/w-.*\/exec$/.test(call),
+          ),
+        ).toBe(true);
+      } else if (variantId) {
+        await expect(restored.run.promote(variantId)).resolves.toMatchObject({
+          phase: "brief",
+          promoted: variantId,
+        });
+      }
     },
   );
+
+  it.each([
+    "plan",
+    "final",
+    "review_approve",
+    "review_reject",
+    "build_setup",
+    "variants_setup",
+  ])("keeps %s lifecycle progress ahead of failed reporting", async (stage) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      const name = body.text?.format?.name;
+      const report =
+        stage === "plan" || stage === "final"
+          ? `Verifier on ${stage}`
+          : stage.startsWith("review")
+            ? "Review of"
+            : stage === "build_setup"
+              ? "Build started"
+              : "Variants from";
+      if (input.endsWith("/facts") && body.text?.startsWith(report))
+        throw new Error("memory unavailable");
+      if (name === "plan")
+        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
+      if (name === "review")
+        return Response.json({
+          output_text: JSON.stringify({
+            verdict: stage === "review_reject" ? "reject" : "approve",
+            reason: "Review result",
+            findings: [],
+          }),
+        });
+      if (name === "variants")
+        return Response.json({
+          output_text: JSON.stringify({
+            variants: [1, 2, 3].map((n) => ({
+              title: `Variant ${n}`,
+              explanation: "Alternative layout",
+              change: "Layout",
+            })),
+          }),
+        });
+      if (input.endsWith("/process/execute"))
+        return Response.json({
+          exitCode: 0,
+          result: body.command.includes("cat /home/daytona/logs/")
+            ? "0"
+            : body.command.includes("--name-only")
+              ? "sections/hero.html"
+              : "diff",
+        });
+      return provider(input, init);
+    });
+    const tasks = stage.startsWith("review")
+      ? [
+          task("t1", "building"),
+          ...(stage === "review_approve"
+            ? [{ ...task("t2", "queued"), dependsOn: ["t1"] }]
+            : []),
+        ]
+      : stage === "build_setup"
+        ? [task("t1", "queued")]
+        : [];
+    const { run, ready, persisted, scheduled } = fakeRun(
+      {
+        ...baseState(
+          new Date().toISOString(),
+          stage === "plan"
+            ? "inspecting"
+            : stage === "variants_setup"
+              ? "variants"
+              : "building",
+          tasks,
+        ),
+        pending:
+          stage === "plan"
+            ? "inspect"
+            : stage === "build_setup"
+              ? "build_setup"
+              : stage === "variants_setup"
+                ? "variants"
+                : undefined,
+        forkUnavailable: true,
+        promoted: stage === "build_setup" ? "v1" : undefined,
+      },
+      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+    );
+    await ready;
+    await run.alarm();
+    const phase =
+      stage === "plan"
+        ? "planned"
+        : stage === "final"
+          ? "done"
+          : stage === "variants_setup"
+            ? "variants"
+            : "building";
+    expect(persisted().phase).toBe(phase);
+    const events = await run.events(0);
+    if (stage === "plan" || stage === "final")
+      expect(runView("run-1", events).phase).toBe(phase);
+    expect(
+      events.some(
+        (e) =>
+          e.type === "error" &&
+          (e.data as { message: string }).message.includes(
+            "memory unavailable",
+          ),
+      ),
+    ).toBe(true);
+    const next =
+      stage === "plan" || stage === "final"
+        ? Date.now() + 2 * 3600_000
+        : Date.now() + 100;
+    expect(scheduled()).toBe(next);
+    expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+    if (stage !== "plan" && stage !== "final") {
+      const queued = persisted().tasks.filter(
+        (t: Task) => t.status === "queued",
+      );
+      expect(queued.length).toBeGreaterThan(0);
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      vi.setSystemTime(next);
+      await run.alarm();
+      expect(
+        persisted().tasks.some(
+          (t: Task) => t.id === queued[0].id && t.status === "building",
+        ),
+      ).toBe(true);
+    }
+  });
 
   it("keeps signed variant capabilities out of durable data, prompts, webhooks and traces", async () => {
     const signed = "https://private-preview.test/?token=capability-secret";
@@ -1511,13 +1710,13 @@ describe("Run", () => {
         return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
       return provider(input, init);
     });
-    const { run, persisted, ready } = fakeRun(
+    const { run, persisted, ready, scheduled } = fakeRun(
       {
         ...baseState(
           new Date().toISOString(),
           target === "plan"
             ? "inspecting"
-            : target === "promotion"
+            : target === "promotion" || target === "task"
               ? "done"
               : "building",
           target === "task"
@@ -1540,6 +1739,13 @@ describe("Run", () => {
           : run.alarm()
     ).catch((e) => e);
     await entered.promise;
+    if (delay.startsWith("report")) {
+      expect(scheduled()).not.toBeNull();
+      if (target === "task") {
+        expect(scheduled()).toBeLessThanOrEqual(Date.now() + 100);
+        expect(runView("run-1", await run.events(0)).phase).toBe("building");
+      }
+    }
     await run.stop();
     const stoppedSeq = (await run.events(0)).at(-1)!.seq;
     release.resolve();
@@ -1647,6 +1853,7 @@ describe("Run", () => {
       expect(persisted()).toMatchObject({ phase: "stopped", expired: true });
       expect(persisted().startedAt).toBeUndefined();
       expect(persisted().error).toContain("no valid stored start time");
+      expect(runView("run-1", await run.events(0)).phase).toBe("stopped");
       expect(
         (await run.events(0)).filter((e) => e.type === "error"),
       ).toHaveLength(1);

@@ -36,7 +36,7 @@ Each run is limited to 2 hours from its creation. At the limit the orchestrator 
 emits `phase {phase: "stopped", reason: "time_limit"}`, and refuses further actions. Sandboxes also auto-stop after 60 idle minutes.
 Legacy runs retain their stored creation timestamp, or use the original first-chat timestamp when creation time is missing or invalid. With neither valid timestamp, the run stops with an explicit error and immediate sandbox cleanup; no creation time or external run records are fabricated. Alarm scheduling always preserves an earlier pending cleanup or deadline.
 
-Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pending and is retried by alarms until Daytona confirms shutdown, including sandboxes that never finished starting. Stop claims its terminal phase before external cleanup; in-flight setup and workers cannot resume the run.
+Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pending and is retried by alarms until Daytona confirms shutdown, including sandboxes that never finished starting. Stop claims its terminal phase before external cleanup; in-flight setup and workers cannot resume the run. Recovery to `planned`, `done`, or `stopped` is published to the event stream so the workspace offers the appropriate retry action.
 
 ## Events
 
@@ -65,7 +65,7 @@ Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pen
 - A task is dispatched when all its dependencies are merged, up to `MAX_WORKERS` at once. The Durable Object alarm polls every 10 s.
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
-- If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it before reporting to Agent Memory and keeps building; nothing is rolled back.
+- If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it, publishes task/variant outcomes, and schedules the build loop before reporting to Agent Memory. Reporting failures do not block the next build step or roll back merged work.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
 - Events remain in the run's Durable Object event log. External SurrealDB run records (run, events, tasks, steering, approvals)
   use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
