@@ -89,6 +89,7 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
         }
       } else {
         task.column ??= "queued";
+        if (changed && event.message) task.reason = event.message;
       }
     }
 
@@ -97,15 +98,6 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
       const { review, ...rest } = detail.data;
       Object.assign(task, defined(rest));
       if (review) task.review = { ...task.review, ...defined(review) };
-    }
-
-    if (
-      state.success &&
-      !isColumn(state.data) &&
-      !(detail.success && detail.data.reason) &&
-      event.message
-    ) {
-      task.reason = event.message;
     }
   }
 

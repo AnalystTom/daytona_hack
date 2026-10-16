@@ -84,6 +84,40 @@ describe("deriveBoard", () => {
     });
   });
 
+  it("keeps the failure reason when later events repeat the failed state", () => {
+    const board = deriveBoard([
+      event({
+        sequence: 1,
+        state: "failed",
+        message: "Tests failed twice",
+        detail: { nextAction: "Reply in chat to retry" },
+      }),
+      event({
+        sequence: 2,
+        state: "failed",
+        message: "Orchestrator notified the user",
+      }),
+    ]);
+    expect(board.tasks[0]).toMatchObject({
+      reason: "Tests failed twice",
+      nextAction: "Reply in chat to retry",
+    });
+    expect(board.tasks[0]?.log).toHaveLength(2);
+  });
+
+  it("lets an explicit detail reason replace the failure reason", () => {
+    const board = deriveBoard([
+      event({ sequence: 1, state: "failed", message: "Tests failed twice" }),
+      event({
+        sequence: 2,
+        state: "failed",
+        message: "Diagnosis done",
+        detail: { reason: "Missing font asset" },
+      }),
+    ]);
+    expect(board.tasks[0]?.reason).toBe("Missing font asset");
+  });
+
   it("clears the failure once a failed task is retried", () => {
     const board = deriveBoard([
       event({ sequence: 1, state: "failed", message: "Tests failed" }),
