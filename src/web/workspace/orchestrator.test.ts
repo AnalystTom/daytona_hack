@@ -190,6 +190,37 @@ describe("runView", () => {
     ]);
   });
 
+  it("shows the entered URL's redirect and a card for a screenshot that was not observed", () => {
+    const redirected = runView("r2", [
+      ev("spec", {
+        ...spec,
+        url: "https://www.wikipedia.org/",
+        redirects: ["https://www.wikipedia.com/", "https://www.wikipedia.org/"],
+      }),
+      ev("evidence", {
+        id: "ev_009",
+        page: "/ @ desktop 1440",
+        kind: "screenshot",
+        tool: "anchor",
+        status: "not_observed",
+        capturedAt: "2026-10-16T12:00:00.000Z",
+        hash: "sha256:00",
+        limits: "Capture failed: Anchor POST sessions failed with 403",
+      }),
+    ]);
+    expect(redirected.draftSpec).toMatchObject({
+      url: "https://www.wikipedia.org/",
+      redirectedFrom: "https://www.wikipedia.com/",
+    });
+    expect(redirected.evidence).toEqual([
+      expect.objectContaining({
+        id: "ev_009",
+        label: "not_observed",
+        src: undefined,
+      }),
+    ]);
+  });
+
   it("tracks the phase and whether a preview is served", () => {
     expect(view.phase).toBe("building");
     expect(view.hasPreview).toBe(true);

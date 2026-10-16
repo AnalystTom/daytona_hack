@@ -56,6 +56,37 @@ describe("SpecView", () => {
     expect(html).toContain("/ (desktop)");
   });
 
+  it("says where the entered URL redirects and why a screenshot is missing", () => {
+    const html = renderToStaticMarkup(
+      <SpecView
+        canvas={{
+          draftSpec: {
+            status: "draft",
+            url: "https://www.wikipedia.org/",
+            redirectedFrom: "https://www.wikipedia.com/",
+          },
+          evidence: [
+            {
+              ...screenshot,
+              label: "not_observed",
+              limitations: [
+                "Redirected to https://login.example.com/, outside the approved scope; capture stopped for this page.",
+              ],
+              src: undefined,
+            },
+          ],
+        }}
+      />,
+    );
+    expect(html).toContain(
+      "You entered https://www.wikipedia.com/; it redirects to https://www.wikipedia.org/.",
+    );
+    expect(html).toContain(
+      "The site redirected to https://login.example.com/, outside the pages approved for this run; that is usually a sign-in page.",
+    );
+    expect(html).not.toContain("<img");
+  });
+
   it("never puts a run recording's token-guarded URL straight into the video", () => {
     const recording: CanvasEvidence = {
       ...screenshot,

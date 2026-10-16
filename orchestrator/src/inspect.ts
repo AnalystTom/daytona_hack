@@ -18,6 +18,7 @@ import {
   evidenceIdPattern,
   surrealStore,
 } from "../../src/worker/evidence/store";
+import { checkTargetUrl } from "../../src/worker/runs/url";
 import { resolveStore } from "../../src/worker/store";
 import type { Env, Evidence } from "./types";
 
@@ -47,6 +48,48 @@ export function evidenceStore(env: Env): EvidenceStore {
       `Evidence storage is not configured: missing ${resolved.missing.join(", ")}`,
     );
   return surrealStore(resolved.store);
+}
+
+export const maxRedirects = 5;
+
+/**
+ * Follows the entered URL's redirects before scoping, so the final URL's origin is the run's
+ * approved origin. Every hop must pass the run URL checks (https, public host); an unsafe or
+ * unreadable hop stops the chain at the last safe URL, whose capture then leaves the scope as before.
+ */
+export async function resolveRedirects(
+  url: string,
+  fetcher: typeof fetch = fetch,
+): Promise<{ url: string; chain: string[]; stopped?: string }> {
+  const chain = [url];
+  for (let hop = 0; hop < maxRedirects; hop++) {
+    const current = chain[chain.length - 1];
+    let next: string;
+    try {
+      const res = await fetcher(current, {
+        method: "GET",
+        redirect: "manual",
+        // A hanging site must not hold up the first look.
+        signal: AbortSignal.timeout(10_000),
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      });
+      await res.body?.cancel();
+      const location = res.headers.get("location");
+      if (res.status < 300 || res.status > 399 || !location) break;
+      next = new URL(location, current).href;
+    } catch {
+      break;
+    }
+    const checked = checkTargetUrl(next);
+    if ("error" in checked)
+      return {
+        url: current,
+        chain,
+        stopped: `${redactQuery(next)}: ${checked.error}`,
+      };
+    chain.push(checked.url);
+  }
+  return { url: chain[chain.length - 1], chain };
 }
 
 // The capture checks at most this many paths per pass (CaptureScope).

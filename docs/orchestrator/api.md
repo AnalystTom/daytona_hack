@@ -41,8 +41,8 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 | type | data | UI |
 |---|---|---|
 | `chat` | `{role, text, ts}` | Chat panel |
-| `spec` | Spec (`pages[]`, `flows[]` with `confirmed`, `openQuestions[]`, `approved`, `revision`) | Draft spec card. Unconfirmed items show "Not confirmed yet" |
-| `evidence` | Evidence (`id, page, kind, tool, status, capturedAt, hash, limits, summary, path?, url?`), one event per item as it is stored | Screenshot and video cards (`url` is set on observed screenshots and recordings). `status` is `observed`, `inferred` or `not_observed` |
+| `spec` | Spec (`url`, `redirects?`, `pages[]`, `flows[]` with `confirmed`, `openQuestions[]`, `approved`, `revision`) | Draft spec card. Unconfirmed items show "Not confirmed yet"; `redirects` (entered URL first) shows "You entered X; it redirects to Y" |
+| `evidence` | Evidence (`id, page, kind, tool, status, capturedAt, hash, limits, summary, path?, url?`), one event per item as it is stored | Screenshot and video cards (`url` is set on observed screenshots and recordings; a `not_observed` screenshot card says why in plain words). `status` is `observed`, `inferred` or `not_observed` |
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
@@ -81,7 +81,8 @@ the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrat
 
 The orchestrator uses Reversy's evidence capture (`src/worker/evidence`) with `ANCHORBROWSER_API_KEY`, and stores new records and files in SurrealDB (`SURREALDB_*`). Persisted legacy evidence remains readable from the run's Durable Object blobs; both storage paths require the evidence ID to belong to the run.
 
-- First look: one desktop screenshot of the start page.
+- Redirects: before scoping, the orchestrator follows the entered URL's redirects (GET, up to 5 hops, each hop https on a public host as the run URL check requires) and makes the final URL the run's `spec.url`, so its origin is the approved origin. The chain is an observed `redirects` evidence item. Redirects during capture keep the scope guard below.
+- First look: one desktop screenshot of the start page. When it is not observed, the first chat reply says why.
 - Full pack, after the spec is approved: the artifacts and signed-in restrictions in the [evidence contract](spec.md#6-evidence), for up to 10 confirmed pages per pass (the rest are named in chat). The session recording is paused at 30 seconds, or ends sooner with capture; if pausing fails, it is not kept.
 - Scope guard: the original target query state is preserved through first look, approved-page capture, the gateway and sign-in recovery. A page that redirects or moves outside the requested page's origin, path or explicitly scoped query stops; its remaining items are `not_observed` with the reason. Query state remains in stored evidence but is redacted from evidence event labels and progress messages.
 - Secure sign-in: use **Open secure sign-in**, sign in yourself in the new Anchor tab, then **Resume capture**. If the session is missing or expired, the run returns to `awaiting_sign_in`; open sign-in again or choose **Skip sign-in** to plan without the stopped pages. Opening sign-in again replaces and closes the prior saved session; skipping or stopping closes it too. Session-close failures fall back to Anchor's timeout.

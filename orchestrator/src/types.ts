@@ -40,7 +40,7 @@ export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 export interface Evidence {
   id: string;
   page: string; // URL path and state, e.g. "/ @ desktop 1440"
-  kind: EvidenceRecord["kind"] | "html";
+  kind: EvidenceRecord["kind"] | "html" | "redirects";
   tool: string;
   status: EvidenceStatus;
   capturedAt: string;
@@ -54,6 +54,7 @@ export interface Evidence {
 export interface Spec {
   url: string;
   goal: string;
+  redirects?: string[]; // the entered URL's redirect chain, entered URL first, when it redirected
   pages: { path: string; confirmed: boolean; notes?: string }[];
   flows: { name: string; confirmed: boolean; notes?: string }[];
   openQuestions: string[];

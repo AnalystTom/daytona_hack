@@ -12,6 +12,8 @@ import {
   capture,
   captureScope,
   isStoredEvidenceId,
+  maxRedirects,
+  resolveRedirects,
   stoppedPages,
   toEvidence,
 } from "./inspect";
@@ -319,5 +321,72 @@ describe("capture", () => {
     expect(landed[0]?.url).toMatch(
       /^\/runs\/run-1\/evidence\/ev_[0-9a-f-]{36}$/,
     );
+  });
+});
+
+describe("resolveRedirects", () => {
+  // A fetch that answers each URL from a map: a string is a redirect target, a number a status.
+  const site = (answers: Record<string, string | number>) =>
+    vi.fn(async (url: string | URL | Request) => {
+      const answer = answers[String(url)] ?? 200;
+      return typeof answer === "number"
+        ? new Response("ok", { status: answer })
+        : new Response(null, { status: 301, headers: { location: answer } });
+    }) as unknown as typeof fetch;
+
+  it("follows wikipedia.com to wikipedia.org without following redirects automatically", async () => {
+    const fetcher = site({
+      "https://www.wikipedia.com/": "https://www.wikipedia.org/",
+    });
+    expect(
+      await resolveRedirects("https://www.wikipedia.com/", fetcher),
+    ).toEqual({
+      url: "https://www.wikipedia.org/",
+      chain: ["https://www.wikipedia.com/", "https://www.wikipedia.org/"],
+    });
+    expect(vi.mocked(fetcher).mock.calls[0]?.[1]).toMatchObject({
+      method: "GET",
+      redirect: "manual",
+    });
+  });
+
+  it("stops at the last safe URL when a hop is not https or not public", async () => {
+    for (const target of [
+      "http://example.org/",
+      "https://127.0.0.1/admin",
+      "https://localhost/",
+      "https://[::1]/",
+      "https://169.254.169.254/latest",
+      "https://user:pw@example.org/",
+    ]) {
+      const fetcher = site({
+        "https://example.com/": "https://www.example.com/",
+        "https://www.example.com/": target,
+      });
+      const result = await resolveRedirects("https://example.com/", fetcher);
+      expect(result.url).toBe("https://www.example.com/");
+      expect(result.stopped).toBeDefined();
+      // The unsafe target is never requested.
+      expect(vi.mocked(fetcher)).toHaveBeenCalledTimes(2);
+    }
+  });
+
+  it("bounds the hops and keeps the entered URL when the fetch fails", async () => {
+    const loop = vi.fn(
+      async (url: string | URL | Request) =>
+        new Response(null, {
+          status: 302,
+          headers: { location: `${String(url)}x` },
+        }),
+    ) as unknown as typeof fetch;
+    const result = await resolveRedirects("https://example.com/", loop);
+    expect(result.chain).toHaveLength(maxRedirects + 1);
+    const down = vi.fn(async () => {
+      throw new Error("offline");
+    }) as unknown as typeof fetch;
+    expect(await resolveRedirects("https://example.com/", down)).toEqual({
+      url: "https://example.com/",
+      chain: ["https://example.com/"],
+    });
   });
 });
