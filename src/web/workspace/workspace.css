@@ -98,8 +98,13 @@
   cursor: pointer;
 }
 
-.ws-view:hover {
+.ws-view:hover:not(:disabled) {
   color: var(--aubergine);
+}
+
+.ws-view:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .ws-view[aria-pressed="true"] {
@@ -238,6 +243,37 @@
 .empty-state p {
   margin: 0;
   color: var(--muted);
+}
+
+/* Preview view: the rebuild fills the canvas under a slim bar. */
+
+.preview {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  height: 100%;
+}
+
+.preview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.preview-bar p {
+  margin: 0 auto 0 0;
+  font-size: 0.875rem;
+}
+
+.preview-frame {
+  flex: 1;
+  min-height: 24rem;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 0.875rem;
+  background: white;
+  box-shadow: var(--shadow);
 }
 
 /* Spec view */

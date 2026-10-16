@@ -170,7 +170,7 @@ A failed or stopped task stays on the board with its reason and next action.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
   The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
 - Knowing a run ID is not enough to view or use a run.
-  Every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+  Every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
 - There are no user accounts, sign-ups or login system in the demo; the existing token gates stay.
 
 ## 9. Verifier
@@ -217,7 +217,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB hol
 - Recordings are capped at 30 seconds.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
-- Runs are secure: every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+- Runs are secure: every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
 - Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low).
 
 ## 14. Open questions

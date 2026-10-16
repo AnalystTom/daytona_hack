@@ -62,10 +62,8 @@ const Review = z.object({
   findings: z.array(z.string()).optional(),
   diffStat: z.string().optional(),
 });
-const Preview = z.object({
-  url: z.string(),
-  mergedTask: z.string().optional(),
-});
+// The sandbox is private: the event says a preview is served, and the app asks for a signed link.
+const Preview = z.object({ mergedTask: z.string().optional() });
 const Phase = z.object({ phase: z.string() });
 const Verification = z.object({
   taskId: z.string().optional(),
@@ -78,7 +76,7 @@ const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 export type RunView = {
   phase?: string;
-  previewUrl?: string;
+  hasPreview: boolean;
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
   board: BuildEvent[];
@@ -116,7 +114,7 @@ export function runView(
   runId: string,
   events: readonly OrchestratorEvent[],
 ): RunView {
-  const view: RunView = { evidence: [], board: [] };
+  const view: RunView = { hasPreview: false, evidence: [], board: [] };
   const envelope = (
     event: OrchestratorEvent,
     fields: Pick<BuildEvent, "state" | "message"> &
@@ -224,15 +222,14 @@ export function runView(
       }
       case "preview": {
         const preview = Preview.safeParse(data);
-        if (!preview.success || !isWebLink(preview.data.url)) break;
-        view.previewUrl = preview.data.url;
+        if (!preview.success) break;
+        view.hasPreview = true;
         if (preview.data.mergedTask) {
           view.board.push(
             envelope(event, {
               taskId: preview.data.mergedTask,
               state: "preview",
               message: "Preview updated with this task",
-              detail: { previewUrl: preview.data.url },
             }),
           );
         }

@@ -71,10 +71,7 @@ const events = [
   ev("phase", { phase: "planned" }),
   ev("plan", { tasks: [task("t01", "queued"), task("t02", "queued")] }),
   ev("phase", { phase: "building" }),
-  ev("preview", {
-    url: "https://3000-sb.proxy.daytona.works",
-    sandboxId: "sb",
-  }),
+  ev("preview", { sandboxId: "sb" }),
   ev("task", task("t01", "building")),
   ev("task", task("t01", "in_review")),
   ev("review", {
@@ -85,10 +82,7 @@ const events = [
     diffStat: "index.html | 12 +",
   }),
   ev("task", task("t01", "merged")),
-  ev("preview", {
-    url: "https://3000-sb.proxy.daytona.works",
-    mergedTask: "t01",
-  }),
+  ev("preview", { mergedTask: "t01" }),
   ev("verification", {
     target: "task",
     taskId: "t01",
@@ -164,9 +158,10 @@ describe("runView", () => {
     ]);
   });
 
-  it("tracks the phase and the preview link", () => {
+  it("tracks the phase and whether a preview is served", () => {
     expect(view.phase).toBe("building");
-    expect(view.previewUrl).toBe("https://3000-sb.proxy.daytona.works");
+    expect(view.hasPreview).toBe(true);
+    expect(runView("r1", events.slice(0, 3)).hasPreview).toBe(false);
   });
 
   it("drives the kanban: columns, reviews, preview and failures", () => {
@@ -178,15 +173,17 @@ describe("runView", () => {
       title: "Task t01",
       state: "merged",
       column: "merged",
-      previewUrl: "https://3000-sb.proxy.daytona.works",
       review: {
         verdict: "approved",
         reason: "All criteria met",
         diffSummary: "index.html | 12 +",
       },
     });
-    expect(t01?.log.map((line) => line.message)).toContain(
-      "Verifier passed: Hero matches",
+    expect(t01?.log.map((line) => line.message)).toEqual(
+      expect.arrayContaining([
+        "Preview updated with this task",
+        "Verifier passed: Hero matches",
+      ]),
     );
     expect(t02).toMatchObject({
       state: "failed",
@@ -221,9 +218,9 @@ describe("runView", () => {
         limits: "",
         url: "https://evil.example/x.png",
       }),
-      ev("preview", { url: "javascript:alert(1)" }),
+      ev("preview", { mergedTask: 7 }),
       ev("task", { id: "t1" }),
     ]);
-    expect(odd).toEqual({ evidence: [], board: [] });
+    expect(odd).toEqual({ hasPreview: false, evidence: [], board: [] });
   });
 });

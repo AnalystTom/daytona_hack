@@ -51,7 +51,10 @@ A model error, refusal, truncated reply or malformed verdict returns 502, never 
 ## Run API
 
 `/api/v1/runs` is the front door to the private `reversy-orchestrator` Worker (`orchestrator/`), reached through the `ORCHESTRATOR` service binding.
-Every route under it needs `Authorization: Bearer <OPERATOR_TOKEN>`, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
+Every route under it needs `Authorization: Bearer <OPERATOR_TOKEN>` or the session cookie, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
+`POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it.
+Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated write without our `Origin`.
+`/api/v1/orchestrator/*` stays bearer-only.
 
 The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
@@ -71,7 +74,7 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route, `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route (or the session cookie it signs), `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
 Without the SurrealDB bindings the store answers 503 naming the missing ones; without `OPERATOR_TOKEN` or `ORCHESTRATOR` every run route does the same.

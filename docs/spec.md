@@ -156,7 +156,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Each run is limited to 2 hours.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
-- Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; the browser may hold that same token in a secure HttpOnly cookie after the operator enters it once, so the app and event stream work.
+- Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
 - Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
