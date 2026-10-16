@@ -8,6 +8,7 @@ import {
   redactQuery,
   viewports,
 } from "../../shared/evidence";
+import { checkTargetUrl } from "../runs/url";
 import * as anchor from "./anchor";
 import { type EvidenceStore, fromBase64 } from "./store";
 
@@ -50,6 +51,39 @@ async function sha256(bytes: Uint8Array) {
 
 export const recordingCapMs = 30_000;
 export { leftScope } from "../../shared/evidence";
+
+const noCodeExecution = "Anchor code execution is not enabled on this account";
+
+// HTTP preflight rejects known off-scope landings; it cannot verify the screenshot tool's final URL.
+// Every hop must pass the run URL checks (https, public host) before it is fetched.
+const maxHops = 5;
+async function landingUrl(start: string) {
+  let current = start;
+  for (let hop = 0; hop <= maxHops; hop++) {
+    const checked = checkTargetUrl(current);
+    if ("error" in checked)
+      throw new anchor.AnchorError(
+        `a redirect hop was refused: ${checked.error}`,
+      );
+    try {
+      const response = await fetch(checked.url, {
+        redirect: "manual",
+        signal: AbortSignal.timeout(10_000),
+        headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      });
+      await response.body?.cancel();
+      const location = response.headers.get("location");
+      if (response.status < 300 || response.status > 399 || !location)
+        return checked.url;
+      current = new URL(location, checked.url).href;
+    } catch {
+      throw new anchor.AnchorError(
+        "the page's final URL could not be checked against the approved scope",
+      );
+    }
+  }
+  throw new anchor.AnchorError("the page redirected too many times");
+}
 
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";
@@ -173,6 +207,8 @@ export async function captureRun(
     items.push(record);
     return record.id;
   };
+  // Set on the first refusal and kept for this capture pass, so execute-code is not retried per page.
+  let fallback = false;
   // Final URLs of pages that left the scope; the session recording shows them too.
   const outOfScope: string[] = [];
   const notObserved = (expected: Expected, reason: string) =>
@@ -200,11 +236,10 @@ export async function captureRun(
       contentType: string,
       content: Uint8Array,
       limitations: string[],
+      label: EvidenceRecord["label"] = "observed",
     ) => {
       const expected = pending.shift() as Expected;
-      ids.push(
-        await save(expected, "observed", contentType, content, limitations),
-      );
+      ids.push(await save(expected, label, contentType, content, limitations));
     };
     const skip = async (reason: string) => {
       ids.push(await notObserved(pending.shift() as Expected, reason));
@@ -221,16 +256,29 @@ export async function captureRun(
     };
 
     try {
-      const facts = await anchor.runSnippet<anchor.PageFacts>(
-        key,
-        sessionId,
-        anchor.navigateSnippet(url, scope.origin, full),
-      );
+      let facts: anchor.PageFacts | undefined;
+      if (!fallback) {
+        try {
+          facts = await anchor.runSnippet<anchor.PageFacts>(
+            key,
+            sessionId,
+            anchor.navigateSnippet(url, scope.origin, full),
+          );
+        } catch (error) {
+          // A signed-in session only works through code execution, so it fails as before.
+          if (!(error instanceof anchor.CodeExecutionRefused) || signedIn)
+            throw error;
+          fallback = true;
+        }
+      }
+      const finalUrl = facts?.finalUrl ?? (await landingUrl(url));
       deps.signal?.throwIfAborted();
-      if (!inScope(facts.finalUrl, pageScope)) {
-        leave("Redirected to", facts.finalUrl);
+      if (!inScope(finalUrl, pageScope)) {
+        leave("Redirected to", finalUrl);
       } else {
-        if (full) {
+        if (full && !facts) {
+          for (let n = 0; n < 4; n++) await skip(noCodeExecution);
+        } else if (full && facts) {
           if (signedIn) await skip(signedInSkipped);
           else
             await take("text/html", encoder.encode(facts.html ?? ""), [
@@ -252,6 +300,27 @@ export async function captureRun(
         }
         for (const [, viewport] of shots) {
           deps.signal?.throwIfAborted();
+          const limit =
+            "Full-page capture after load; lazy-loaded or animated content may differ.";
+          if (fallback) {
+            const png = await anchor.screenshotTool(
+              key,
+              sessionId,
+              url,
+              viewport,
+            );
+            deps.signal?.throwIfAborted();
+            await take(
+              "image/png",
+              png,
+              [
+                limit,
+                "captured with the fallback screenshot tool; the final page URL after scripts could not be verified, so it may show a redirect such as a sign-in page",
+              ],
+              "inferred",
+            );
+            continue;
+          }
           const shot = await anchor.runSnippet<{
             finalUrl: string;
             png: string;
@@ -261,9 +330,7 @@ export async function captureRun(
             leave("Page moved to", shot.finalUrl);
             break;
           }
-          await take("image/png", fromBase64(shot.png), [
-            "Full-page capture after load; lazy-loaded or animated content may differ.",
-          ]);
+          await take("image/png", fromBase64(shot.png), [limit]);
         }
       }
     } catch (error) {
@@ -315,6 +382,8 @@ export async function captureRun(
         recording,
         "Recording is off in signed-in sessions so the user's sign-in is never recorded.",
       );
+    } else if (fallback) {
+      await notObserved(recording, noCodeExecution);
     } else if (capMissed) {
       await notObserved(
         recording,
@@ -352,7 +421,7 @@ export async function captureRun(
   await deps.emit({
     type: "evidence.capture_finished",
     state: "captured",
-    message: `${items.filter((item) => item.label === "observed").length} of ${items.length} evidence items observed`,
+    message: `${items.filter((item) => item.label === "observed").length} observed, ${items.filter((item) => item.label === "inferred").length} inferred, ${items.filter((item) => item.label === "not_observed").length} not observed`,
     artifactRefs: items.map((item) => item.id),
   });
   return { status: "captured", items };

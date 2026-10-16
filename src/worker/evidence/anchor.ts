@@ -5,6 +5,9 @@ const api = "https://api.anchorbrowser.io";
 
 export class AnchorError extends Error {}
 
+// The account does not allow /v1/tools/execute-code; capture falls back to the screenshot tool.
+export class CodeExecutionRefused extends AnchorError {}
+
 async function call(apiKey: string, path: string, init: RequestInit = {}) {
   const response = await fetch(`${api}${path}`, {
     ...init,
@@ -77,7 +80,14 @@ export async function runSnippet<T>(
     apiKey,
     `/v1/tools/execute-code?sessionId=${encodeURIComponent(sessionId)}`,
     { method: "POST", body: JSON.stringify({ code }) },
-  );
+  ).catch((error) => {
+    if (
+      error instanceof AnchorError &&
+      /failed with 403|not enabled|forbidden|not allowed/i.test(error.message)
+    )
+      throw new CodeExecutionRefused(error.message);
+    throw error;
+  });
   const result = (await response.json()) as {
     success: boolean;
     message: string;
@@ -90,6 +100,30 @@ export async function runSnippet<T>(
     );
   }
   return JSON.parse(result.output) as T;
+}
+
+export async function screenshotTool(
+  apiKey: string,
+  sessionId: string,
+  url: string,
+  viewport: { width: number; height: number },
+): Promise<Uint8Array> {
+  const response = await call(
+    apiKey,
+    `/v1/tools/screenshot?sessionId=${encodeURIComponent(sessionId)}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        url,
+        ...viewport,
+        capture_full_height: true,
+        wait: 1500,
+      }),
+    },
+  );
+  if (!response.headers.get("content-type")?.startsWith("image/"))
+    throw new AnchorError("Anchor screenshot tool did not return an image");
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 const maxRecordingBytes = 25_000_000;

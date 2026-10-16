@@ -19,8 +19,16 @@ import type { EvidenceStore, SignIn } from "./store";
 const scope = { origin: "https://example.com", paths: ["/", "/pricing"] };
 
 // Fixture Anchor API: answers each endpoint with the documented response shape.
-function fakeAnchor(finalUrls: Record<string, string> = {}) {
-  const calls: { method: string; path: string; body?: unknown }[] = [];
+function fakeAnchor(
+  finalUrls: Record<string, string> = {},
+  options: { refuseCode?: boolean } = {},
+) {
+  const calls: {
+    method: string;
+    path: string;
+    body?: unknown;
+    sessionId: string | null;
+  }[] = [];
   let current = "";
   vi.stubGlobal(
     "fetch",
@@ -28,9 +36,18 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
       const url = new URL(input);
       const method = init.method ?? "GET";
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, path: url.pathname, body });
+      calls.push({
+        method,
+        path: url.pathname,
+        body,
+        sessionId: url.searchParams.get("sessionId"),
+      });
       if (url.pathname === "/v1/sessions") return Response.json(fixtureSession);
       if (url.pathname === "/v1/tools/execute-code") {
+        if (options.refuseCode)
+          return new Response("code execution isn't enabled for this team", {
+            status: 403,
+          });
         const code: string = body.code;
         if (code.includes("page.goto")) {
           const target = JSON.parse(
@@ -42,6 +59,17 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
         return Response.json(
           executeCodeResponse({ finalUrl: current, png: fixturePngBase64 }),
         );
+      }
+      if (url.pathname === "/v1/tools/screenshot")
+        return new Response(Buffer.from(fixturePngBase64, "base64"), {
+          headers: { "content-type": "image/png" },
+        });
+      if (url.host !== "api.anchorbrowser.io") {
+        // The plain fetch that finds where a page lands: a redirect when the test names one.
+        const to = finalUrls[input];
+        return to
+          ? new Response(null, { status: 302, headers: { location: to } })
+          : new Response("<html></html>");
       }
       if (url.pathname.endsWith("/recordings"))
         return Response.json(recordingList);
@@ -463,6 +491,149 @@ describe("captureRun (fixture Anchor responses)", () => {
     await expect(
       captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
     ).rejects.toThrow(CaptureError);
+  });
+});
+
+describe("captureRun without Anchor code execution", () => {
+  it("falls back to the screenshot tool and labels what it could not observe", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => `${i.kind} ${i.label}`)).toEqual([
+      "dom not_observed",
+      "styles not_observed",
+      "assets not_observed",
+      "network not_observed",
+      "screenshot inferred",
+      "screenshot inferred",
+      "recording not_observed",
+    ]);
+    for (const item of items.filter((i) => i.label === "not_observed"))
+      expect(item.limitations).toEqual([
+        "Anchor code execution is not enabled on this account",
+      ]);
+    const shot = items.find((i) => i.kind === "screenshot");
+    for (const item of items.filter((i) => i.kind === "screenshot"))
+      expect(item.limitations).toContain(
+        "captured with the fallback screenshot tool; the final page URL after scripts could not be verified, so it may show a redirect such as a sign-in page",
+      );
+    expect(memory.content.get(shot?.id ?? "")?.length).toBeGreaterThan(0);
+    const tool = calls.filter((c) => c.path === "/v1/tools/screenshot");
+    expect(tool.map((c) => c.sessionId)).toEqual([
+      fixtureSession.data.id,
+      fixtureSession.data.id,
+    ]);
+    expect(calls.find((c) => c.path === "/v1/sessions")?.body).toMatchObject({
+      browser: { sensitive_data_mask: { active: true } },
+    });
+    expect(tool.map((c) => c.body)).toEqual([
+      expect.objectContaining({ url: "https://example.com/", width: 1440 }),
+      expect.objectContaining({ url: "https://example.com/", width: 390 }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+    expect(events.at(-1)?.message).toBe(
+      "0 observed, 2 inferred, 5 not observed",
+    );
+  });
+
+  it("tries code execution once per run, not once per page", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    expect(
+      result.status === "captured" && result.items.map((i) => i.label),
+    ).toEqual(["inferred", "inferred"]);
+
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/execute-code"),
+    ).toHaveLength(1);
+    expect(calls.filter((c) => c.path === "/v1/tools/screenshot")).toHaveLength(
+      2,
+    );
+    expect(
+      calls
+        .filter((c) => c.path === "/v1/tools/screenshot")
+        .map((c) => c.sessionId),
+    ).toEqual([fixtureSession.data.id, fixtureSession.data.id]);
+  });
+
+  it("still stops a page that lands outside the scope", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://login.example.net/" },
+      { refuseCode: true },
+    );
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+  });
+});
+
+describe("captureRun landing check", () => {
+  it("marks a malformed redirect as not observed and continues to the next page", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://[" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed", "inferred"]);
+    expect(items[0]?.limitations).toEqual([
+      "Capture failed: the page's final URL could not be checked against the approved scope",
+    ]);
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/screenshot").map((c) => c.body),
+    ).toEqual([
+      expect.objectContaining({ url: "https://example.com/pricing" }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_stopped",
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("refuses a redirect hop to a private host without fetching it", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://169.254.169.254/latest" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(events[0]?.type).toBe("evidence.page_stopped");
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).not.toContain(
+      "https://169.254.169.254/latest",
+    );
   });
 });
 

@@ -4,6 +4,7 @@ import type { CanvasEvidence } from "../../shared/workspace";
 import { BuildView } from "./BuildView";
 import { ChatPanel } from "./ChatPanel";
 import { SpecView } from "./SpecView";
+import { runView } from "./orchestrator";
 
 const noop = () => {};
 
@@ -20,6 +21,38 @@ const screenshot: CanvasEvidence = {
 };
 
 describe("SpecView", () => {
+  it("shows an inferred screenshot event on the canvas with its label", () => {
+    const view = runView("r1", [
+      {
+        seq: 1,
+        ts: screenshot.capturedAt,
+        type: "evidence",
+        data: {
+          id: screenshot.id,
+          page: screenshot.pageOrState,
+          kind: "screenshot",
+          tool: screenshot.tool,
+          status: "inferred",
+          capturedAt: screenshot.capturedAt,
+          hash: screenshot.contentHash,
+          limits: "Final URL could not be verified",
+          url: `/runs/r1/evidence/${screenshot.id}`,
+        },
+      },
+    ]);
+    expect(view.evidence[0]).toMatchObject({
+      label: "inferred",
+      src: `/api/v1/runs/r1/evidence/${screenshot.id}`,
+    });
+    const html = renderToStaticMarkup(
+      <SpecView canvas={{ evidence: view.evidence }} />,
+    );
+    expect(html).toContain("<img");
+    expect(html).toContain(`alt="Screenshot of ${screenshot.pageOrState}"`);
+    expect(html).toContain("Inferred");
+    expect(html).not.toContain("Not observed");
+  });
+
   it("shows only the empty state before anything exists", () => {
     const html = renderToStaticMarkup(<SpecView canvas={{ evidence: [] }} />);
     expect(html).toContain("Your work starts here");

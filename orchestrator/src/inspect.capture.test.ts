@@ -110,22 +110,27 @@ describe("toEvidence", () => {
       "https://example.com/search?q=robots&token=private",
     );
   });
-  it("links observed screenshots and recordings for the canvas", () => {
-    const shot = toEvidence(record());
-    expect(shot).toMatchObject({
-      kind: "screenshot",
-      status: "observed",
-      page: "/ @ desktop 1440",
-      path: `evidence/${record().id}.png`,
-      url: `/runs/run-1/evidence/${record().id}`,
-    });
-    expect(
-      toEvidence(record({ kind: "recording", contentType: "video/mp4" })).url,
-    ).toBe(`/runs/run-1/evidence/${record().id}`);
-    expect(
-      toEvidence(record({ kind: "dom", contentType: "text/html" })),
-    ).toMatchObject({ path: `evidence/${record().id}.html`, url: undefined });
-  });
+  it.each(["observed", "inferred"] as const)(
+    "links %s screenshots and recordings for the canvas",
+    (label) => {
+      const shot = toEvidence(record({ label }));
+      expect(shot).toMatchObject({
+        kind: "screenshot",
+        status: label,
+        page: "/ @ desktop 1440",
+        path: `evidence/${record().id}.png`,
+        url: `/runs/run-1/evidence/${record().id}`,
+      });
+      expect(
+        toEvidence(
+          record({ label, kind: "recording", contentType: "video/mp4" }),
+        ).url,
+      ).toBe(`/runs/run-1/evidence/${record().id}`);
+      expect(
+        toEvidence(record({ label, kind: "dom", contentType: "text/html" })),
+      ).toMatchObject({ path: `evidence/${record().id}.html`, url: undefined });
+    },
+  );
 
   it("gives not-observed items no file and keeps the reason", () => {
     const missing = toEvidence(

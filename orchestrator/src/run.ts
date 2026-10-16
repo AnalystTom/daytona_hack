@@ -205,7 +205,9 @@ export class Run extends DurableObject<Env> {
       scope: captureScope(url, []).scope,
     });
     const items = result.status === "captured" ? result.items : [];
-    const shot = items.find((i) => i.label === "observed");
+    const shot = items.find(
+      (i) => i.kind === "screenshot" && i.label !== "not_observed",
+    );
     const file = shot && (await this.evidenceFile(shot.id));
     return file
       ? { png: file.content }
@@ -294,7 +296,7 @@ export class Run extends DurableObject<Env> {
         result.status === "captured"
           ? result.items.filter((i) => i.kind === "screenshot")
           : [];
-      if (!shots.some((i) => i.label === "observed"))
+      if (!shots.some((i) => i.label !== "not_observed"))
         notes.push(
           `No screenshot: ${notObservedReason(redactQuery(shots[0]?.limitations.join(" ") ?? ""))}`,
         );
@@ -1091,7 +1093,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .filter(
         (e) =>
           e.kind === "screenshot" &&
-          e.status === "observed" &&
+          e.status !== "not_observed" &&
           e.path &&
           t.evidence.includes(e.id),
       )
