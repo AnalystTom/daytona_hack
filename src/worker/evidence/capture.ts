@@ -282,6 +282,11 @@ export async function captureRun(
         recording,
         "Recording is off in signed-in sessions so the user's sign-in is never recorded.",
       );
+    } else if (capMissed) {
+      await notObserved(
+        recording,
+        "Recording was not kept because pausing it at 30 seconds failed.",
+      );
     } else if (outOfScope.length) {
       await notObserved(
         recording,
@@ -292,9 +297,7 @@ export async function captureRun(
         const video = await anchor.primaryRecording(key, sessionId);
         if (video) {
           await save(recording, "observed", "video/mp4", video, [
-            capMissed
-              ? "Page-load recording of the whole capture session; pausing it at 30 seconds failed, so it may run longer. No interactions were performed."
-              : "Page-load recording of the first 30 seconds of the capture session; no interactions were performed.",
+            "Page-load recording of the first 30 seconds of the capture session; no interactions were performed.",
           ]);
         } else {
           await notObserved(
@@ -303,6 +306,7 @@ export async function captureRun(
           );
         }
       } catch (error) {
+        if (!(error instanceof anchor.AnchorError)) throw error;
         await notObserved(
           recording,
           `Recording fetch failed: ${error instanceof Error ? error.message : String(error)}`,

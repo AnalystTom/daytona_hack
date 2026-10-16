@@ -345,6 +345,41 @@ describe("captureRun limits", () => {
     expect(calls.some((c) => c.path.endsWith("/recordings/pause"))).toBe(false);
   });
 
+  it("does not fetch or keep a recording when pausing at 30 seconds fails", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = fakeAnchor();
+      const anchorFetch = fetch;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init?: RequestInit) => {
+          if (input.endsWith("/recordings/pause"))
+            return new Response("pause failed", { status: 503 });
+          if (String(init?.body).includes("/pricing"))
+            await vi.advanceTimersByTimeAsync(recordingCapMs);
+          return anchorFetch(input, init);
+        }),
+      );
+      const { deps: d } = deps(memoryStore().store);
+
+      const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+      const items = result.status === "captured" ? result.items : [];
+      expect(items.at(-1)).toMatchObject({
+        kind: "recording",
+        label: "not_observed",
+        byteLength: 0,
+      });
+      expect(items.at(-1)?.limitations[0]).toContain(
+        "pausing it at 30 seconds failed",
+      );
+      expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
+      expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips a recording too large to store", async () => {
     fakeAnchor();
     const big = structuredClone(recordingList);
@@ -412,6 +447,30 @@ describe("captureRun limits", () => {
     await expect(
       captureRun(d, "run_1", { mode: "first_look", scope }),
     ).rejects.toThrow("SurrealDB request failed");
+  });
+
+  it("fails the capture when recording storage fails without relabeling it", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    const putEvidence = memory.store.putEvidence;
+    memory.store.putEvidence = async (record, content) => {
+      if (record.kind === "recording" && record.label === "observed")
+        throw new Error("SurrealDB recording write failed");
+      await putEvidence(record, content);
+    };
+    const { deps: d, events } = deps(memory.store);
+
+    await expect(
+      captureRun(d, "run_1", { mode: "full_pack", scope }),
+    ).rejects.toThrow("SurrealDB recording write failed");
+
+    expect(
+      [...memory.records.values()].some((r) => r.kind === "recording"),
+    ).toBe(false);
+    expect(events.some((e) => e.type === "evidence.capture_finished")).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
   });
 });
 
