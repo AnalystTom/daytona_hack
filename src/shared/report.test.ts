@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { exactQuoteEvidence, ReportDissection } from "./report";
 
 import { reportContractExample } from "./report.test-data";
@@ -63,6 +63,7 @@ it.each([
   "requires complete values and explicit units in exact quote evidence",
   (value, unit, quote, expected) => {
     const figure = ReportDissection.parse(reportContractExample).figures[0];
+    assert(figure);
     expect(
       exactQuoteEvidence(
         { ...figure, value, unit, quote },
@@ -74,6 +75,7 @@ it.each([
 
 it("keeps saved comparisons without complete-passage evidence unverified", () => {
   const figure = ReportDissection.parse(reportContractExample).figures[0];
+  assert(figure);
   expect(
     exactQuoteEvidence(figure, { value: figure.value, quote: figure.quote }),
   ).toBe(false);
