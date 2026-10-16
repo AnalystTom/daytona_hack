@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Run } from "../src/run";
+import { recordRunEvent } from "../../src/worker/records/records";
+import { MemoryRunStore } from "../../src/worker/store/memory";
 import type { Env, RunEvent, RunRecord, Task } from "../src/types";
 
 // A Durable Object state in memory; Daytona and OpenAI are answered by a mocked fetch.
@@ -60,7 +62,7 @@ const variant = (id: string, pod: "fork" | "copy" = "fork") => ({
 });
 
 const calls: string[] = [];
-function mockFetch(verdict?: object) {
+function mockFetch(verdict?: object, status = 200) {
   const stopped = new Set<string>();
   vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
     calls.push(`${init.method ?? "GET"} ${input}`);
@@ -74,7 +76,10 @@ function mockFetch(verdict?: object) {
     if (input.endsWith("/process/execute"))
       return Response.json({ exitCode: 0, result: "" });
     if (input === "https://api.openai.com/v1/responses")
-      return Response.json({ output_text: JSON.stringify(verdict) });
+      return Response.json(
+        { output_text: JSON.stringify(verdict) },
+        { status },
+      );
     if (input.startsWith("https://3000-"))
       return new Response("<main>rebuild</main>");
     return Response.json({});
@@ -93,6 +98,12 @@ const task = (id: string, status: Task["status"]): Task => ({
   status,
   attempts: 1,
   branch: `task/${id}`,
+});
+
+const verifiedVariantTask = (id: string): Task => ({
+  ...task(id, "merged"),
+  variant: id,
+  verification: true,
 });
 
 const baseState = (startedAt: string, phase: string, tasks: Task[]) => ({
@@ -218,7 +229,9 @@ describe("Run", () => {
       return Response.json({ exitCode: 0, result: "" });
     });
     const { run, state, ready } = fakeRun({
-      ...baseState(new Date().toISOString(), "done", []),
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
       variants: [
         {
           id: "v1",
@@ -373,7 +386,11 @@ describe("Run", () => {
       return Response.json({ exitCode: 0, result: "" });
     });
     const { run, state, ready } = fakeRun({
-      ...baseState(new Date(started).toISOString(), "done", []),
+      ...baseState(
+        new Date(started).toISOString(),
+        "done",
+        ["v1", "v2", "v3"].map(verifiedVariantTask),
+      ),
       variants: [variant("v1"), variant("v2"), variant("v3")],
     });
     await ready;
@@ -415,7 +432,11 @@ describe("Run", () => {
         return Response.json({ exitCode: 0, result: "" });
       });
       const { run, state, ready } = fakeRun({
-        ...baseState(new Date().toISOString(), "done", []),
+        ...baseState(
+          new Date().toISOString(),
+          "done",
+          ["v1", "v2"].map(verifiedVariantTask),
+        ),
         variants: [variant("v1", pod), variant("v2", pod)],
       });
       await ready;
@@ -662,5 +683,356 @@ describe("Run", () => {
     });
     expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
     expect(calls.some((c) => c.includes("/process/session"))).toBe(false);
+  });
+
+  it.each(["pass", "fix_pass", "fix_verification_fail", "fix_review_fail"])(
+    "derives variant promotion from required verification and fixes: %s",
+    async (outcome) => {
+      const t = { ...task("v1", "in_review"), variant: "v1" };
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "variants", [t]),
+        variants: [{ ...variant("v1", "copy"), status: "building" }],
+      });
+      await ready;
+      mockFetch({
+        pass: outcome === "pass",
+        summary: "Task checked",
+        findings: [],
+      });
+      await run.override("v1", "approve", "Accept the merge");
+      expect(state().tasks[0].verification).toBe(outcome === "pass");
+      if (outcome !== "pass") {
+        expect(state().variants[0].status).toBe("building");
+        const fix = state().tasks[1];
+        expect(fix).toMatchObject({ fixFor: "v1", status: "queued" });
+        if (outcome === "fix_review_fail") {
+          fix.status = "building";
+          fix.attempts = 2;
+          vi.stubGlobal("fetch", async (input: string) => {
+            if (input.endsWith("/toolbox-proxy-url"))
+              return Response.json({ url: "https://toolbox.test" });
+            return Response.json({ exitCode: 0, result: "1" });
+          });
+        } else {
+          mockFetch({
+            pass: outcome === "fix_pass",
+            summary: "Fix checked",
+            findings: [],
+          });
+          await run.override(fix.id, "approve", "Accept the fix");
+        }
+      }
+      await run.alarm();
+      const passes = outcome === "pass" || outcome === "fix_pass";
+      expect(state().phase).toBe("done");
+      expect(state().variants[0].status).toBe(passes ? "ready" : "failed");
+      if (passes) {
+        await expect(run.promote("v1")).resolves.toMatchObject({
+          promoted: "v1",
+          phase: "brief",
+        });
+      } else {
+        await expect(run.promote("v1")).rejects.toThrow("not ready");
+      }
+    },
+  );
+
+  it("never exposes a ready variant while its verifier is still pending", async () => {
+    const entered = deferred();
+    const release = deferred();
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      if (input === "https://api.openai.com/v1/responses") {
+        entered.resolve();
+        await release.promise;
+        return Response.json({
+          output_text: JSON.stringify({
+            pass: true,
+            summary: "Verified",
+            findings: [],
+          }),
+        });
+      }
+      return Response.json({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "variants", [
+        { ...task("v1", "in_review"), variant: "v1" },
+      ]),
+      variants: [{ ...variant("v1"), status: "building" }],
+    });
+    await ready;
+    const merging = run.override("v1", "approve", "Accept");
+    await entered.promise;
+    expect(state().variants[0].status).toBe("building");
+    expect(
+      (await run.events(0))
+        .filter((e) => e.type === "variant")
+        .every((e) => (e.data as { status: string }).status !== "ready"),
+    ).toBe(true);
+    release.resolve();
+    await merging;
+    expect(state().variants[0].status).toBe("ready");
+  });
+
+  it.each([undefined, false])(
+    "refuses a stored ready variant without successful verification (%s)",
+    async (verification) => {
+      mockFetch();
+      const { run, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          { ...verifiedVariantTask("v1"), verification },
+        ]),
+        variants: [variant("v1")],
+      });
+      await ready;
+      await expect(run.promote("v1")).rejects.toThrow(
+        "has not passed required verification",
+      );
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it.each(["main", "variant", "fix"])(
+    "persists an explicit %s verification-request failure and permits a successful retry",
+    async (kind) => {
+      const t = {
+        ...task(kind === "fix" ? "v1-fix" : "v1", "in_review"),
+        variant: kind === "main" ? undefined : "v1",
+        fixFor: kind === "fix" ? "v1" : undefined,
+      };
+      const tasks =
+        kind === "fix"
+          ? [{ ...verifiedVariantTask("v1"), verification: false }, t]
+          : [t];
+      const { run, state, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          kind === "main" ? "building" : "variants",
+          tasks,
+        ),
+        variants:
+          kind === "main"
+            ? undefined
+            : [{ ...variant("v1", "copy"), status: "building" }],
+      });
+      await ready;
+      mockFetch({}, 503);
+      await expect(run.override(t.id, "approve", "Accept")).rejects.toThrow(
+        "503",
+      );
+      const failed = state().tasks.find((item: Task) => item.id === t.id);
+      expect(failed).toMatchObject({
+        status: "failed",
+        failure: expect.stringContaining("Verification unavailable"),
+        nextAction: expect.stringContaining("retry verification"),
+      });
+      expect(failed.verification).toBeUndefined();
+      expect(state().tasks).toHaveLength(tasks.length);
+      if (kind !== "main") expect(state().variants[0].status).toBe("failed");
+      expect(
+        (await run.events(0)).filter((e) => e.type === "verification"),
+      ).toEqual([]);
+      const restored = fakeRun(structuredClone(state()));
+      await restored.ready;
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      await restored.run.override(t.id, "approve", "Retry the check");
+      expect(
+        restored.state().tasks.find((item: Task) => item.id === t.id),
+      ).toMatchObject({
+        status: "merged",
+        verification: true,
+        failure: undefined,
+        nextAction: undefined,
+      });
+      await restored.run.alarm();
+      expect(restored.state().phase).toBe("done");
+      if (kind !== "main")
+        expect(restored.state().variants[0].status).toBe("ready");
+    },
+  );
+
+  it("reopens dependent work after retrying failed verification from a completed run", async () => {
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const { run, state, ready } = fakeRun(
+      baseState(new Date().toISOString(), "done", [
+        { ...task("t1", "failed"), failure: "Verification unavailable" },
+        { ...task("t2", "queued"), dependsOn: ["t1"] },
+      ]),
+    );
+    await ready;
+    await run.override("t1", "approve", "Retry");
+    expect(state().phase).toBe("building");
+    expect(state().tasks[0]).toMatchObject({
+      status: "merged",
+      verification: true,
+    });
+  });
+
+  it("revokes readiness and reopens the variant when its review is rejected", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    await run.override("v1", "reject", "Revise this task");
+    expect(state().phase).toBe("variants");
+    expect(state().tasks[0]).toMatchObject({
+      status: "queued",
+      verification: undefined,
+    });
+    expect(state().variants[0].status).toBe("building");
+  });
+
+  it.each(["plan", "final"])(
+    "does not announce %s completion when its verification request fails",
+    async (target) => {
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://api.openai.com/v1/responses") {
+          const name = JSON.parse(init.body as string).text.format.name;
+          return name === "plan"
+            ? Response.json({ output_text: JSON.stringify({ tasks: [] }) })
+            : Response.json({ error: "unavailable" }, { status: 503 });
+        }
+        return Response.json({});
+      });
+      const { run, state, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          target === "plan" ? "inspecting" : "building",
+          [],
+        ),
+        pending: target === "plan" ? "inspect" : undefined,
+      });
+      await ready;
+      await run.alarm();
+      expect(state().phase).toBe(target === "plan" ? "failed" : "building");
+      const events = await run.events(0);
+      expect(
+        events
+          .filter((e) => e.type === "phase")
+          .some((e) =>
+            ["planned", "done"].includes((e.data as { phase: string }).phase),
+          ),
+      ).toBe(false);
+      expect(events.some((e) => e.type === "error")).toBe(true);
+      if (target === "plan") {
+        await expect(run.startBuild()).rejects.toThrow("No build started");
+      } else {
+        mockFetch({ pass: true, summary: "Verified", findings: [] });
+        await run.alarm();
+        expect(state().phase).toBe("done");
+      }
+    },
+  );
+
+  it("reports best-effort record failures locally without recursively recording notices", async () => {
+    mockFetch();
+    let fail = true;
+    const projected: RunRecord[] = [];
+    const { run, ready, flush } = fakeRun(
+      baseState(new Date().toISOString(), "brief", []),
+      {
+        RECORDS: {
+          async record(input) {
+            projected.push(structuredClone(input));
+            if (fail) throw new Error("projection unavailable");
+          },
+        },
+      },
+    );
+    await ready;
+    await run.approveSpec();
+    await flush();
+    expect(projected).toHaveLength(2);
+    const notices = (await run.events(0)).filter((e) => e.type === "error");
+    expect(notices).toHaveLength(2);
+    for (const input of projected)
+      expect(
+        notices.some((e) =>
+          (e.data as { message: string }).message.includes(
+            `record ${input.event.seq} was not fully persisted`,
+          ),
+        ),
+      ).toBe(true);
+    fail = false;
+    await run.stop();
+    await flush();
+    expect(projected).toHaveLength(3);
+    expect(projected.every((input) => input.event.type !== "error")).toBe(true);
+    expect(projected[2]?.event.data).toEqual({ phase: "stopped" });
+  });
+
+  it("reports a partial projection failure without claiming its missing approval was saved", async () => {
+    const store = new MemoryRunStore();
+    vi.spyOn(store, "recordApproval").mockRejectedValueOnce(
+      new Error("approval unavailable"),
+    );
+    const { run, ready, flush } = fakeRun(
+      baseState(new Date().toISOString(), "brief", []),
+      {
+        RECORDS: { record: (input) => recordRunEvent(store, input) },
+      },
+    );
+    await ready;
+    await run.approveSpec();
+    await flush();
+    const records = store.runs.get("run-1");
+    expect(records?.events.some((e) => e.state === "inspecting")).toBe(true);
+    expect(records?.approvals).toEqual([]);
+    expect(
+      (await run.events(0)).filter((e) => e.type === "error"),
+    ).toMatchObject([
+      { data: { message: expect.stringContaining("approval unavailable") } },
+    ]);
+  });
+
+  it("invalidates a completed fix when its parent task is reopened", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        { ...verifiedVariantTask("v1"), verification: false },
+        {
+          ...task("v1-fix", "merged"),
+          variant: "v1",
+          fixFor: "v1",
+          verification: true,
+        },
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    await run.override("v1", "reject", "Rebuild this version");
+    expect(state().tasks.map((t: Task) => [t.status, t.verification])).toEqual([
+      ["queued", undefined],
+      ["queued", undefined],
+    ]);
+    expect(state().variants[0].status).toBe("building");
+    mockFetch({ pass: false, summary: "Still needs work", findings: [] });
+    await run.override("v1", "approve", "Review the new work");
+    expect(state().variants[0].status).toBe("building");
+    expect(state().tasks[1].status).toBe("queued");
+  });
+
+  it("marks a variant failed when its required fix is blocked by a failed task", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "variants", [
+        { ...task("v1", "failed"), variant: "v1" },
+        {
+          ...task("v1-fix", "queued"),
+          variant: "v1",
+          fixFor: "v1",
+          dependsOn: ["v1"],
+        },
+      ]),
+      variants: [{ ...variant("v1"), status: "building" }],
+    });
+    await ready;
+    await run.alarm();
+    expect(state().phase).toBe("done");
+    expect(state().variants[0].status).toBe("failed");
+    await expect(run.promote("v1")).rejects.toThrow("not ready");
   });
 });

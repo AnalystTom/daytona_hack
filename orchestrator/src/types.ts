@@ -101,6 +101,7 @@ export interface Task {
   };
   diffStat?: string;
   failure?: string;
+  verification?: boolean;
   nextAction?: string;
   variant?: string; // the variant pod it builds in; none means the run's main rebuild
   fixFor?: string; // the merged task whose verifier failure it fixes

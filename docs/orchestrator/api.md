@@ -65,8 +65,10 @@ Failed sandbox shutdowns stay pending and are retried by alarms until Daytona co
   Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
 - If the verifier fails a merged task, the orchestrator opens one fix task `<id>-fix` on top of it and keeps building; nothing is rolled back.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
-- Every event is also written to SurrealDB as a run record (run, events, tasks, steering, approvals) through the `RECORDS` service binding
-  to the `reversy` Worker's `Records` entrypoint, which holds the SurrealDB credentials. It has no HTTP route.
+- Events remain in the run's Durable Object event log. External SurrealDB run records (run, events, tasks, steering, approvals)
+  use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
+  Failed writes can leave missing events or partial projections, including steering, approvals and run updates; there is no durable replay or projection repair.
+  Each failed call adds a local `error` event naming the affected sequence. These notices are not sent back to `RECORDS`.
 
 ## Variants
 
@@ -74,6 +76,8 @@ Three landing-page alternatives, each one task built and reviewed like any other
 A pod is a Daytona fork of the run sandbox where the account allows it, otherwise a copy of the repo inside the run sandbox
 (`/home/daytona/variants/<id>`, previewed on port 3001-3003), labelled `copy`. Each pod runs at most 2 workers at once.
 Promoting a copy merges it into `main`; promoting a fork makes it the run's sandbox and stops the other pods.
+A variant becomes `ready` only when all its tasks are merged and verification passes, including any required fix task.
+A failed review, failed fix verification, or unavailable verifier prevents promotion; existing `ready` status alone is insufficient.
 Variant previews also stay private: their event URLs are signed for two hours, and the run deadline still shuts the sandboxes down.
 Promotion returns to the brief so the user can describe the next changes and approve a follow-up plan.
 Starting that plan reuses the promoted sandbox and its merged files instead of creating a new sandbox.
@@ -83,7 +87,9 @@ Starting that plan reuses the promoted sandbox and its merged files instead of c
 The verifier is a GPT model: it runs on `VERIFIER_MODEL` (OpenAI, like every model in the demo) from Cloudflare,
 outside the sandbox, with its own instructions. Its events carry the model name. It checks the plan before build, each merged task (against the live preview)
 and the final rebuild, and emits `verification` events `{target: "plan"|"task"|"final", taskId?, pass, summary, findings[]}`.
-A failure is also posted to chat as steering.
+A failed verdict is also posted to chat as steering. Tasks retain the boolean result in `verification`; absence means no completed check.
+A task verifier-request error marks the task `failed` with its reason and a next action to approve its review to retry verification; the merged code stays in place.
+No fix task is generated from an unavailable verifier. A plan-request failure leaves the run `failed`; final-check request failures keep the build active for its next alarm instead of announcing completion.
 
 ## Deployed
 
