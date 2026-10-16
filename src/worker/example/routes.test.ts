@@ -73,7 +73,9 @@ function fakeOrchestrator(phase = "done", runId = RUN, bytes = png) {
       if (path === `/runs/${runId}/events`)
         return new Response(JSON.stringify(events).replaceAll(RUN, runId));
       if (path === `/runs/${runId}/evidence/ev_001`)
-        return new Response(bytes, { headers: { "content-type": "image/png" } });
+        return new Response(bytes, {
+          headers: { "content-type": "image/png" },
+        });
       if (path.startsWith("/runs/")) return new Response("");
       return Response.json({ error: "not found" }, { status: 404 });
     },
