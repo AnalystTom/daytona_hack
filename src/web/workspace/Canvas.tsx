@@ -161,7 +161,11 @@ export function Canvas({
   const pan = useRef<{ id: number; x: number; y: number }>(undefined);
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     const target = event.target as Element;
-    if (event.button !== 0 || target.closest(`.cv-item, .cv-tools`)) return;
+    if (
+      event.button !== 0 ||
+      target.closest(`.cv-item, .cv-tools, ${INTERACTIVE}`)
+    )
+      return;
     event.currentTarget.setPointerCapture(event.pointerId);
     pan.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
     setEasing(false);

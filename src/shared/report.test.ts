@@ -9,6 +9,7 @@ import {
   reportContractExample,
   uncertainQuantityExamples,
   incompleteQuantityExamples,
+  repeatedQuantityExamples,
 } from "./report.test-data";
 
 describe("report dashboard contract", () => {
@@ -125,7 +126,7 @@ it("does not label bare integers as years or match them without currency", () =>
   ]);
 });
 
-it.each(incompleteQuantityExamples)(
+it.each([...incompleteQuantityExamples, ...repeatedQuantityExamples])(
   "never verifies an amount with an unconsumed unit: $quote",
   ({ quote, value, unit }) => {
     const figure = ReportDissection.parse(reportContractExample).figures[0]!;

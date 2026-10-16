@@ -5,12 +5,17 @@ import {
   reportContractExample,
   uncertainQuantityExamples,
   incompleteQuantityExamples,
+  repeatedQuantityExamples,
 } from "../../shared/report.test-data";
 import { runView } from "./orchestrator";
 import { ReportCard } from "./ReportCard";
 
 describe("report canvas data", () => {
-  it.each([...uncertainQuantityExamples, ...incompleteQuantityExamples])(
+  it.each([
+    ...uncertainQuantityExamples,
+    ...incompleteQuantityExamples,
+    ...repeatedQuantityExamples,
+  ])(
     "rechecks legacy matches and retains both uncertain quotes: $quote",
     ({ quote, value, unit }) => {
       const report = ReportDissection.parse({

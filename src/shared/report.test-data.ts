@@ -1,5 +1,12 @@
 import { GOLDMAN_URL } from "./report";
 
+export const repeatedQuantityExamples = [
+  "Revenue was USD 35 billion per year; losses were -USD 35 billion.",
+  "Losses were -USD 35 billion; revenue was USD 35 billion.",
+  "Revenue was USD 35 billion; assets were USD 35 billion.",
+  "Revenue was USD 35 billion/year; assets were USD 35 billion.",
+].map((quote) => ({ quote, value: "USD 35 billion", unit: "USD billion" }));
+
 export const incompleteQuantityExamples = [
   {
     quote: "Investment was USD 35 billion/year.",

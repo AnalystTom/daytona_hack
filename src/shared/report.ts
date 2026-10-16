@@ -137,7 +137,9 @@ export function exactQuoteEvidence(
     return false;
   const evidence = (quote: string) => {
     const passage = text(quote);
-    const tail = passage.slice(passage.lastIndexOf(value) + value.length);
+    const start = passage.indexOf(value);
+    if (start < 0 || passage.indexOf(value, start + 1) !== -1) return [];
+    const tail = passage.slice(start + value.length);
     if (!/^[.!?]*$/.test(tail)) return [];
     return reportQuantities(passage).filter(
       (quantity) =>

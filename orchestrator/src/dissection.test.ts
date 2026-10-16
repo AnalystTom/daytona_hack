@@ -11,6 +11,7 @@ import type { Env } from "./types";
 import {
   uncertainQuantityExamples,
   incompleteQuantityExamples,
+  repeatedQuantityExamples,
 } from "../../src/shared/report.test-data";
 
 vi.mock("./services", async (original) => ({
@@ -689,6 +690,41 @@ it.each(incompleteQuantityExamples)(
       value: "",
       completePassage: true,
     });
+  },
+);
+
+it.each(repeatedQuantityExamples)(
+  "keeps repeated quantities unverified in new comparisons: $quote",
+  async ({ quote, value }) => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(`<p>${quote}</p>`)),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [],
+      traces: [1, 2].map((i) => ({
+        figureId: `article_f${i}`,
+        url: "https://independent.example/research",
+        status: "matches",
+        quote,
+        value,
+      })),
+    });
+    const report = await dissect(env, "run", {
+      html: `<p>${quote}</p>`,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(
+      report.figures.some((f) => f.value === value && f.status === "observed"),
+    ).toBe(true);
+    expect(report.traces).toHaveLength(2);
+    expect(
+      report.traces.every(
+        (trace) => trace.status === "not_found" && trace.quote === quote,
+      ),
+    ).toBe(true);
   },
 );
 
