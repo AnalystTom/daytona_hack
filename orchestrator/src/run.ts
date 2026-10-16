@@ -4,7 +4,6 @@ import { Daytona, shq } from "./daytona";
 import { inspectPage, outline, routesFrom } from "./inspect";
 import { llmJson, recall, remember, tracing } from "./services";
 import { RunTracer } from "./tracing";
-import { verifyFinal, verifyPlan, verifyTask, type Verdict } from "./verifier";
 import type {
   ChatMessage,
   Env,
@@ -14,6 +13,7 @@ import type {
   Spec,
   Task,
 } from "./types";
+import { type Verdict, verifyFinal, verifyPlan, verifyTask } from "./verifier";
 
 const APP = "/home/daytona/app";
 const WT = "/home/daytona/wt";

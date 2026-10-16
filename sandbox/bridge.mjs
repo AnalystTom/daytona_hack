@@ -4,13 +4,14 @@
 // Events that fail to send stay queued in bridge-outbox.jsonl and are retried.
 //
 // Env: RUN_ID, API_URL, BRIDGE_TOKEN (optional until the API is live), FM_HOME (default ~/firstmate)
+
+import { createHash } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 
 const FM = process.env.FM_HOME || `${process.env.HOME}/firstmate`;
 const LEDGER = `${FM}/state/fleet-ledger.jsonl`;
