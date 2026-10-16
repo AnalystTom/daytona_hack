@@ -48,7 +48,7 @@ const WT = "/home/daytona/wt";
 const EV = "/home/daytona/evidence";
 const LOGS = "/home/daytona/logs";
 const TICK_MS = 10_000;
-// The app's link lasts a working session; the verifier's only one fetch.
+// Verifier links are short-lived and separate from the app's working session.
 const PREVIEW_LINK_SECONDS = 30 * 60;
 const PREVIEW_CHECK_SECONDS = 120;
 

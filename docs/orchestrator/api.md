@@ -41,8 +41,8 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 | type | data | UI |
 |---|---|---|
 | `chat` | `{role, text, ts}` | Chat panel |
-| `spec` | Spec (`url`, `redirects?` with the entered URL first, `pages[]`, `flows[]` with `confirmed`, `openQuestions[]`, `approved`, `revision`) | Draft spec card. Unconfirmed items show "Not confirmed yet"; redirect presentation follows the [workspace guide](../../README.md#workspace) |
-| `evidence` | Evidence (`id, page, kind, tool, status, capturedAt, hash, limits, summary, path?, url?`), one event per item as it is stored. `url` is set on observed screenshots and recordings; `status` is `observed`, `inferred` or `not_observed` | Screenshot and video cards; missing screenshots follow the [workspace guide](../../README.md#workspace) |
+| `spec` | `Spec` from [`types.ts`](../../orchestrator/src/types.ts) | Draft spec card. Unconfirmed items show "Not confirmed yet"; redirect presentation follows the [workspace guide](../../README.md#workspace) |
+| `evidence` | `Evidence` from [`types.ts`](../../orchestrator/src/types.ts) | Screenshot / evidence cards; capture limits are in [Evidence](spec.md#6-evidence); missing screenshots follow the [workspace guide](../../README.md#workspace) |
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
@@ -59,15 +59,12 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
   Codex's own sandbox cannot start inside the Daytona container, so the Daytona sandbox is the isolation boundary.
 - A task is dispatched when all its dependencies are merged, up to `MAX_WORKERS` at once. The Durable Object alarm polls every 10 s.
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
-  Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
+  Approve → `git merge --no-ff` into `main`, and the preview on port 3000 shows it (`npx serve` for frontend scope, the Node.js service for backend or combined scope; see [`previewCommand`](../../orchestrator/src/scope.ts)). Reject → one revision with the review findings, then `failed` with the reason.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
 
 ## Verifier
 
-The verifier runs on `VERIFIER_MODEL` (OpenAI), as specified in [the agent system spec](spec.md#9-verifier), from Cloudflare,
-outside the sandbox, with its own instructions. It checks the plan before build, each merged task (against the live preview)
-and the final rebuild, and emits `verification` events `{target: "plan"|"task"|"final", taskId?, pass, summary, findings[]}`.
-A failure is also posted to chat as steering.
+The [agent spec's verifier contract](spec.md#9-verifier) defines plan, task and final checks, including scope-specific preview inspection and route-probe limits. Results arrive as `verification` events above.
 
 ## Deployed
 

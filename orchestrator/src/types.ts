@@ -42,7 +42,7 @@ export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 
 export interface Evidence {
   id: string;
-  page: string; // URL path and state, e.g. "/ @ desktop 1440"
+  page: string; // URL path and state; includes the query for backend observations
   kind: EvidenceRecord["kind"] | "html" | "code" | "redirects";
   tool: string;
   status: EvidenceStatus;

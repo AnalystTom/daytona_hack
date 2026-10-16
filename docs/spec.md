@@ -95,13 +95,22 @@ When a page needs an account, an inline state asks the user to open secure sign-
 **Steering:** the user can message the orchestrator at any time and override a review verdict.
 A message that changes the approved spec becomes a proposed change; applying it creates a new spec revision for approval rather than editing a running build.
 
-## 5. Scope for this version
+## 5. Run scope and first demo target
 
-Demo target: `https://www.daytona.io/` (Daytona has agreed).
-Two pieces of work run in parallel, each split into tasks on the kanban:
+Each run takes its scope from the user's brief and chat, with at most one round of short clarification questions: **frontend** (pages and interactions), **backend** (routes, APIs, response shapes and content delivery), or **both**.
+A backend-only run does not copy or build the frontend. Any site can be the target; the first demo does not limit other runs.
+The agent system's [evidence rules](orchestrator/spec.md#6-evidence) describe what inspection can currently observe and its limits.
+
+Product content and API payload values must come from observed real application data, never placeholder, mock, synthetic, invented or fabricated values.
+A known response shape or inferred route does not establish content values. Missing values require an explicit loading, empty, unavailable or error state; unavailable data must not be presented as an observed empty dataset.
+This applies throughout chat, planning, implementation, review and verification, including deliberate changes. Test fakes stay in tests, and capture must not expand to collect private values.
+The [agent evidence rules](orchestrator/spec.md#6-evidence) define the API response for unavailable data.
+
+First demo target: `https://www.daytona.io/` (Daytona has agreed).
+Its two pieces of work are each split into tasks on the kanban:
 
 1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown on the canvas, of how it changes the page and the visitor's path through it.
-2. **One signed-in flow:** create a sandbox, with a mock back end that has the same routes and response shapes as the original. v2 rebuilds the back end properly.
+2. **One signed-in flow:** create a sandbox, using the observed routes and response shapes subject to the data rules above.
 
 The three alternatives are pods forked from the finished landing-page rebuild.
 Daytona VM fork is the target; until it is enabled on our account, pods are copies from a snapshot and labelled as copies.
@@ -159,8 +168,8 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
 - Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
-- Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
+- Out of the demo for now: financial reports and user accounts, sign-ups or a login system (the existing token gates stay). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
+- Run scope and the first demo target: see section 5.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.

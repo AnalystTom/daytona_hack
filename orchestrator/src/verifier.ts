@@ -1,6 +1,5 @@
 // Verifier: independent checks from Cloudflare, never from inside the sandbox.
-// Spec asks for Opus 5.5; we have no Anthropic key, so it runs on VERIFIER_MODEL (OpenAI)
-// with its own instructions and sees only the spec, evidence and the output being checked.
+// Its own instructions see only the spec, evidence and the output being checked.
 import { DELIVERY_HEADERS, outline, shapeOf } from "./inspect";
 import { DATA_INSTRUCTIONS } from "./scope";
 import { llmJson } from "./services";

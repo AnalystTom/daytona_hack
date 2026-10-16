@@ -296,7 +296,10 @@ export function backendFacts(html: string, base: string) {
     onclosetag(name) {
       if (name !== "script" || !script) return;
       findEndpoints(script.text);
-      if (/^application\/(?:ld\+)?json$/.test(script.type) && data.length < 10) {
+      if (
+        /^application\/(?:ld\+)?json$/.test(script.type) &&
+        data.length < 10
+      ) {
         try {
           data.push({
             type: script.type,
