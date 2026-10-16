@@ -163,14 +163,18 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
   return figures;
 }
 
-export async function sourceFetch(url: string) {
+export async function sourceFetch(url: string, signal?: AbortSignal) {
+  signal?.throwIfAborted();
   const checked = checkTargetUrl(url);
   if ("error" in checked) throw new Error("Source URL is not public HTTP(S)");
   // Validate every redirect as well as the initial URL.
   for (let hop = 0; hop < 4; hop++) {
+    signal?.throwIfAborted();
     const response = await fetch(checked.url, {
       redirect: "manual",
-      signal: AbortSignal.timeout(20000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(20000)])
+        : AbortSignal.timeout(20000),
     });
     if (response.status >= 300 && response.status < 400) {
       const next = checkTargetUrl(
@@ -188,6 +192,7 @@ export async function sourceFetch(url: string) {
     const decoder = new TextDecoder();
     try {
       for (;;) {
+        signal?.throwIfAborted();
         const { value, done } = await reader.read();
         if (done) {
           text += decoder.decode();
@@ -200,6 +205,7 @@ export async function sourceFetch(url: string) {
     } finally {
       await reader.cancel();
     }
+    signal?.throwIfAborted();
     return {
       url: checked.url,
       html: text,
@@ -298,7 +304,9 @@ export async function dissect(
   env: Env,
   runId: string,
   article: { html: string; url: string; capturedAt: string; hash: string },
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   const figures = extractFigures(article.html);
   if (!figures.length)
     throw new Error("No report figures observed in captured HTML");
@@ -336,7 +344,8 @@ export async function dissect(
     const url = new URL(embed[1].replace(/&amp;/g, "&"), article.url).href;
     const offset = article.html.indexOf(embed[0], Math.max(0, start));
     try {
-      const capture = await sourceFetch(url);
+      const capture = await sourceFetch(url, signal);
+      signal?.throwIfAborted();
       const chart = extractChart(capture.html, id);
       sources.push({
         id,
@@ -356,6 +365,7 @@ export async function dissect(
       figures.push(...chart);
       if (chart.length) continue;
     } catch (error) {
+      signal?.throwIfAborted();
       sources.push({
         id,
         url,
@@ -389,6 +399,7 @@ export async function dissect(
       group: "not_observed",
     });
   }
+  signal?.throwIfAborted();
   const searchBudget = 4;
   let searchCalls = 0;
   const researched = await llmJson<{
@@ -408,6 +419,7 @@ export async function dissect(
     }[];
   }>(env, {
     name: "trace_report_sources",
+    signal,
     effort: "medium",
     webSearch: searchBudget,
     onSearchCalls: (calls) => {
@@ -449,6 +461,7 @@ For each figure return a trace: matches only when the independently fetched quot
       ),
     }),
   });
+  signal?.throwIfAborted();
   const captures = new Map<
     string,
     Awaited<ReturnType<typeof sourceFetch>> | null
@@ -465,14 +478,17 @@ For each figure return a trace: matches only when the independently fetched quot
   );
   // Direct quote validation prevents search summaries or model guesses becoming observed sources.
   const verify = async (url: string, quote: string) => {
+    signal?.throwIfAborted();
     if (!quote || !url || excludedSources.has(sourceIdentity(url))) return null;
     if (!captures.has(url) && captures.size < 6) {
       try {
-        captures.set(url, await sourceFetch(url));
+        captures.set(url, await sourceFetch(url, signal));
       } catch {
+        signal?.throwIfAborted();
         captures.set(url, null);
       }
     }
+    signal?.throwIfAborted();
     const cap = captures.get(url);
     const normalized = cleanText(quote);
     if (!cap || excludedSources.has(sourceIdentity(cap.url)) || !normalized)

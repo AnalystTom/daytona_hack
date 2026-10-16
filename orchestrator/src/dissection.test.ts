@@ -6,7 +6,7 @@ import {
   extractFigures,
   sourceFetch,
 } from "./dissection";
-import { llmJson } from "./services";
+import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
 
 vi.mock("./services", async (original) => ({
@@ -496,3 +496,86 @@ it.each(["h1", "h2", "p", "li", "figcaption", "td", "th", "blockquote"])(
     ]);
   },
 );
+
+it.each(["chart", "search", "source"])(
+  "stops before further requests when cancelled during %s research",
+  async (stage) => {
+    const controller = new AbortController();
+    const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      controller.abort();
+      expect(init?.signal?.aborted).toBe(true);
+      return new Response("<h1>Investment in 2026</h1>");
+    });
+    vi.stubGlobal("fetch", fetcher);
+    vi.mocked(llmJson).mockClear();
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      expect(opts.signal).toBe(controller.signal);
+      if (stage === "search") controller.abort();
+      return {
+        sources: [],
+        traces: [1, 2].map((i) => ({
+          figureId: `article_f${i}`,
+          url: `https://research.example/source${i}`,
+          value: "2026",
+          quote: "Investment in 2026",
+          status: "matches",
+        })),
+      };
+    });
+    const article = {
+      html:
+        "<h1>Investment in 2026</h1><p>Investment in 2027</p>" +
+        (stage === "chart"
+          ? '<iframe src="https://research.example/chart1"></iframe><iframe src="https://research.example/chart2"></iframe>'
+          : ""),
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    };
+    await expect(
+      dissect(env, "run", article, controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(fetcher).toHaveBeenCalledTimes(stage === "search" ? 0 : 1);
+    expect(llmJson).toHaveBeenCalledTimes(stage === "chart" ? 0 : 1);
+    vi.mocked(llmJson).mockReset();
+  },
+);
+
+it("aborts the in-flight OpenAI research request", async () => {
+  const { llmJson: research } =
+    await vi.importActual<typeof import("./services")>("./services");
+  const controller = new AbortController();
+  const fetcher = vi.fn(
+    (_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal?.reason),
+          { once: true },
+        );
+      }),
+  );
+  vi.stubGlobal("fetch", fetcher);
+  const pending = research(env, {
+    name: "research",
+    instructions: "",
+    input: "",
+    schema: {},
+    webSearch: 4,
+    signal: controller.signal,
+  });
+  controller.abort();
+  await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+  expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+    "https://api.openai.com/v1/responses",
+    expect.objectContaining({ signal: controller.signal }),
+  );
+});
+
+it("hashes text and binary evidence with the same SHA-256 identity", async () => {
+  const expected =
+    "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+  expect(await sha256("abc")).toBe(expected);
+  expect(await sha256(new Uint8Array([97, 98, 99]).buffer)).toBe(expected);
+});

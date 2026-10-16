@@ -16,6 +16,7 @@ export async function llmJson<T>(
     effort?: string;
     webSearch?: number;
     onSearchCalls?: (calls: number) => void;
+    signal?: AbortSignal;
     model?: string;
   },
 ): Promise<T> {
@@ -47,12 +48,15 @@ async function llmCall<T>(
     effort?: string;
     webSearch?: number;
     onSearchCalls?: (calls: number) => void;
+    signal?: AbortSignal;
   },
   model: string,
   set?: (a: Record<string, string | number>) => void,
 ): Promise<T> {
   await opts.beforeCall?.();
+  opts.signal?.throwIfAborted();
   const res = await fetch("https://api.openai.com/v1/responses", {
+    signal: opts.signal,
     method: "POST",
     headers: {
       Authorization: `Bearer ${env.OPENAI_API_KEY}`,
@@ -81,6 +85,7 @@ async function llmCall<T>(
     }),
   });
   const body: any = await res.json();
+  opts.signal?.throwIfAborted();
   if (!res.ok)
     throw new Error(
       `openai ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
@@ -196,11 +201,9 @@ export async function pageHtml(
   return { html: await res.text(), tool: "fetch" };
 }
 
-export async function sha256(data: string | ArrayBuffer): Promise<string> {
-  const buf = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  const d = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(d)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 16);
+export async function sha256(content: string | ArrayBuffer) {
+  const bytes =
+    typeof content === "string" ? new TextEncoder().encode(content) : content;
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  return `sha256:${Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }

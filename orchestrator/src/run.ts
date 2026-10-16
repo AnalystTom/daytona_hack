@@ -387,16 +387,31 @@ export class Run extends DurableObject<Env> {
   }
 
   private reportStopped() {
-    return this.s.phase === "stopped";
+    return this.inspection.signal.aborted || this.s.phase === "stopped";
   }
 
   private async reportAnalysis() {
+    const signal = this.inspection.signal;
+    let closeSession: (() => Promise<void>) | undefined;
     try {
-      const capture = await captureReport(this.env, this.s.spec.url);
+      const capture = await captureReport(this.env, this.s.spec.url, {
+        signal,
+        onSession: (close) => {
+          closeSession = close;
+          this.captureSessions.add(close);
+        },
+      }).finally(() => {
+        if (closeSession) this.captureSessions.delete(closeSession);
+      });
       if (this.reportStopped()) return;
       await this.storeEvidence(capture.evidence, capture.blobs);
       if (this.reportStopped()) return;
-      const report = await dissect(this.env, this.s.id, capture.article);
+      const report = await dissect(
+        this.env,
+        this.s.id,
+        capture.article,
+        signal,
+      );
       if (this.reportStopped()) return;
       attachRegions(
         report.figures,
