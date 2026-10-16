@@ -26,7 +26,11 @@ const record: EvidenceRecord = {
   byteLength: 3,
 };
 
-// Fixture SurrealDB RPC endpoint: records each request and answers from a queue.
+const defineTables =
+  "DEFINE TABLE IF NOT EXISTS sign_in; DEFINE TABLE IF NOT EXISTS evidence; DEFINE TABLE IF NOT EXISTS evidence_chunk; ";
+
+// Fixture SurrealDB RPC endpoint: records each statement after the table
+// definitions and answers from a queue.
 function fakeSurreal(responses: unknown[]) {
   const requests: {
     sql: string;
@@ -38,8 +42,9 @@ function fakeSurreal(responses: unknown[]) {
     vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("https://db.example.test/rpc");
       const { params } = JSON.parse(String(init.body));
+      expect(params[0].startsWith(defineTables)).toBe(true);
       requests.push({
-        sql: params[0],
+        sql: params[0].slice(defineTables.length),
         vars: params[1],
         headers: new Headers(init.headers),
       });
@@ -109,6 +114,36 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
     });
     expect(await store.takeSignIn("run_1")).toBeNull();
     expect(requests[0]?.sql).toBe("DELETE sign_in:`run_1` RETURN BEFORE");
+  });
+
+  it("works on a fresh database whose tables do not exist yet", async () => {
+    // Like SurrealDB 3.x: reading or deleting from an undefined table fails.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_url: string, init: RequestInit) => {
+        const sql: string = JSON.parse(String(init.body)).params[0];
+        const statements = sql.split(";").map((s) => s.trim()).filter(Boolean);
+        const defined = new Set<string>();
+        return Response.json({
+          id: 1,
+          result: statements.map((statement) => {
+            const table = /^DEFINE TABLE IF NOT EXISTS (\w+)$/.exec(statement);
+            if (table) {
+              defined.add(table[1] as string);
+              return { status: "OK", result: null };
+            }
+            const target = /(?:FROM|DELETE) (\w+):/.exec(statement)?.[1];
+            return target && !defined.has(target)
+              ? { status: "ERR", result: `The table '${target}' does not exist` }
+              : { status: "OK", result: [] };
+          }),
+        });
+      }),
+    );
+    const store = surrealStore(env);
+    expect(await store.takeSignIn("run_1")).toBeNull();
+    expect(await store.getEvidence(record.id)).toBeNull();
+    expect(await store.getContent(record.id)).toBeNull();
   });
 
   it("raises statement errors and refuses ids that could inject SurrealQL", async () => {

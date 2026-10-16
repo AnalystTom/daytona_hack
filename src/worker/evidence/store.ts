@@ -60,7 +60,12 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
     Authorization: `Basic ${btoa(`${env.SURREALDB_USER}:${env.SURREALDB_PASSWORD}`)}`,
   };
 
-  // Runs one statement and returns its result rows.
+  // SurrealDB 3.x rejects reads and deletes on tables that do not exist yet.
+  const defineTables = ["sign_in", "evidence", "evidence_chunk"]
+    .map((table) => `DEFINE TABLE IF NOT EXISTS ${table};`)
+    .join(" ");
+
+  // Runs one statement, after the table definitions, and returns its result rows.
   async function query<T>(
     sql: string,
     vars: Record<string, unknown> = {},
@@ -68,7 +73,7 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
     const response = await fetch(endpoint, {
       method: "POST",
       headers,
-      body: JSON.stringify({ id: 1, method: "query", params: [sql, vars] }),
+      body: JSON.stringify({ id: 1, method: "query", params: [`${defineTables} ${sql}`, vars] }),
     });
     if (!response.ok) {
       throw new Error(`SurrealDB request failed with ${response.status}`);
@@ -77,10 +82,11 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
       result?: { status: string; result: unknown }[];
       error?: { message: string };
     };
-    const statement = body.result?.[0];
-    if (body.error || statement?.status !== "OK") {
+    const failed = body.result?.find((s) => s.status !== "OK");
+    const statement = body.result?.at(-1);
+    if (body.error || failed || statement?.status !== "OK") {
       throw new Error(
-        `SurrealDB query failed: ${body.error?.message ?? String(statement?.result)}`,
+        `SurrealDB query failed: ${body.error?.message ?? String((failed ?? statement)?.result)}`,
       );
     }
     return statement.result as T[];
