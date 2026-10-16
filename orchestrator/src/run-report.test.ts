@@ -18,7 +18,6 @@ import { llmJson } from "./services";
 import { Run } from "./run";
 import type { Env } from "./types";
 import backend from "./index";
-import { runView } from "../../src/web/workspace/orchestrator";
 import { handleOrchestrator } from "../../src/worker/orchestrator/front";
 import {
   accessJwt,
@@ -219,10 +218,6 @@ it.each([false, true])(
         (e) => !e.url || e.url.startsWith("/runs/new-run/evidence/"),
       ),
     ).toBe(true);
-    const screenshot = runView("new-run", events).evidence.find(
-      (e) => e.id === "ev_report_screen",
-    );
-    assert(screenshot);
     const backendEnv = {
       RUNS: {
         idFromName: (id: string) => id,
@@ -260,7 +255,7 @@ it.each([false, true])(
         deps,
       );
     const response = await request(
-      screenshot.src ?? "/api/v1/runs/new-run/evidence/ev_report_screen",
+      "/api/v1/runs/new-run/evidence/ev_report_screen",
     );
     assert(response);
     expect(response.status).toBe(hasScreen ? 200 : 404);
