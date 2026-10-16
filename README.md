@@ -24,6 +24,10 @@ In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sa
 
 Open `/workspace` for an empty session. The header's session menu offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
 
+Start a run by sending a website address and an optional goal, such as `Rebuild wikipedia.com, only the header.` Chat selects the first valid whitespace-separated address, strips trailing sentence punctuation, and uses the remaining text as the goal. An address alone defaults to “Rebuild this website.” If no address is recognized, chat asks for one instead of starting a run.
+
+Bare domains and `www.` addresses use HTTPS and preserve their port, path, query and fragment. Without an explicit scheme, addresses require an ASCII host with a supported ending and cannot contain `@`; the supported endings and file-extension exclusions are defined by `bareHost` in [the chat parser](src/web/workspace/chat.ts). Use a full `http://` or `https://` URL for other endings or Unicode hosts.
+
 The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
 
 Use **Spec** or **Build** to work on the canvas:
