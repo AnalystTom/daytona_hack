@@ -54,7 +54,12 @@ export async function handleRunsApi(
       error instanceof Failure
         ? error
         : error instanceof StoreError
-          ? new Failure(503, "store_unavailable", error.message, true)
+          ? new Failure(
+              503,
+              "store_unavailable",
+              "Storage is temporarily unavailable.",
+              true,
+            )
           : new Failure(500, "internal_error", "Internal error.");
     if (!(error instanceof Failure)) console.error(requestId, error);
     const body: ApiError = {
