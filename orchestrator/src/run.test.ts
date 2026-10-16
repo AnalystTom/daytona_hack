@@ -198,6 +198,67 @@ function bindCapture(signIn: SignIn | null = null) {
 }
 
 describe("Run sign-in handoff", () => {
+  it("retains the target query through first look, gateway, approval, secure sign-in and resume", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    const url = "https://example.com/search?q=robots&token=private";
+    const target = "/search?q=robots&token=private";
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      reply: "Search page confirmed",
+      userApproved: false,
+      spec: {
+        pages: [{ path: "/search", confirmed: true }],
+        flows: [],
+        openQuestions: [],
+      },
+    });
+    await run.start("run-1", url, "copy it");
+    expect(captureMock.mock.lastCall?.[2].scope.paths).toEqual([target]);
+    await run.gatewayCapture(url);
+    expect(captureMock.mock.lastCall?.[2].scope.paths).toEqual([target]);
+    expect(
+      await run.gatewayCapture("https://example.com/search?q=agents"),
+    ).toMatchObject({ status: 403 });
+    expect(captureMock).toHaveBeenCalledTimes(2);
+    await run.approveSpec();
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [{ ...redirected, url }],
+    });
+    await run.alarm();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      mode: "full_pack",
+      scope: { paths: [target] },
+    });
+    expect((await run.getState()).signInPaths).toEqual([target]);
+    expect(
+      JSON.stringify(
+        ctx
+          .events()
+          .filter((event) => (event as { type: string }).type === "phase"),
+      ),
+    ).not.toContain("private");
+    expect((await run.getState()).chat.at(-1)?.text).not.toContain("private");
+    captureMock.mockResolvedValueOnce({
+      status: "awaiting_sign_in",
+      liveViewUrl: "https://live.example.test/sign-in",
+    });
+    await run.startSignIn();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      signIn: "start",
+      scope: { paths: [target] },
+    });
+    await run.resumeSignIn();
+    await run.alarm();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      signIn: "resume",
+      scope: { paths: [target] },
+    });
+    expect((await run.getState()).phase).toBe("planned");
+  });
+
   it.each(["skip", "stop", "resume", "replace"] as const)(
     "serializes %s with pending session creation and cleans up owned sessions",
     async (action) => {

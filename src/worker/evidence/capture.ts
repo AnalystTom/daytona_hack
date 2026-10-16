@@ -4,6 +4,7 @@ import {
   type CaptureRequest,
   type EvidenceRecord,
   inScope,
+  redactQuery,
   viewports,
 } from "../../shared/evidence";
 import * as anchor from "./anchor";
@@ -180,6 +181,7 @@ export async function captureRun(
   const capturePage = async (path: string) => {
     deps.signal?.throwIfAborted();
     const url = `${scope.origin}${path}`;
+    const pageScope = { origin: scope.origin, paths: [path] };
     const shots = Object.entries(
       full ? viewports : { desktop: viewports.desktop },
     );
@@ -215,7 +217,7 @@ export async function captureRun(
       const reason = (target: string) =>
         `${verb} ${target}, ${leftScope}; capture stopped for this page.`;
       stopped = reason(finalUrl);
-      shown = reason(finalUrl.split(/[?#]/)[0] as string);
+      shown = reason(redactQuery(finalUrl));
     };
 
     try {
@@ -225,7 +227,7 @@ export async function captureRun(
         anchor.navigateSnippet(url, scope.origin, full),
       );
       deps.signal?.throwIfAborted();
-      if (!inScope(facts.finalUrl, scope)) {
+      if (!inScope(facts.finalUrl, pageScope)) {
         leave("Redirected to", facts.finalUrl);
       } else {
         if (full) {
@@ -255,7 +257,7 @@ export async function captureRun(
             png: string;
           }>(key, sessionId, anchor.screenshotSnippet(viewport));
           deps.signal?.throwIfAborted();
-          if (!inScope(shot.finalUrl, scope)) {
+          if (!inScope(shot.finalUrl, pageScope)) {
             leave("Page moved to", shot.finalUrl);
             break;
           }
@@ -274,7 +276,7 @@ export async function captureRun(
           409,
         );
       stopped = `Capture failed: ${error.message}`;
-      shown = stopped.replace(/[?#][^\s"']*/g, "");
+      shown = redactQuery(stopped);
     }
 
     while (pending.length) await skip(stopped ?? "");
@@ -282,7 +284,9 @@ export async function captureRun(
     await deps.emit({
       type: stopped ? "evidence.page_stopped" : "evidence.page_captured",
       state: "capturing",
-      message: stopped ? `${path}: ${shown}` : `Captured ${path}`,
+      message: stopped
+        ? `${redactQuery(path)}: ${shown}`
+        : `Captured ${redactQuery(path)}`,
       artifactRefs: ids,
     });
   };

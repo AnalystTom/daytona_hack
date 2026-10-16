@@ -4,6 +4,8 @@ import {
   type CaptureRequest,
   CaptureScope,
   type EvidenceRecord,
+  inScope,
+  redactQuery,
 } from "../../src/shared/evidence";
 import {
   type CaptureDeps,
@@ -52,11 +54,20 @@ export const maxPaths = 10;
 
 /** The approved origin and unique paths, capped; `dropped` lists the paths over the cap. */
 export function captureScope(siteUrl: string, paths: string[]) {
-  const origin = new URL(siteUrl).origin;
+  const target = new URL(siteUrl);
+  const origin = target.origin;
   // Paths come from the model: anything that resolves off the site is left out.
   const urls = paths.map((p) => new URL(p, origin));
-  const kept = urls.filter((u) => u.origin === origin).map((u) => u.pathname);
-  const unique = [...new Set(kept.length ? kept : [new URL(siteUrl).pathname])];
+  const kept = urls
+    .filter((u) => u.origin === origin)
+    .map((u) => {
+      if (!u.search && inScope(u.href, { origin, paths: [target.pathname] }))
+        u.search = target.search;
+      return u.pathname + u.search;
+    });
+  const unique = [
+    ...new Set(kept.length ? kept : [target.pathname + target.search]),
+  ];
   return {
     scope: CaptureScope.parse({ origin, paths: unique.slice(0, maxPaths) }),
     dropped: unique.slice(maxPaths),
@@ -74,17 +85,18 @@ const extensions: Record<string, string> = {
 export function toEvidence(record: EvidenceRecord): Evidence {
   const observed = record.label === "observed";
   const media = record.kind === "screenshot" || record.kind === "recording";
+  const page = redactQuery(record.pageOrState);
   return {
     id: record.id,
-    page: record.pageOrState,
+    page,
     kind: record.kind,
     tool: record.tool,
     status: record.label,
     capturedAt: record.capturedAt,
     hash: record.contentHash,
     // Redirect targets keep their query strings only in the stored record, never in events.
-    limits: record.limitations.join(" ").replace(/[?#][^\s"']*/g, ""),
-    summary: `${observed ? "" : "No "}${record.kind} of ${record.pageOrState}`,
+    limits: redactQuery(record.limitations.join(" ")),
+    summary: `${observed ? "" : "No "}${record.kind} of ${page}`,
     path: observed
       ? `evidence/${record.id}.${extensions[record.contentType] ?? "bin"}`
       : undefined,
@@ -102,7 +114,14 @@ export function stoppedPages(records: EvidenceRecord[]): string[] {
       r.label === "not_observed" &&
       r.limitations.some((l) => l.includes(leftScope)),
   );
-  return [...new Set(left.map((r) => new URL(r.url).pathname))];
+  return [
+    ...new Set(
+      left.map((r) => {
+        const url = new URL(r.url);
+        return url.pathname + url.search;
+      }),
+    ),
+  ];
 }
 
 /** Ends the run's saved sign-in session so a skipped sign-in does not stay open. */

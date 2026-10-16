@@ -1,6 +1,10 @@
 // One Durable Object per run: brief → inspect → plan → build/review, driven by alarms.
 import { DurableObject } from "cloudflare:workers";
-import { type CaptureRequest, inScope } from "../../src/shared/evidence";
+import {
+  type CaptureRequest,
+  inScope,
+  redactQuery,
+} from "../../src/shared/evidence";
 import { CaptureError } from "../../src/worker/evidence/capture";
 import { Daytona, shq } from "./daytona";
 import {
@@ -187,7 +191,7 @@ export class Run extends DurableObject<Env> {
       return { status: 403, error: "url is outside the run's approved scope" };
     const result = await this.capture({
       mode: "first_look",
-      scope: { origin: scope.origin, paths: [new URL(url).pathname] },
+      scope: captureScope(url, []).scope,
     });
     const items = result.status === "captured" ? result.items : [];
     const shot = items.find((i) => i.label === "observed");
@@ -234,7 +238,7 @@ export class Run extends DurableObject<Env> {
       await this.traced("inspector.first_look", "TOOL", url, () =>
         this.capture({
           mode: "first_look",
-          scope: captureScope(url, [new URL(url).pathname]).scope,
+          scope: captureScope(url, []).scope,
         }),
       );
     } catch (e: any) {
@@ -610,7 +614,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
     const confirmed = this.s.spec.pages
       .filter((p) => p.confirmed)
       .map((p) => p.path);
-    return confirmed.length ? confirmed : [new URL(this.s.spec.url).pathname];
+    return confirmed.length ? confirmed : [this.s.spec.url];
   }
 
   /** The DOM of the first captured page, or "" when none was observed. */
@@ -634,7 +638,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
       if (dropped.length)
         await this.addChat(
           "assistant",
-          `Evidence covers the first ${maxPaths} pages; not captured: ${dropped.join(", ")}.`,
+          `Evidence covers the first ${maxPaths} pages; not captured: ${dropped.map(redactQuery).join(", ")}.`,
           signal,
         );
       let result: Awaited<ReturnType<typeof capture>>;
@@ -657,7 +661,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
       if (stopped.length) {
         await this.awaitSignIn(
           stopped,
-          `Capture stopped on ${stopped.join(", ")}: the page left the approved scope, which usually means it needs an account.`,
+          `Capture stopped on ${stopped.map(redactQuery).join(", ")}: the page left the approved scope, which usually means it needs an account.`,
           signal,
         );
         return;
@@ -769,12 +773,12 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     await this.save(signal);
     await this.emit(
       "phase",
-      { phase: "awaiting_sign_in", pages: paths },
+      { phase: "awaiting_sign_in", pages: paths.map(redactQuery) },
       signal,
     );
     await this.addChat(
       "assistant",
-      `${why} Open secure sign-in and sign in yourself (Reversy never sees your password), then resume capture. Or skip sign-in to plan without ${paths.length > 1 ? "these pages" : "this page"}.`,
+      `${redactQuery(why)} Open secure sign-in and sign in yourself (Reversy never sees your password), then resume capture. Or skip sign-in to plan without ${paths.length > 1 ? "these pages" : "this page"}.`,
       signal,
     );
   }

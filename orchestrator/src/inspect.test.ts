@@ -53,8 +53,8 @@ describe("captureScope", () => {
       ...paths,
     ]);
     expect(scope.origin).toBe("https://example.com");
-    expect(scope.paths).toEqual(["/", ...paths.slice(0, 9)]);
-    expect(dropped).toEqual(paths.slice(9));
+    expect(scope.paths).toEqual(["/", "/?ref=nav", ...paths.slice(0, 8)]);
+    expect(dropped).toEqual(paths.slice(8));
   });
 
   it("leaves out paths that resolve off the site, falling back to the start page", () => {
@@ -70,6 +70,21 @@ describe("captureScope", () => {
         .paths,
     ).toEqual(["/pricing"]);
   });
+
+  it("retains target queries through fallback, queryless approval, and explicit query variants", () => {
+    const target = "https://example.com/search/?q=robots&token=private";
+    for (const paths of [[], ["/search/"], ["https://evil.test/search"]])
+      expect(captureScope(target, paths).scope.paths).toEqual([
+        "/search/?q=robots&token=private",
+      ]);
+    expect(
+      captureScope(target, [
+        "/search",
+        "/search?q=agents",
+        "/search?q=robots&token=private",
+      ]).scope.paths,
+    ).toEqual(["/search?q=robots&token=private", "/search?q=agents"]);
+  });
 });
 
 describe("isStoredEvidenceId", () => {
@@ -82,6 +97,19 @@ describe("isStoredEvidenceId", () => {
 });
 
 describe("toEvidence", () => {
+  it("keeps query state in the stored record and redacts it from canvas labels", () => {
+    const stored = record({
+      url: "https://example.com/search?q=robots&token=private",
+      pageOrState: "/search?q=robots&token=private @ desktop 1440",
+    });
+    const projected = toEvidence(stored);
+    expect(projected.page).toBe("/search @ desktop 1440");
+    expect(projected.summary).toBe("screenshot of /search @ desktop 1440");
+    expect(JSON.stringify(projected)).not.toContain("private");
+    expect(stored.url).toBe(
+      "https://example.com/search?q=robots&token=private",
+    );
+  });
   it("links observed screenshots and recordings for the canvas", () => {
     const shot = toEvidence(record());
     expect(shot).toMatchObject({
@@ -119,6 +147,18 @@ describe("toEvidence", () => {
 });
 
 describe("stoppedPages", () => {
+  it("retains query variants for sign-in recovery instead of collapsing them", () => {
+    const limitations = [`Redirected to /login, ${leftScope}.`];
+    const stopped = (query: string) =>
+      record({
+        label: "not_observed",
+        url: `https://example.com/search?q=${query}`,
+        limitations,
+      });
+    expect(
+      stoppedPages([stopped("robots"), stopped("agents"), stopped("robots")]),
+    ).toEqual(["/search?q=robots", "/search?q=agents"]);
+  });
   it("lists pages that left the scope once each, not other failures", () => {
     const left = `${leftScope}; capture stopped for this page.`;
     expect(

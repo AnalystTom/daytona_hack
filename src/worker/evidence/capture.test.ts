@@ -1,5 +1,11 @@
+import { createServer } from "node:http";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CaptureEvent, EvidenceRecord } from "../../shared/evidence";
+import {
+  type CaptureEvent,
+  CaptureScope,
+  type EvidenceRecord,
+} from "../../shared/evidence";
 import { CaptureError, captureRun, endSignIn, recordingCapMs } from "./capture";
 import {
   executeCodeResponse,
@@ -89,6 +95,162 @@ function deps(store: EvidenceStore) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("captureRun (fixture Anchor responses)", () => {
+  it("stores the actual query-dependent response returned to its executable navigation snippet", async () => {
+    const realFetch = globalThis.fetch;
+    const requested: string[] = [];
+    const server = createServer((request, response) => {
+      requested.push(request.url ?? "/");
+      const query = new URL(
+        request.url ?? "/",
+        "http://target.test",
+      ).searchParams.get("q");
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(
+        query === "robots"
+          ? "<main>Robot search results</main>"
+          : query === "agents"
+            ? "<main>Agent search results</main>"
+            : "<main>Unfiltered results</main>",
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Missing test server address");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const paths = [
+        "/search?q=robots&token=private",
+        "/search?q=agents&token=private",
+      ];
+      let current = "";
+      let html = "";
+      let viewport: { width: number; height: number } | undefined;
+      const page = {
+        setViewportSize: async (value: { width: number; height: number }) => {
+          viewport = value;
+        },
+        viewportSize: () => viewport,
+        waitForTimeout: async () => {},
+        waitForLoadState: async () => {},
+        on: () => {},
+        off: () => {},
+        goto: async (url: string) => {
+          const response = await realFetch(url);
+          current = response.url;
+          html = await response.text();
+        },
+        url: () => current,
+        content: async () => html,
+        evaluate: async (fn: () => unknown) =>
+          runInNewContext(`(${fn.toString()})()`, {
+            document: {
+              querySelectorAll: () => [],
+              styleSheets: [],
+              images: [],
+              fonts: [],
+            },
+          }),
+        screenshot: async () => Buffer.from(fixturePngBase64, "base64"),
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init: RequestInit = {}) => {
+          const url = new URL(input);
+          if (url.pathname === "/v1/sessions")
+            return Response.json(fixtureSession);
+          if (url.pathname === "/v1/tools/execute-code") {
+            const { code } = JSON.parse(String(init.body));
+            const output = await runInNewContext(
+              `(async () => {${code}})()`,
+              { page, URL, Buffer },
+              { timeout: 1000 },
+            );
+            return Response.json(executeCodeResponse(output));
+          }
+          if (init.method === "DELETE")
+            return Response.json({ data: { status: "ok" } });
+          if (url.pathname.endsWith("/recordings"))
+            return Response.json(recordingList);
+          if (url.pathname.endsWith("/recordings/primary/fetch"))
+            return new Response(new Uint8Array([0, 0, 0, 24]));
+          throw new Error(`Unexpected test request: ${url.pathname}`);
+        }),
+      );
+      const memory = memoryStore();
+      const { deps: d, events } = deps(memory.store);
+      const result = await captureRun(d, "run_1", {
+        mode: "full_pack",
+        scope: CaptureScope.parse({ origin, paths }),
+      });
+      expect(result.status).toBe("captured");
+      expect(requested).toEqual(paths);
+      const dom = [...memory.records.values()].filter(
+        (record) => record.kind === "dom",
+      );
+      expect(dom.map((record) => record.url)).toEqual(
+        paths.map((path) => origin + path),
+      );
+      expect(dom.map((record) => record.label)).toEqual([
+        "observed",
+        "observed",
+      ]);
+      expect(
+        dom.map((record) =>
+          new TextDecoder().decode(memory.content.get(record.id)),
+        ),
+      ).toEqual([
+        "<main>Robot search results</main>",
+        "<main>Agent search results</main>",
+      ]);
+      expect(JSON.stringify(events)).not.toContain("private");
+      expect(
+        events
+          .filter((event) => event.type === "evidence.page_captured")
+          .map((event) => event.message),
+      ).toEqual(["Captured /search", "Captured /search"]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not attribute a redirect into another approved query variant to the requested state", async () => {
+    const paths = [
+      "/search?q=robots&token=private",
+      "/search?q=agents&token=private",
+    ];
+    fakeAnchor({
+      [`https://example.com${paths[0]}`]: `https://example.com${paths[1]}`,
+    });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+    await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope: { origin: scope.origin, paths },
+    });
+    const requested = [...memory.records.values()].filter(
+      (record) => record.url === `https://example.com${paths[0]}`,
+    );
+    expect(requested.length).toBeGreaterThan(0);
+    expect(requested.every((record) => record.label === "not_observed")).toBe(
+      true,
+    );
+    expect(
+      [...memory.records.values()].find(
+        (record) =>
+          record.kind === "dom" &&
+          record.url === `https://example.com${paths[1]}`,
+      )?.label,
+    ).toBe("observed");
+    expect(JSON.stringify(events)).not.toContain("private");
+  });
+
   it("captures a full pack per page with hashes and a recording", async () => {
     const calls = fakeAnchor();
     const memory = memoryStore();

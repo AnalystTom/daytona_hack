@@ -17,7 +17,7 @@ export const CaptureScope = z.object({
     }),
   paths: z
     .array(
-      z.string().regex(/^\/[^?#]*$/, "paths start with / and have no query"),
+      z.string().regex(/^\/[^#]*$/, "paths start with / and have no fragment"),
     )
     .min(1)
     .max(10),
@@ -55,6 +55,9 @@ export type CaptureEvent = z.infer<typeof CaptureEvent>;
 const normalisePath = (path: string) =>
   path.length > 1 ? path.replace(/\/+$/, "") : path;
 
+export const redactQuery = (value: string) =>
+  value.replace(/[?#][^\s"']*/g, "");
+
 // Only the approved origin and paths are in scope; a trailing slash is not a different page.
 export function inScope(url: string, scope: CaptureScope): boolean {
   let parsed: URL;
@@ -66,6 +69,12 @@ export function inScope(url: string, scope: CaptureScope): boolean {
   const path = normalisePath(parsed.pathname);
   return (
     parsed.origin === scope.origin &&
-    scope.paths.some((approved) => normalisePath(approved) === path)
+    scope.paths.some((approved) => {
+      const pathname = approved.split("?")[0] ?? "";
+      const query = approved.slice(pathname.length);
+      return (
+        normalisePath(pathname) === path && (!query || query === parsed.search)
+      );
+    })
   );
 }
