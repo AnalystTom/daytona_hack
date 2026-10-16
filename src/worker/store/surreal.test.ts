@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import { SurrealRunStore } from "./surreal";
 import { StoreError } from "./types";
+import { surrealOwners } from "../orchestrator/owners";
 
 const config = {
   url: "https://db.example.com/",
@@ -21,6 +22,43 @@ const storeAnswering = (answer: () => Response | Promise<Response>) => {
 };
 
 describe("SurrealRunStore over HTTP", () => {
+  it.each([
+    "a0dafd1e-b5df-4383-8435-8176f831a0ad@example.com",
+    "a0dafd1e-b5df-4383-8435-8176f831a0ad@example.org",
+    "alice@example.com",
+    "élise+🦋@example.com",
+  ])(
+    "transports the opaque owner %s losslessly for every owner-consuming operation",
+    async (owner) => {
+      const { store, requests } = storeAnswering(() =>
+        Response.json({ id: 1, result: [{ status: "OK", result: null }] }),
+      );
+      const owners = surrealOwners(store);
+      await owners.reserve(
+        { runId: "r1", owner, createdAt: Date.now() },
+        1,
+        3,
+        [],
+      );
+      await owners.list(owner, 0);
+      await owners.finish("r1", owner);
+      const bodies = (await Promise.all(
+        requests.map((request) => request.json()),
+      )) as { params: [string, { owner?: string[] }] }[];
+      const encoded = bodies.flatMap(({ params: [, vars] }) =>
+        vars.owner ? [vars.owner] : [],
+      );
+      expect(encoded).toHaveLength(3);
+      for (const value of encoded) {
+        expect(Array.isArray(value)).toBe(true);
+        expect(
+          value.every((character) => Array.from(character).length === 1),
+        ).toBe(true);
+        expect(value.join("")).toBe(owner);
+      }
+    },
+  );
+
   it("sends authenticated RPC queries to the configured namespace and database", async () => {
     const { store, requests } = storeAnswering(() =>
       Response.json({ id: 1, result: [{ status: "OK", result: null }] }),
@@ -55,6 +93,23 @@ describe("SurrealRunStore over HTTP", () => {
   ])("reports %s as a StoreError", async (_name, answer) => {
     const { store } = storeAnswering(answer);
     await expect(store.getRun("r1")).rejects.toBeInstanceOf(StoreError);
+  });
+
+  it("preserves the cause of an aborted transaction for conflict handling", async () => {
+    const { store } = storeAnswering(() =>
+      Response.json({
+        result: [
+          {
+            status: "ERR",
+            result: "The query was not executed due to a failed transaction",
+          },
+          { status: "ERR", result: "Transaction conflict" },
+        ],
+      }),
+    );
+    await expect(
+      store.query("BEGIN TRANSACTION; COMMIT TRANSACTION;"),
+    ).rejects.toThrow("Transaction conflict");
   });
 
   describe("appendEvents", () => {

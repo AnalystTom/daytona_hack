@@ -6,13 +6,15 @@ Code is written only inside Daytona sandboxes, by Codex workers. Everything else
 
 Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no public address.
 
+The front door supplies `id` and `startedAt` after atomically reserving ownership and limits; the timestamp is the admission time, so delayed starts cannot extend their deadline. Operator fallback callers may omit both. An existing run cannot be started again.
+
 ## Routes
 
 | Method and path | Body | Does |
 |---|---|---|
-| `POST /runs` | `{url, goal}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
+| `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run, takes a first look (HTML, routes, an Anchor desktop screenshot of the start page), returns state with the first chat reply |
 | `GET /runs/:id` | | Full state: `{id, phase, spec, chat, evidence, tasks, sandboxId, previewUrl, error}` |
-| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
+| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 when the run has no sandbox preview |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | One of the run's evidence files (PNG, MP4, HTML or JSON), served sandboxed so captured pages never run |
 | `POST /runs/:id/messages` | `{text}` | User chat message. The orchestrator replies and updates the spec. If the user clearly approves, it starts inspection |
@@ -21,7 +23,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | `POST /runs/:id/sign-in/resume` | | After sign-in: captures the stopped pages in that session, then plans (async; watch events) |
 | `POST /runs/:id/sign-in/skip` | | Plans without the stopped pages (async) |
 | `POST /runs/:id/build` | | Start build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." |
-| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
+| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, and confirms worker cancellation or an already stopped, archived or deleted sandbox, then marks open tasks `stopped`; provider-read or cancellation failures keep `pending: "stop"` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -33,6 +35,8 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
+Before paid work and on each alarm, the orchestrator applies the [README's lifetime policy](../../README.md#sign-in-with-cloudflare-access). Expiry uses the same confirmed-cancellation path as explicit stop; cancellation failures leave the run stopping and block further work. Stopped and failed runs refuse chat messages. Final verification completes before the phase becomes `done`; a final verification error marks the run `failed` unless cancellation is underway.
+Overriding a completed run returns it to `building` when a task needs merging or requeuing. If that continuation fails, the run becomes `failed` and its alarm is removed, so paid verification is not retried automatically; active-slot retirement follows the [admission policy](../../README.md#sign-in-with-cloudflare-access).
 
 ## Events
 
@@ -68,11 +72,9 @@ The [agent spec's verifier contract](spec.md#9-verifier) defines plan, task and 
 
 ## Deployed
 
-No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
-the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
-(reads included; `sandboxId` is dropped from `/api/v1/runs` state and event JSON replies; evidence files retain their stored bytes unchanged).
-`/api/v1/runs/*` also accepts the signed session cookie that `POST /api/v1/session` sets on this site (see the README's Run API).
-`orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
+No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding.
+The public `/api/v1/runs/*` front door and operator proxy follow the [README's access policy](../../README.md#sign-in-with-cloudflare-access); `sandboxId` is dropped from front-door state and event JSON replies; captured evidence files retain their stored bytes unchanged.
+`orchestrator/scripts/demo-run.sh` drives one full run with `REVERSY_URL` and `OPERATOR_TOKEN` only before Access setup.
 
 ## Evidence capture
 

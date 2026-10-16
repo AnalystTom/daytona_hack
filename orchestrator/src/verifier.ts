@@ -130,6 +130,7 @@ async function check(
   name: string,
   instructions: string,
   input: unknown,
+  beforeWork?: () => Promise<void>,
   previewUrl?: string,
 ) {
   const token = previewUrl && new URL(previewUrl).searchParams.get("tkn");
@@ -145,6 +146,7 @@ async function check(
   }
   return llmJson<Omit<Verdict, "target" | "taskId">>(env, {
     name,
+    beforeCall: beforeWork,
     model: env.VERIFIER_MODEL || env.ORCHESTRATOR_MODEL,
     instructions: `${BASE}\n${instructions}`,
     input: payload,
@@ -157,6 +159,7 @@ export async function verifyPlan(
   spec: Spec,
   evidence: Evidence[],
   tasks: Task[],
+  beforeWork?: () => Promise<void>,
 ): Promise<Verdict> {
   const v = await check(
     env,
@@ -177,6 +180,7 @@ export async function verifyPlan(
         }),
       ),
     },
+    beforeWork,
   );
   return { target: "plan", ...v };
 }
@@ -187,6 +191,7 @@ export async function verifyTask(
   evidence: Evidence[],
   task: Task,
   previewUrl?: string,
+  beforeWork?: () => Promise<void>,
 ): Promise<Verdict> {
   const cited = evidence.filter((e) => task.evidence.includes(e.id));
   let preview = "";
@@ -217,6 +222,7 @@ export async function verifyTask(
       previewHtml: preview,
       routes,
     },
+    beforeWork,
     previewUrl,
   );
   return { target: "task", taskId: task.id, ...v };
@@ -229,6 +235,7 @@ export async function verifyFinal(
   tasks: Task[],
   previewUrl?: string,
   originalHtml = "",
+  beforeWork?: () => Promise<void>,
 ): Promise<Verdict> {
   let preview = "";
   if (previewUrl && spec.scope !== "backend") {
@@ -254,6 +261,7 @@ export async function verifyFinal(
       rebuiltOutline: preview,
       routes,
     },
+    beforeWork,
     previewUrl,
   );
   return { target: "final", ...v };

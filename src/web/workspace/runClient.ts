@@ -2,17 +2,22 @@ import { z } from "zod";
 import { OrchestratorEvent } from "./orchestrator";
 
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
-// Runs spend money and hold the target's data, so every call needs the operator session cookie,
-// which only the server can read (POST /api/v1/session sets it).
-
 export type RunCallError = {
   ok: false;
-  error: "not_connected" | "operator_token" | "not_found" | "failed";
+  error:
+    | "not_connected"
+    | "operator_token"
+    | "not_found"
+    | "access_required"
+    | "failed";
   detail: string;
 };
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
 
 const CreatedRun = z.object({ id: z.string().min(1) });
+const RunHistory = z.array(
+  z.object({ id: z.string().min(1), createdAt: z.iso.datetime() }),
+);
 const SignIn = z.object({ liveViewUrl: z.url({ protocol: /^https$/ }) });
 const ErrorBody = z.union([
   z.object({ message: z.string().min(1) }).transform((b) => b.message),
@@ -47,7 +52,9 @@ async function call<T>(
   parse: (response: Response) => Promise<T>,
   fetchImpl: typeof fetch,
 ): Promise<RunCallResult<T>> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    "X-Requested-With": "XMLHttpRequest",
+  };
   if (method === "POST") headers["content-type"] = "application/json";
   let response: Response;
   try {
@@ -78,6 +85,22 @@ async function call<T>(
   const reason = ErrorBody.safeParse(json);
   const detail = reason.success ? reason.data : `HTTP ${response.status}`;
   if (response.status === 401) {
+    if (
+      !(
+        typeof json === "object" &&
+        json !== null &&
+        "code" in json &&
+        (json.code === "operator_token_required" ||
+          (path === "/api/v1/session" && json.code === "unauthorized"))
+      )
+    ) {
+      return {
+        ok: false,
+        error: "access_required",
+        detail:
+          "Sign in in a new tab, then return to this workspace and try again. Keep this tab open.",
+      };
+    }
     return {
       ok: false,
       error: "operator_token",
@@ -169,6 +192,26 @@ export function overrideVerdict(
   );
 }
 
+export function fetchRun(runId: string, fetchImpl: typeof fetch = fetch) {
+  return call(
+    "GET",
+    runPath(runId),
+    undefined,
+    async (r) => CreatedRun.parse(await r.json()),
+    fetchImpl,
+  );
+}
+
+export function fetchRunHistory(fetchImpl: typeof fetch = fetch) {
+  return call(
+    "GET",
+    "/api/v1/runs",
+    undefined,
+    async (r) => RunHistory.parse(await r.json()),
+    fetchImpl,
+  );
+}
+
 // Events after `since`, oldest first.
 export async function fetchEvents(
   runId: string,
@@ -176,13 +219,7 @@ export async function fetchEvents(
   fetchImpl: typeof fetch = fetch,
 ) {
   if (since === 0) {
-    const run = await call(
-      "GET",
-      runPath(runId),
-      undefined,
-      async (r) => CreatedRun.parse(await r.json()),
-      fetchImpl,
-    );
+    const run = await fetchRun(runId, fetchImpl);
     if (!run.ok) return run;
   }
   return call(

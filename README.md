@@ -23,13 +23,13 @@ In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sa
 
 ## Workspace
 
-**Start a project** opens `/workspace`, which shows the saved example run when the browser history entry has no session. The example is always available at `/workspace/example` and through **Example run** in the session menu. **Start your own** opens an empty session. The header's session menu also offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
+**Start a project** opens `/workspace`, which shows the saved example run when the browser history entry has no session. The example is always available at `/workspace/example` and through **Example run** in the session menu. **Start your own** opens an empty session. The header's session menu also offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run follows the [run access policy](#sign-in-with-cloudflare-access); an unavailable run shows recovery guidance and is not added to the session list.
 
 Start a run by sending a website address and an optional goal, such as `Rebuild wikipedia.com, only the header.` Chat selects the first valid whitespace-separated address, strips trailing sentence punctuation, and uses the remaining text as the goal. An address alone defaults to “Rebuild this website.” If no address is recognized, chat asks for one instead of starting a run.
 
 Bare domains and `www.` addresses use HTTPS and preserve their port, path, query and fragment. Without an explicit scheme, addresses require an ASCII host with a supported ending and cannot contain `@`; the supported endings and file-extension exclusions are defined by `bareHost` in [the chat parser](src/web/workspace/chat.ts). Use a full `http://` or `https://` URL for other endings or Unicode hosts.
 
-The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
+The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Before showing cached sessions, it checks them against the signed-in user's run history; before Access setup, it confirms each cached run through the run API instead. It shows a loading or error state until that check succeeds. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events. A run-not-found response clears the retained workspace, its cached session and saved card positions. For expired sign-in, follow the [reauthentication guidance](#sign-in-with-cloudflare-access).
 
 In **Spec**, when the entered URL redirects, the draft spec shows "You entered X; it redirects to Y" beside the resolved target URL. Redirect handling and capture limits are described in the [orchestrator API](docs/orchestrator/api.md#evidence-capture).
 
@@ -92,10 +92,41 @@ A model error, refusal, truncated reply or malformed verdict returns 502, never 
 ## Run API
 
 `/api/v1/runs` is the front door to the private `reversy-orchestrator` Worker (`orchestrator/`), reached through the `ORCHESTRATOR` service binding.
-Every route under it needs `Authorization: Bearer <OPERATOR_TOKEN>` or the session cookie, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
-`POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it.
-Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated write without our `Origin`.
-`/api/v1/orchestrator/*` stays bearer-only.
+Every route under it requires authentication, reads included; [the access policy below](#sign-in-with-cloudflare-access) determines whether Cloudflare Access or the operator fallback applies. The routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
+Before Access setup, `POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it in either mode.
+Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated (or Access-authenticated) write without our `Origin`.
+`/api/v1/orchestrator/*` is bearer-only before Access setup and disabled when Access is configured.
+
+### Sign-in with Cloudflare Access
+
+Once `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are set, the Worker verifies the `Cf-Access-Jwt-Assertion` header that Access adds to each request (RS256 signature against `https://<ACCESS_TEAM_DOMAIN>/cdn-cgi/access/certs`, audience, issuer and expiry) and treats the verified email as the user.
+A signed-in user never sees the operator-token box. They see and act on only the runs they started (anyone else's run answers 404), `GET /api/v1/runs` lists them as `[{ id, createdAt }]`, and starting a run is refused with 429 when they hit a limit:
+
+| Variable | Default | Limit |
+|---|---|---|
+| `RUNS_PER_DAY` | `3` | Runs one user may start per UTC day (`daily_run_limit`) |
+| `ACTIVE_RUNS` | `1` | Active reservations per user, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
+| `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: paid work is refused at the original admission deadline; expired slots require confirmed cancellation (or no stored run state) and successful storage cleanup |
+
+Existing orchestrator runs without a stored `startedAt` timestamp have no orchestrator lifetime deadline.
+
+Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so Access users also need the `SURREALDB_*` bindings; without them their run routes answer 503.
+With both Access bindings configured, run routes require Access identity even if an operator bearer or old session cookie is supplied. Operator session creation and the `/api/v1/orchestrator/*` proxy are disabled. The operator fallback works only before Access setup.
+With neither Access binding, run routes accept `Authorization: Bearer <OPERATOR_TOKEN>` or the operator session cookie. Setting only one of them answers 503 naming the other.
+
+To turn it on (in the Cloudflare dashboard; nothing here configures Cloudflare):
+
+1. **Zero Trust**: open **Zero Trust** from the account home. The first time, pick a team name and the Free plan (up to 50 users). The team domain is `<team-name>.cloudflareaccess.com`, shown under **Settings** (**Team name and domain**). That value, without `https://`, is `ACCESS_TEAM_DOMAIN`.
+2. **Login methods**: in **Zero Trust** > **Integrations** > **Identity providers**, choose **Add new identity provider** > **One-time PIN** (emailed code) if it is not already configured. New organizations need to add OTP explicitly; see [Cloudflare's OTP setup](https://developers.cloudflare.com/cloudflare-one/integrations/identity-providers/one-time-pin/). Optionally add **GitHub** or **Google**, each with its own OAuth app as the dashboard describes.
+3. **Application**: follow Cloudflare's [hostname/path protection setup](https://developers.cloudflare.com/workers/configuration/cloudflare-access/#protect-a-specific-hostname-custom-domain-or-path), which supports `workers.dev`. In **Zero Trust** > **Access controls** > **Applications**, choose **Create new application** > **Self-hosted and private** > **Add public hostname**. Create one application named `reversy` with three public hostname entries, each `reversy.thomasmann2001.workers.dev` with path `start`, `workspace` and `api/v1` (Access covers every path below each one). Keep `/` and asset paths outside this application so the landing page and assets stay public.
+4. **Policy**: add an **Allow** policy naming who may sign in (specific emails, or an email domain). In this application's authentication settings, enable the login methods from step 2 and choose a session duration (24 hours suits the workspace).
+5. **Audience**: open the application's **Overview** (or **Basic information**) and copy the **Application Audience (AUD) Tag**. Use this one application's AUD for all three protected paths as `ACCESS_AUD`.
+6. Set both on `reversy` (`npx wrangler secret put ACCESS_TEAM_DOMAIN`, the same for `ACCESS_AUD`, or as variables in its dashboard **Settings**), plus `RUNS_PER_DAY` / `ACTIVE_RUNS` / `RUN_MAX_MINUTES` if the defaults are wrong.
+
+Run API scripts need an Access identity with a verified email once Access is configured; the operator token and service-only identities cannot bypass ownership or limits.
+Landing entry links load the protected `/workspace` or `/start` document so Access can present interactive login. Run-client requests send `X-Requested-With: XMLHttpRequest` so Access expiry answers 401 instead of redirecting an API fetch. On expiry, choose **Sign in in a new tab**, complete sign-in there, then return to the original workspace and retry the failed message or action. Keep the original tab open: it retains the current run, chat and failed brief. The sign-in link uses a separate tab with opener protection and never automatically starts or resends a run. Access failures never prompt for the operator token.
+
+Admission reserves an active slot, a daily allowance and ownership before any paid start. Invalid input consumes no allowance; failures after admission remain charged and recoverable through run history. Reservations count as active while startup is pending, including across UTC midnight. User-requested chat, build and review continuations reacquire active admission for the same run before paid work; they preserve its original deadline and daily-run charge. A continuation is refused while another run occupies the limit. Expired runs with stored state are stopped before their slots are reused; a missing-state reservation can retire because a delayed start retains the original deadline. If continuation cleanup fails, admission stays blocked until the original deadline (or a successful explicit stop). At that deadline, a later admission attempt retries the existing stop and cleanup path; failed cancellation or storage cleanup keeps the slot held. Admission skips retired reservations; history still includes them.
 
 The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
@@ -115,13 +146,15 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route (or the session cookie it signs), `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Operator fallback for run routes, session creation and `/api/v1/orchestrator/*` only before Access setup; the separate [evidence routes](#evidence-capture) still require it |
+| `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | [Cloudflare Access](#sign-in-with-cloudflare-access) team domain and application audience tag; with both set, signed-in users reach their own runs without the operator token |
+| `RUNS_PER_DAY`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | [Limits and defaults](#sign-in-with-cloudflare-access); `RUN_MAX_MINUTES` also applies to operator runs in the orchestrator |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
-Without the SurrealDB bindings the store answers 503 naming the missing ones; without `OPERATOR_TOKEN` or `ORCHESTRATOR` every run route does the same.
+Without the SurrealDB bindings the store answers 503 naming the missing ones; without `ORCHESTRATOR` every run route does the same. Before Access setup, run routes also require `OPERATOR_TOKEN`.
 A missing or wrong token answers 401.
 
-Interim access policy: the operator token is the only access control; there is no user identity, run ownership or rate limiting yet.
+See [the access policy](#sign-in-with-cloudflare-access) for run authentication and ownership; the separate evidence routes stay operator-only.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 
@@ -219,7 +252,7 @@ The orchestrator (`orchestrator/`) runs the same capture for its runs, with its 
 
 Artifact availability, fallback labels and redirect checks follow the [capture limits](docs/orchestrator/api.md#evidence-capture).
 Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
-Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the [run API's](#run-api) interim access policy).
+These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. They have no per-run ownership check; the [run access policy](#sign-in-with-cloudflare-access) does not authenticate these separate endpoints.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 

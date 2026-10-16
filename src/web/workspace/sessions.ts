@@ -1,9 +1,5 @@
 import { z } from "zod";
-
-// Each run is a session with its own workspace. The orchestrator cannot list runs, so this
-// browser keeps successfully created or confirmed runs; opening a link alone does not
-// establish that the run exists.
-// shortcut: sessions and card layouts live in this browser's localStorage; move them server side with login.
+import { fetchRun, fetchRunHistory, type RunCallResult } from "./runClient";
 
 export const PHASES: Record<string, string> = {
   brief: "Agreeing the spec",
@@ -58,6 +54,37 @@ export function listSessions(): Session[] {
       return session.success ? [session.data] : [];
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+export async function ownedSessions(
+  fetchImpl: typeof fetch = fetch,
+): Promise<RunCallResult<Session[]>> {
+  const history = await fetchRunHistory(fetchImpl);
+  let sessions: Session[];
+  if (history.ok) {
+    const owned = new Set(history.value.map((run) => run.id));
+    sessions = listSessions().filter((session) => owned.has(session.runId));
+  } else {
+    if (history.error !== "not_found") return history;
+    const cached = listSessions();
+    const confirmed = await Promise.all(
+      cached.map((session) => fetchRun(session.runId, fetchImpl)),
+    );
+    for (const result of confirmed)
+      if (!result.ok && result.error !== "not_found") return result;
+    sessions = cached.filter(
+      (_session, index) => confirmed[index]?.ok === true,
+    );
+  }
+  return { ok: true, value: sessions };
+}
+
+export function forgetSession(runId: string) {
+  write(
+    SESSIONS_KEY,
+    listSessions().filter((session) => session.runId !== runId),
+  );
+  write(layoutKey(runId), {});
 }
 
 // Records what is known about a run; unknown fields keep their stored value.

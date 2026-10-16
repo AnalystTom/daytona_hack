@@ -164,11 +164,11 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Build engine: the Reversy orchestrator, a Cloudflare Durable Object per run, enhanced with full Anchor capture, running Codex workers in one Daytona sandbox. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop. Firstmate in Daytona with no-mistakes review is a second engine for later.
 - The orchestrator is private: only our site calls it, and only we can test it.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
-- Each run is limited to 2 hours.
+- Run admission and lifetime limits are defined in the [README's access policy](../README.md#sign-in-with-cloudflare-access).
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
-- Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: financial reports and user accounts, sign-ups or a login system (the existing token gates stay). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
+- Run authentication and workspace ownership follow the [README's access policy](../README.md#sign-in-with-cloudflare-access).
+- Out of the demo for now: financial reports. REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
 - Run scope and the first demo target: see section 5.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

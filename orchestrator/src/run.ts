@@ -61,9 +61,10 @@ interface State {
   tasks: Task[];
   sandboxId?: string;
   previewUrl?: string;
-  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup";
+  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup" | "stop";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   error?: string;
+  startedAt?: number; // epoch ms; runs from before this field have no time limit
 }
 
 const now = () => new Date().toISOString();
@@ -219,17 +220,23 @@ export class Run extends DurableObject<Env> {
 
   /** A signed link to the private sandbox preview, or undefined before the build serves one. */
   async previewLink(seconds = PREVIEW_LINK_SECONDS) {
-    // An unknown run has no state; a stopped one has no sandbox.
     if (!this.s?.sandboxId || !this.s.previewUrl) return undefined;
     return this.daytona.signedPreviewUrl(this.s.sandboxId, 3000, seconds);
   }
 
   /** Phase 1: create the run, take a first look, open the conversation. */
-  async start(id: string, entered: string, goal: string) {
+  async start(
+    id: string,
+    entered: string,
+    goal: string,
+    startedAt = Date.now(),
+  ) {
+    if (this.s) throw new Error("This run already exists.");
     let url = entered;
     const signal = this.inspection.signal;
     this.s = {
       id,
+      startedAt,
       phase: "brief",
       chat: [],
       evidence: [],
@@ -249,6 +256,7 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
+    await this.beforeWork();
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
     if (signal.aborted) return this.s;
@@ -301,7 +309,10 @@ export class Run extends DurableObject<Env> {
           `No screenshot: ${notObservedReason(redactQuery(shots[0]?.limitations.join(" ") ?? ""))}`,
         );
     } catch (e: any) {
-      if (signal.aborted) return this.s;
+      if (signal.aborted) {
+        if (this.overTime()) throw e;
+        return this.s;
+      }
       // The conversation can start without the screenshot.
       const message = String(e?.message || e);
       await this.emit(
@@ -312,7 +323,7 @@ export class Run extends DurableObject<Env> {
       notes.push(`No screenshot: the capture failed: ${message}`);
     }
     if (signal.aborted) return this.s;
-    const { html } = await pageHtml(this.env, url);
+    const { html } = await pageHtml(this.env, url, this.beforeWork);
     if (signal.aborted) return this.s;
     const routes = routesFrom(html, url);
     await this.emit(
@@ -339,6 +350,7 @@ export class Run extends DurableObject<Env> {
 
   /** Chat: the orchestrator refines the spec with the user. */
   async message(text: string) {
+    await this.beforeWork();
     await this.addChat("user", text);
     await this.converse();
     return this.s;
@@ -346,6 +358,7 @@ export class Run extends DurableObject<Env> {
 
   /** User approved the spec in chat or via button: inspect fully, then plan. */
   async approveSpec() {
+    await this.beforeWork();
     const signal = this.inspection.signal;
     signal.throwIfAborted();
     if (this.s.phase !== "brief")
@@ -365,6 +378,7 @@ export class Run extends DurableObject<Env> {
   /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
   startSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       const result = await this.capture({
         mode: "full_pack",
         scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
@@ -379,6 +393,7 @@ export class Run extends DurableObject<Env> {
   /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
   resumeSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       this.awaitingSignIn();
       return this.continueInspection("resume_sign_in");
     });
@@ -387,6 +402,7 @@ export class Run extends DurableObject<Env> {
   /** Plan without the stopped pages. */
   skipSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       this.awaitingSignIn();
       await endSavedSignIn(this.env, this.s.id);
       return this.continueInspection("plan");
@@ -400,6 +416,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private async continueInspection(pending: "resume_sign_in" | "plan") {
+    await this.beforeWork();
     this.s.phase = "inspecting";
     this.s.pending = pending;
     await this.save();
@@ -410,6 +427,7 @@ export class Run extends DurableObject<Env> {
 
   /** Start build: needs an approved spec and a plan. */
   async startBuild() {
+    await this.beforeWork();
     if (this.s.phase !== "planned")
       throw new Error(
         "No build started: tasks appear after the spec is approved.",
@@ -423,29 +441,42 @@ export class Run extends DurableObject<Env> {
   }
 
   stop() {
-    return this.serializeSignIn(async () => {
-      this.inspection.abort();
-      await Promise.all([...this.captureSessions].map((close) => close()));
-      for (const t of this.s.tasks) {
-        if (t.status === "queued" || t.status === "building") {
-          t.status = "stopped";
-          t.nextAction = "Restart the build to resume";
-          await this.emit("task", t);
-        }
+    return this.serializeSignIn(() => this.cancelWork());
+  }
+
+  private async cancelWork() {
+    this.s.pending = "stop";
+    this.inspection.abort();
+    await this.save();
+    await Promise.all([...this.captureSessions].map((close) => close()));
+    await this.ctx.storage.deleteAlarm();
+    if (this.s.sandboxId) {
+      const sandbox = await this.daytona.get(this.s.sandboxId);
+      if (sandbox.state === "started") {
+        await this.daytona.must(
+          this.s.sandboxId,
+          `if pkill -9 -f '[c]odex exec'; then :; else [ "$?" -eq 1 ] || exit 1; fi; pgrep -f '[c]odex exec' >/dev/null; test "$?" -eq 1`,
+        );
+      } else if (!["stopped", "archived", "deleted"].includes(sandbox.state)) {
+        throw new Error(
+          `Sandbox ${this.s.sandboxId} cancellation unconfirmed: ${sandbox.state ?? "unknown"}.`,
+        );
       }
-      if (this.s.sandboxId)
-        await this.daytona
-          .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
-          .catch(() => {});
-      if (this.s.signInPaths?.length)
-        await endSavedSignIn(this.env, this.s.id).catch(() => {});
-      this.s.phase = "stopped";
-      this.s.pending = undefined;
-      await this.save();
-      await this.emit("phase", { phase: "stopped" });
-      await this.ctx.storage.deleteAlarm();
-      return this.s;
-    });
+    }
+    if (this.s.signInPaths?.length)
+      await endSavedSignIn(this.env, this.s.id).catch(() => {});
+    for (const t of this.s.tasks) {
+      if (["queued", "building", "in_review"].includes(t.status)) {
+        t.status = "stopped";
+        t.nextAction = "Start a new run to continue";
+        await this.emit("task", t);
+      }
+    }
+    this.s.phase = "stopped";
+    this.s.pending = undefined;
+    await this.save();
+    await this.emit("phase", { phase: "stopped" });
+    return this.s;
   }
 
   /** Override a review verdict from the UI. */
@@ -454,26 +485,75 @@ export class Run extends DurableObject<Env> {
     verdict: "approve" | "reject",
     reason: string,
   ) {
+    await this.beforeWork();
     const t = this.task(taskId);
-    t.review = {
-      verdict,
-      reason: `Overridden by user: ${reason}`,
-      findings: t.review?.findings || [],
-    };
-    if (verdict === "approve" && t.status !== "merged") await this.merge(t);
-    if (verdict === "reject") {
-      t.status = "queued";
-      t.attempts = 0;
+    const reopening =
+      this.s.phase === "done" &&
+      (verdict === "reject" || t.status !== "merged");
+    try {
+      if (reopening) {
+        this.s.phase = "building";
+        await this.save();
+        await this.emit("phase", { phase: "building" });
+      }
+      t.review = {
+        verdict,
+        reason: `Overridden by user: ${reason}`,
+        findings: t.review?.findings || [],
+      };
+      if (verdict === "approve" && t.status !== "merged") await this.merge(t);
+      await this.beforeWork();
+      if (verdict === "reject") {
+        t.status = "queued";
+        t.attempts = 0;
+      }
+      await this.save();
+      await this.emit("review", { taskId, ...t.review });
+      await this.ctx.storage.setAlarm(Date.now() + 100);
+      return t;
+    } catch (error) {
+      if (reopening) await this.failWork(error);
+      throw error;
     }
-    await this.save();
-    await this.emit("review", { taskId, ...t.review });
-    await this.ctx.storage.setAlarm(Date.now() + 100);
-    return t;
   }
+
+  private async failWork(error: unknown) {
+    if (this.s.pending === "stop" || this.s.phase === "stopped") return;
+    this.s.phase = "failed";
+    this.s.error = error instanceof Error ? error.message : String(error);
+    await this.save();
+    await this.ctx.storage.deleteAlarm();
+    await this.emit("phase", { phase: "failed" });
+  }
+
+  /** Says why the run is past RUN_MAX_MINUTES (default 120) since it started, if it is. */
+  private overTime() {
+    const set = Number(this.env.RUN_MAX_MINUTES);
+    const minutes = Number.isInteger(set) && set > 0 ? set : 120;
+    return this.s.startedAt !== undefined &&
+      Date.now() - this.s.startedAt >= minutes * 60_000
+      ? `reached its ${minutes}-minute limit`
+      : undefined;
+  }
+
+  private beforeWork = async () => {
+    if (this.s.pending === "stop")
+      throw new Error(
+        "This run is stopping; start a new one after cancellation succeeds.",
+      );
+    if (this.s.phase === "stopped" || this.s.phase === "failed")
+      throw new Error(`This run is ${this.s.phase}; start a new one.`);
+    const overTime = this.overTime();
+    if (!overTime) return;
+    this.s.error = `Stopped: ${overTime}.`;
+    await this.cancelWork();
+    throw new Error(this.s.error);
+  };
 
   // ---------- alarm loop ----------
   async alarm() {
     try {
+      await this.beforeWork();
       const pending = this.s.pending;
       if (
         pending === "inspect" ||
@@ -497,7 +577,8 @@ export class Run extends DurableObject<Env> {
             () => this.setupSandbox(),
           );
         } catch (e) {
-          this.s.phase = "planned"; // let the user press Start build again
+          if (this.s.pending === "stop") throw e;
+          if (this.s.phase !== "stopped") this.s.phase = "planned";
           if (this.s.sandboxId)
             await this.daytona.remove(this.s.sandboxId).catch(() => {});
           this.s.sandboxId = undefined;
@@ -516,9 +597,12 @@ export class Run extends DurableObject<Env> {
       if (this.inspection.signal.aborted) return;
       this.s.error = String(e?.message || e);
       await this.emit("error", { message: this.s.error });
-      if (this.s.phase === "inspecting" || this.s.phase === "planning")
+      if (
+        this.s.pending !== "stop" &&
+        (this.s.phase === "inspecting" || this.s.phase === "planning")
+      )
         this.s.phase = "failed";
-      if (this.s.phase === "building")
+      if (this.s.pending !== "stop" && this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }
     if (this.inspection.signal.aborted) return;
@@ -557,6 +641,7 @@ export class Run extends DurableObject<Env> {
       this.env,
       this.memScope(),
       this.s.chat.at(-1)?.text || this.s.spec.goal,
+      this.beforeWork,
     );
     signal?.throwIfAborted();
     const out = await llmJson<{
@@ -564,6 +649,7 @@ export class Run extends DurableObject<Env> {
       spec: Omit<Spec, "approved" | "revision" | "url" | "goal">;
       userApproved: boolean;
     }>(this.env, {
+      beforeCall: this.beforeWork,
       name: "orchestrator_turn",
       effort: "medium",
       instructions: CHAT_INSTRUCTIONS,
@@ -626,6 +712,7 @@ export class Run extends DurableObject<Env> {
       },
     });
     signal?.throwIfAborted();
+    await this.beforeWork();
     if (this.s.spec.approved) out.spec.scope = this.s.spec.scope; // a running plan keeps its scope
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
@@ -637,7 +724,8 @@ export class Run extends DurableObject<Env> {
 
   // ---------- phase 2+3: inspect and plan ----------
   /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
-  private capture(request: CaptureRequest) {
+  private async capture(request: CaptureRequest) {
+    await this.beforeWork();
     const signal = this.inspection.signal;
     signal.throwIfAborted();
     let closeSession: (() => Promise<void>) | undefined;
@@ -656,19 +744,27 @@ export class Run extends DurableObject<Env> {
             this.env,
             this.memScope(),
             `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
+            undefined,
+            this.beforeWork,
           );
         }
       },
       {
         signal,
+        beforeWork: this.beforeWork,
         onSession: (close) => {
           closeSession = close;
           this.captureSessions.add(close);
         },
       },
-    ).finally(() => {
-      if (closeSession) this.captureSessions.delete(closeSession);
-    });
+    )
+      .then(async (result) => {
+        await this.beforeWork();
+        return result;
+      })
+      .finally(() => {
+        if (closeSession) this.captureSessions.delete(closeSession);
+      });
   }
 
   private async storeEvidence(
@@ -694,6 +790,8 @@ export class Run extends DurableObject<Env> {
           this.env,
           this.memScope(),
           `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}${e.page}: ${e.summary}. Limits: ${e.limits}.`,
+          undefined,
+          this.beforeWork,
         );
       }
     }
@@ -777,6 +875,7 @@ export class Run extends DurableObject<Env> {
       return;
     }
     signal.throwIfAborted();
+    await this.beforeWork();
     this.s.signInPaths = undefined;
     this.s.phase = "planning";
     await this.emit("phase", { phase: "planning" }, signal);
@@ -786,6 +885,7 @@ export class Run extends DurableObject<Env> {
     const plan = await llmJson<{
       tasks: Omit<Task, "status" | "attempts" | "branch">[];
     }>(this.env, {
+      beforeCall: this.beforeWork,
       name: "plan",
       instructions: `You are Reversy's orchestrator. You never write code. Split the approved spec (scope: ${scope}) into small tasks, one worker each.
 Architecture every task must respect (it keeps parallel work conflict-free):
@@ -843,6 +943,7 @@ ${DATA_INSTRUCTIONS}`,
       },
     });
     signal.throwIfAborted();
+    await this.beforeWork();
     const outsideScope = offScope(scope, plan.tasks);
     if (outsideScope.length)
       throw new Error(
@@ -863,6 +964,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Plan for ${this.s.spec.url}: ${this.s.tasks.map((t) => `${t.id} ${t.title} (evidence ${t.evidence.join(",")})`).join("; ")}`,
+      undefined,
+      this.beforeWork,
     );
     signal.throwIfAborted();
     const pv = await verifyPlan(
@@ -870,6 +973,7 @@ ${DATA_INSTRUCTIONS}`,
       this.s.spec,
       this.s.evidence,
       this.s.tasks,
+      this.beforeWork,
     );
     await this.verified(pv, signal);
     await this.addChat(
@@ -898,6 +1002,7 @@ ${DATA_INSTRUCTIONS}`,
 
   // ---------- phase 4: build ----------
   private async setupSandbox() {
+    await this.beforeWork();
     const sb = await this.daytona.create({
       snapshot: this.env.DAYTONA_SNAPSHOT || undefined,
       env: { OPENAI_API_KEY: this.env.OPENAI_API_KEY },
@@ -906,6 +1011,7 @@ ${DATA_INSTRUCTIONS}`,
     this.s.sandboxId = sb.id;
     await this.save();
     const id = sb.id;
+    await this.beforeWork();
     await this.daytona.must(
       id,
       `mkdir -p ${APP} ${WT} ${EV} ${LOGS} && cd ${APP} && git init -q -b main && git config --global user.email reversy@local && git config --global user.name Reversy && echo ${shq(`# Reversy rebuild of ${this.s.spec.url}`)} > README.md && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init`,
@@ -931,10 +1037,14 @@ ${DATA_INSTRUCTIONS}`,
       JSON.stringify(this.s.spec, null, 1),
     );
     await this.daytona.must(id, `chmod -R a-w ${EV}`); // workers read evidence, never change it
-    await this.daytona.startAsync(
-      id,
-      "preview",
-      previewCommand(this.s.spec.scope, APP),
+    await this.beforeWork();
+    await this.ctx.blockConcurrencyWhile(() =>
+      this.daytona.startAsync(
+        id,
+        "preview",
+        previewCommand(this.s.spec.scope, APP),
+        this.beforeWork,
+      ),
     );
     this.s.previewUrl = await this.daytona.previewUrl(id, 3000);
     await this.save();
@@ -944,6 +1054,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Build started in Daytona sandbox ${id}; preview ${this.s.previewUrl}`,
+      undefined,
+      this.beforeWork,
     );
   }
 
@@ -962,6 +1074,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Verifier on ${v.taskId || v.target}: ${v.pass ? "pass" : "fail"} — ${v.summary}`,
+      undefined,
+      this.beforeWork,
     );
     if (!v.pass) {
       // a failure goes back to the orchestrator as steering and shows on the canvas
@@ -1029,26 +1143,33 @@ ${DATA_INSTRUCTIONS}`,
         ),
     );
     if (open.length === 0 || open.length === blocked.length) {
-      this.s.phase = "done";
-      await this.emit("phase", {
-        phase: "done",
-        merged: this.s.tasks.filter((t) => t.status === "merged").length,
-        failed: this.s.tasks.filter((t) => t.status === "failed").length,
-      });
       const original = await this.originalHtml();
-      const fv = await verifyFinal(
-        this.env,
-        this.s.spec,
-        this.s.evidence,
-        this.s.tasks,
-        await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
-        original,
-      );
-      await this.verified(fv);
-      await this.addChat(
-        "assistant",
-        `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is in the app.`,
-      );
+      try {
+        const fv = await verifyFinal(
+          this.env,
+          this.s.spec,
+          this.s.evidence,
+          this.s.tasks,
+          await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
+          original,
+          this.beforeWork,
+        );
+        await this.verified(fv);
+        await this.beforeWork();
+        this.s.phase = "done";
+        await this.emit("phase", {
+          phase: "done",
+          merged: this.s.tasks.filter((t) => t.status === "merged").length,
+          failed: this.s.tasks.filter((t) => t.status === "failed").length,
+        });
+        await this.addChat(
+          "assistant",
+          `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. The preview is in the app.`,
+        );
+      } catch (error) {
+        await this.failWork(error);
+        throw error;
+      }
       return;
     }
     await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
@@ -1101,7 +1222,16 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .map((e) => `-i /home/daytona/${e.path}`)
       .join(" ");
     const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
-    t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
+    await this.beforeWork();
+    t.cmdId = await this.ctx.blockConcurrencyWhile(() =>
+      this.daytona.startAsync(
+        id,
+        `w-${t.id}-${t.attempts}`,
+        cmd,
+        this.beforeWork,
+      ),
+    );
+    await this.beforeWork();
     t.status = "building";
     t.attempts += 1;
     this.s.error = undefined;
@@ -1161,6 +1291,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       };
     } else {
       verdict = await llmJson<NonNullable<Task["review"]>>(this.env, {
+        beforeCall: this.beforeWork,
         name: "review",
         instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.
 ${DATA_INSTRUCTIONS}`,
@@ -1184,6 +1315,7 @@ ${DATA_INSTRUCTIONS}`,
         },
       });
     }
+    await this.beforeWork();
     t.review = verdict;
     await this.emit("review", {
       taskId: t.id,
@@ -1194,6 +1326,8 @@ ${DATA_INSTRUCTIONS}`,
       this.env,
       this.memScope(),
       `Review of ${t.id} (${t.title}) attempt ${t.attempts}: ${verdict.verdict} — ${verdict.reason}`,
+      undefined,
+      this.beforeWork,
     );
     if (verdict.verdict === "approve") {
       await this.merge(t);
@@ -1215,6 +1349,7 @@ ${DATA_INSTRUCTIONS}`,
   }
 
   private async merge(t: Task) {
+    await this.beforeWork();
     const id = this.s.sandboxId!;
     const r = await this.daytona.exec(
       id,
@@ -1246,6 +1381,7 @@ ${DATA_INSTRUCTIONS}`,
         this.s.evidence,
         t,
         await this.previewLink(PREVIEW_CHECK_SECONDS).catch(() => undefined),
+        this.beforeWork,
       ),
     );
   }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   fetchPreviewLink,
+  fetchRun,
   type RunCallError,
   type RunCallResult,
 } from "./runClient";
@@ -20,10 +21,18 @@ export function PreviewView({
   useEffect(() => {
     let live = true;
     setLink(undefined);
-    void fetchPreviewLink(runId).then((result) => {
+    void fetchPreviewLink(runId).then(async (result) => {
       if (!live) return;
       setLink(result);
-      if (!result.ok && result.error === "operator_token") onRefused(result);
+      if (
+        !result.ok &&
+        ["operator_token", "access_required"].includes(result.error)
+      )
+        onRefused(result);
+      if (!result.ok && result.error === "not_found") {
+        const owned = await fetchRun(runId);
+        if (live && !owned.ok && owned.error === "not_found") onRefused(owned);
+      }
     });
     return () => {
       live = false;

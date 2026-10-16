@@ -60,9 +60,20 @@ export default {
         req.method === "POST" ? await req.json().catch(() => ({})) : {};
       if (parts.length === 1 && req.method === "POST") {
         if (!body.url) return json({ error: "url required" }, 400);
-        const id = crypto.randomUUID();
+        const id =
+          typeof body.id === "string" && /^[\w-]{1,100}$/.test(body.id)
+            ? body.id
+            : crypto.randomUUID();
         const run = env.RUNS.get(env.RUNS.idFromName(id)) as any;
-        return json(await run.start(id, body.url, body.goal || ""), 201);
+        return json(
+          await run.start(
+            id,
+            body.url,
+            body.goal || "",
+            typeof body.startedAt === "number" ? body.startedAt : undefined,
+          ),
+          201,
+        );
       }
       const run = env.RUNS.get(env.RUNS.idFromName(parts[1])) as any;
       const action = parts[2] || "";

@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CanvasEvidence } from "../../shared/workspace";
 import { BuildView } from "./BuildView";
 import { ChatPanel } from "./ChatPanel";
@@ -182,6 +182,44 @@ describe("ChatPanel", () => {
     expect(html).toMatch(
       /<button type="submit"[^>]*disabled=""[^>]*>Send brief/,
     );
+  });
+
+  it("renders a protected sign-in document in a separate tab with no submitted message", () => {
+    const onSend = vi.fn();
+    const onRetry = vi.fn();
+    const html = renderToStaticMarkup(
+      <ChatPanel
+        entries={[
+          { kind: "agent", id: "reply", text: "Keep the current hero" },
+          {
+            kind: "user",
+            id: "brief",
+            text: "copy https://example.com",
+            delivery: "failed",
+          },
+          {
+            kind: "notice",
+            id: "auth",
+            error: "access_required",
+            detail: "Sign in in a new tab, then return here and try again.",
+          },
+        ]}
+        pending={false}
+        onSend={onSend}
+        onRetry={onRetry}
+        onSaveToken={noop}
+      />,
+    );
+    expect(html).toContain(
+      'href="/start" target="_blank" rel="noopener noreferrer"',
+    );
+    expect(html).toContain("Sign in in a new tab");
+    expect(html).toContain("Keep the current hero");
+    expect(html).toContain("copy https://example.com");
+    expect(html).toContain("Try again");
+    expect(html).not.toContain('id="operator-token"');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(onRetry).not.toHaveBeenCalled();
   });
 
   it("shows a sent brief, a failed delivery and inline states", () => {

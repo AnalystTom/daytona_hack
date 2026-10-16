@@ -358,7 +358,7 @@ describe("run scope", () => {
       expect(state.tasks).toEqual([]);
       expect(calls.some((c) => c.name === "verify_plan")).toBe(false);
       expect((await run.events(0)).some((e) => e.type === "plan")).toBe(false);
-      await expect(run.startBuild()).rejects.toThrow("No build started");
+      await expect(run.startBuild()).rejects.toThrow("This run is failed");
       expect((await run.getState()).sandboxId).toBeUndefined();
     },
   );
