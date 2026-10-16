@@ -7,6 +7,8 @@ export interface RunOwner {
   runId: string;
   owner: string;
   createdAt: number;
+  revision?: number;
+  busy?: boolean;
 }
 
 export interface Owners {
@@ -16,11 +18,13 @@ export interface Owners {
     run: RunOwner,
     maxActive: number,
     perDay: number,
-    ended: string[],
+    ended: RunOwner[],
   ): Promise<"active_run_limit" | "daily_run_limit" | undefined>;
+  finish(runId: string, owner: string): Promise<void>;
 }
 
-const fields = "record::id(id) AS runId, owner, createdAt";
+const fields =
+  "record::id(id) AS runId, owner, createdAt, (revision ?? 0) AS revision, (busy ?? false) AS busy";
 
 export function surrealOwners(db: SurrealRunStore): Owners {
   return {
@@ -38,6 +42,12 @@ export function surrealOwners(db: SurrealRunStore): Owners {
       );
       return (rows as RunOwner[] | null) ?? [];
     },
+    async finish(runId, owner) {
+      await db.query(
+        "UPDATE type::record('run_owner', $runId) SET busy = false WHERE owner = $owner RETURN NONE",
+        { runId, owner },
+      );
+    },
     async reserve(run, maxActive, perDay, ended) {
       const day = new Date(run.createdAt).toISOString().slice(0, 10);
       for (let attempt = 0; ; attempt++) {
@@ -46,13 +56,22 @@ export function surrealOwners(db: SurrealRunStore): Owners {
             `
 BEGIN TRANSACTION;
 UPSERT type::record('run_quota', $owner) SET revision = (revision ?? 0) + 1 RETURN NONE;
-UPDATE run_owner SET active = false WHERE owner = $owner AND record::id(id) IN $ended RETURN NONE;
-LET $active = array::len((SELECT VALUE id FROM run_owner WHERE owner = $owner AND (active ?? true) = true));
+FOR $old IN $ended {
+UPDATE type::record('run_owner', $old.runId) SET active = false
+WHERE owner = $owner AND (revision ?? 0) = ($old.revision ?? 0) AND (busy ?? false) = false RETURN NONE;
+};
+LET $existing = (SELECT * FROM ONLY type::record('run_owner', $runId));
+IF $existing != NONE AND $existing.owner != $owner { THROW 'Run owner mismatch'; };
+LET $active = array::len((SELECT VALUE id FROM run_owner WHERE owner = $owner AND (active ?? true) = true AND record::id(id) != $runId));
 LET $runs = (SELECT VALUE runs FROM ONLY type::record('run_quota', [$owner, $day])) ?? 0;
-LET $refusal = IF $active >= $maxActive { 'active_run_limit' } ELSE IF $runs >= $perDay { 'daily_run_limit' } ELSE { NONE };
+LET $refusal = IF $active >= $maxActive OR ($existing.busy ?? false) { 'active_run_limit' } ELSE IF $existing = NONE AND $runs >= $perDay { 'daily_run_limit' } ELSE { NONE };
 IF $refusal = NONE {
+IF $existing = NONE {
 UPSERT type::record('run_quota', [$owner, $day]) SET runs = $runs + 1 RETURN NONE;
-CREATE type::record('run_owner', $runId) CONTENT { owner: $owner, createdAt: $createdAt, active: true } RETURN NONE;
+CREATE type::record('run_owner', $runId) CONTENT { owner: $owner, createdAt: $createdAt, active: true, revision: 0, busy: false } RETURN NONE;
+} ELSE {
+UPDATE type::record('run_owner', $runId) SET active = true, busy = true, revision = (revision ?? 0) + 1 RETURN NONE;
+};
 };
 RETURN $refusal;
 COMMIT TRANSACTION;`,

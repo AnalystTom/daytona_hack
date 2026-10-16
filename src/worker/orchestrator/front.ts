@@ -10,7 +10,7 @@ import {
 import { checkTargetUrl } from "../runs/url";
 import { resolveStore, type StoreEnv } from "../store";
 import { accessConfig, type AccessEnv } from "./access";
-import { type Owners, surrealOwners } from "./owners";
+import { type Owners, type RunOwner, surrealOwners } from "./owners";
 import { checkCaller, handleSession } from "./session";
 
 // The reversy-orchestrator Worker has no public address; this Worker is its front door.
@@ -136,10 +136,41 @@ async function userRunRoute(
 ): Promise<Response> {
   if (runId !== undefined) {
     // Someone else's run answers exactly like a run that does not exist.
-    if ((await owners.get(runId))?.owner !== user) {
+    const owned = await owners.get(runId);
+    if (owned?.owner !== user) {
       throw new Failure(404, "run_not_found", `Run ${runId} not found.`);
     }
-    return runRoute(request, orchestrator, url, runId, action);
+    if (
+      request.method === "POST" &&
+      ["messages", "override", "approve", "build"].includes(action ?? "")
+    ) {
+      if (
+        Date.now() - owned.createdAt >=
+        limit(env.RUN_MAX_MINUTES, 120) * 60_000
+      ) {
+        throw new Failure(
+          409,
+          "run_expired",
+          "This run reached its time limit; start a new one.",
+        );
+      }
+      await admit(env, orchestrator, owners, owned);
+      try {
+        return await runRoute(request, orchestrator, url, runId, action);
+      } finally {
+        await owners.finish(runId, user);
+      }
+    }
+    const response = await runRoute(request, orchestrator, url, runId, action);
+    if (request.method === "POST" && action === "stop") {
+      const stopped = (await response.clone().json()) as {
+        phase?: string;
+        pending?: string;
+      };
+      if (stopped.phase === "stopped" && stopped.pending !== "stop")
+        await owners.finish(runId, user);
+    }
+    return response;
   }
   if (request.method === "GET") {
     const runs = await owners.list(user, 0);
@@ -156,17 +187,47 @@ async function userRunRoute(
   const checked = checkTargetUrl(target);
   if ("error" in checked) throw new Failure(400, "invalid_url", checked.error);
   const now = Date.now();
+  const id = crypto.randomUUID();
+  await admit(env, orchestrator, owners, {
+    runId: id,
+    owner: user,
+    createdAt: now,
+  });
+  try {
+    return await forward(orchestrator, "POST", "/runs", {
+      id,
+      startedAt: now,
+      url: checked.url,
+      goal,
+    });
+  } catch (error) {
+    throw new Failure(
+      502,
+      "orchestrator_error",
+      `Run ${id} could not finish starting. It remains in your run history and counts toward your limits. ${error instanceof Error ? error.message : "The run service could not be reached."}`,
+    );
+  }
+}
+
+async function admit(
+  env: OrchestratorEnv,
+  orchestrator: Fetcher,
+  owners: Owners,
+  run: RunOwner,
+) {
+  const now = Date.now();
+  const user = run.owner;
   const maxMinutes = limit(env.RUN_MAX_MINUTES, 120);
   const recent = await owners.list(user, 0);
-  const ended: string[] = [];
+  const ended: RunOwner[] = [];
   for (const owned of recent) {
     const reply = await forward(orchestrator, "GET", `/runs/${owned.runId}`);
     const { phase, pending } = JSON.parse((await reply.text()) || "{}") as {
       phase?: string;
       pending?: string;
     };
-    if (pending === "stop") continue;
-    if (phase && ENDED.includes(phase)) ended.push(owned.runId);
+    if (pending === "stop" || owned.busy) continue;
+    if (phase && ENDED.includes(phase)) ended.push(owned);
     else if (now - owned.createdAt >= maxMinutes * 60_000) {
       if (phase) {
         const stopped = await forward(
@@ -180,13 +241,12 @@ async function userRunRoute(
           pending?: string;
         };
         if (result.phase === "stopped" && result.pending !== "stop")
-          ended.push(owned.runId);
-      } else ended.push(owned.runId);
+          ended.push(owned);
+      } else ended.push(owned);
     }
   }
-  const id = crypto.randomUUID();
   const refusal = await owners.reserve(
-    { runId: id, owner: user, createdAt: now },
+    run,
     limit(env.ACTIVE_RUNS, 1),
     limit(env.RUNS_PER_DAY, 3),
     ended,
@@ -198,20 +258,6 @@ async function userRunRoute(
       refusal === "active_run_limit"
         ? "Stop an active run or let it finish before starting another."
         : "You have reached today's run limit. Try again tomorrow (UTC).",
-    );
-  }
-  try {
-    return await forward(orchestrator, "POST", "/runs", {
-      id,
-      startedAt: now,
-      url: checked.url,
-      goal,
-    });
-  } catch (error) {
-    throw new Failure(
-      502,
-      "orchestrator_error",
-      `Run ${id} could not finish starting. It remains in your run history and counts toward your limits. ${error instanceof Error ? error.message : "The run service could not be reached."}`,
     );
   }
 }

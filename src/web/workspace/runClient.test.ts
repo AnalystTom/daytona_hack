@@ -29,7 +29,10 @@ describe("run client", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith("/api/v1/runs", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
       body: JSON.stringify(brief),
     });
   });
@@ -78,6 +81,36 @@ describe("run client", () => {
     }
   });
 
+  it("identifies every request as AJAX so expired Access sessions reach recovery instead of a login redirect", async () => {
+    const edge = vi.fn<typeof fetch>(async (_input, init) => {
+      if (
+        new Headers(init?.headers).get("X-Requested-With") !== "XMLHttpRequest"
+      )
+        throw new TypeError("CORS blocked login redirect");
+      return new Response(null, { status: 401 });
+    });
+    for (const request of [
+      () => createRun(brief, edge),
+      () => sendMessage("r1", "Continue", edge),
+      () => runAction("r1", "build", edge),
+      () =>
+        overrideVerdict(
+          "r1",
+          { taskId: "t01", verdict: "approve", reason: "" },
+          edge,
+        ),
+      () => fetchEvents("r1", 0, edge),
+      () => fetchPreviewLink("r1", edge),
+      () => fetchEvidence("/api/v1/runs/r1/evidence/ev1", edge),
+      () => signIn("token", edge),
+    ])
+      expect(await request()).toMatchObject({
+        ok: false,
+        error: "access_required",
+      });
+    expect(edge).toHaveBeenCalledTimes(8);
+  });
+
   it("signs in by posting the token to the session endpoint", async () => {
     const fetchImpl = reply(204);
     expect(await signIn("op-token", fetchImpl)).toEqual({
@@ -86,7 +119,10 @@ describe("run client", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith("/api/v1/session", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        "X-Requested-With": "XMLHttpRequest",
+      },
       body: '{"token":"op-token"}',
     });
     expect(
@@ -186,7 +222,11 @@ describe("run client", () => {
     });
     expect(fetchImpl).toHaveBeenCalledWith(
       "/api/v1/runs/run_1/events?since=2",
-      { method: "GET", headers: {}, body: undefined },
+      {
+        method: "GET",
+        headers: { "X-Requested-With": "XMLHttpRequest" },
+        body: undefined,
+      },
     );
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });

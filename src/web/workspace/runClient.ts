@@ -44,7 +44,9 @@ async function call<T>(
   parse: (response: Response) => Promise<T>,
   fetchImpl: typeof fetch,
 ): Promise<RunCallResult<T>> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    "X-Requested-With": "XMLHttpRequest",
+  };
   if (method === "POST") headers["content-type"] = "application/json";
   let response: Response;
   try {

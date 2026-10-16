@@ -7,26 +7,57 @@ const SITE = "https://reversy.test";
 
 // The SurrealDB owner store's behaviour, in memory.
 function memoryOwners(): Owners {
-  const runs: (RunOwner & { active: boolean })[] = [];
+  const runs: (RunOwner & {
+    active: boolean;
+    revision: number;
+    busy: boolean;
+  })[] = [];
   const counts = new Map<string, number>();
   return {
     async get(runId) {
-      return runs.find((r) => r.runId === runId) ?? null;
+      const run = runs.find((r) => r.runId === runId);
+      return run ? { ...run } : null;
     },
     async list(owner, since) {
       return runs
         .filter((r) => r.owner === owner && r.createdAt > since)
+        .map((r) => ({ ...r }))
         .reverse();
     },
+    async finish(runId, owner) {
+      const run = runs.find((r) => r.runId === runId && r.owner === owner);
+      if (run) run.busy = false;
+    },
     async reserve(run, maxActive, perDay, ended) {
-      for (const r of runs)
-        if (r.owner === run.owner && ended.includes(r.runId)) r.active = false;
-      const active = runs.filter((r) => r.owner === run.owner && r.active);
-      if (active.length >= maxActive) return "active_run_limit";
-      const key = `${run.owner} ${new Date(run.createdAt).toISOString().slice(0, 10)}`;
-      if ((counts.get(key) ?? 0) >= perDay) return "daily_run_limit";
-      counts.set(key, (counts.get(key) ?? 0) + 1);
-      runs.push({ ...run, active: true });
+      for (const r of runs) {
+        if (
+          r.owner === run.owner &&
+          !r.busy &&
+          ended.some(
+            (old) =>
+              old.runId === r.runId && (old.revision ?? 0) === r.revision,
+          )
+        )
+          r.active = false;
+      }
+      const existing = runs.find((r) => r.runId === run.runId);
+      if (existing && existing.owner !== run.owner)
+        throw new Error("Run owner mismatch");
+      const active = runs.filter(
+        (r) => r.owner === run.owner && r.active && r.runId !== run.runId,
+      );
+      if (active.length >= maxActive || existing?.busy)
+        return "active_run_limit";
+      if (existing) {
+        existing.active = true;
+        existing.busy = true;
+        existing.revision++;
+      } else {
+        const key = `${run.owner} ${new Date(run.createdAt).toISOString().slice(0, 10)}`;
+        if ((counts.get(key) ?? 0) >= perDay) return "daily_run_limit";
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+        runs.push({ ...run, active: true, revision: 0, busy: false });
+      }
       return undefined;
     },
   };
@@ -40,6 +71,7 @@ function setup(
   const phases = new Map<string, string>();
   const pending = new Map<string, string>();
   let onStop: (() => Promise<Response>) | undefined;
+  let onAction: ((id: string, action: string) => Promise<void>) | undefined;
   const calls: string[] = [];
   const fetcher = {
     async fetch(input: string, init: RequestInit = {}) {
@@ -57,6 +89,11 @@ function setup(
       }
       const [, , id = "", action] = path.split("/");
       if (!phases.has(id)) return new Response("");
+      if (
+        request.method === "POST" &&
+        ["messages", "override", "approve", "build"].includes(action ?? "")
+      )
+        await onAction?.(id, action!);
       if (action === "stop") {
         if (onStop) return onStop();
         phases.set(id, "stopped");
@@ -113,6 +150,9 @@ function setup(
     calls,
     env,
     owners,
+    setAction: (handler: (id: string, action: string) => Promise<void>) => {
+      onAction = handler;
+    },
     setStop: (handler: () => Promise<Response>) => {
       onStop = handler;
     },
@@ -129,7 +169,7 @@ describe("in-memory admission contract", () => {
     };
     expect(await owners.reserve(first, 1, 1, [])).toBeUndefined();
     expect(
-      await owners.reserve({ ...first, runId: "refused" }, 1, 1, [first.runId]),
+      await owners.reserve({ ...first, runId: "refused" }, 1, 1, [first]),
     ).toBe("daily_run_limit");
     const next = {
       ...first,
@@ -303,6 +343,174 @@ describe("Cloudflare Access users", () => {
       }
     },
   );
+
+  it("re-admits completed chat and overrides without changing identity or daily accounting", async () => {
+    const { start, as, phases, owners, setAction, calls } = setup({
+      RUNS_PER_DAY: "3",
+    });
+    const a = (await (await start("ada@example.com")).json()) as { id: string };
+    const original = await owners.get(a.id);
+    phases.set(a.id, "done");
+    const b = (await (await start("ada@example.com")).json()) as { id: string };
+    let paid = 0;
+    setAction(async () => {
+      paid++;
+    });
+    for (const [action, body] of [
+      ["messages", { text: "Make a variant" }],
+      ["override", { taskId: "t01", verdict: "approve", reason: "Continue" }],
+      ["override", { taskId: "t01", verdict: "reject", reason: "Retry" }],
+    ] as const) {
+      const refused = await as(
+        "ada@example.com",
+        "POST",
+        `/api/v1/runs/${a.id}/${action}`,
+        body,
+      );
+      expect(refused.status).toBe(429);
+      expect(await refused.json()).toMatchObject({ code: "active_run_limit" });
+    }
+    expect(paid).toBe(0);
+    await as("ada@example.com", "POST", `/api/v1/runs/${b.id}/stop`);
+    let release!: () => void;
+    let entered!: () => void;
+    const began = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setAction(async () => {
+      paid++;
+      entered();
+      await blocked;
+    });
+    const continuing = as(
+      "ada@example.com",
+      "POST",
+      `/api/v1/runs/${a.id}/messages`,
+      { text: "Make a variant" },
+    );
+    await began;
+    expect((await start("ada@example.com")).status).toBe(429);
+    expect(
+      (
+        await as("ada@example.com", "POST", `/api/v1/runs/${a.id}/override`, {
+          taskId: "t01",
+          verdict: "approve",
+        })
+      ).status,
+    ).toBe(429);
+    release();
+    expect((await continuing).status).toBe(200);
+    expect(await owners.get(a.id)).toMatchObject({
+      runId: a.id,
+      owner: original!.owner,
+      createdAt: original!.createdAt,
+      busy: false,
+    });
+    setAction(async (id, action) => {
+      paid++;
+      if (action === "override") phases.set(id, "building");
+    });
+    expect(
+      (
+        await as("ada@example.com", "POST", `/api/v1/runs/${a.id}/override`, {
+          taskId: "t01",
+          verdict: "approve",
+        })
+      ).status,
+    ).toBe(200);
+    expect((await start("ada@example.com")).status).toBe(429);
+    phases.set(a.id, "done");
+    const third = await start("ada@example.com");
+    expect(third.status).toBe(201);
+    expect(paid).toBe(2);
+    expect(calls.filter((c) => c === "POST /runs")).toHaveLength(3);
+  });
+
+  it("does not retire a resumed run using a concurrent start's stale completion snapshot", async () => {
+    const { start, as, phases, owners, setAction, calls } = setup();
+    const { id } = (await (await start("ada@example.com")).json()) as {
+      id: string;
+    };
+    phases.set(id, "done");
+    const reserve = owners.reserve;
+    let release!: () => void;
+    let entered!: () => void;
+    const began = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    owners.reserve = async (run, ...args) => {
+      if (run.runId !== id) {
+        entered();
+        await blocked;
+      }
+      return reserve(run, ...args);
+    };
+    const competing = start("ada@example.com");
+    await began;
+    let paid = 0;
+    setAction(async () => {
+      paid++;
+      phases.set(id, "building");
+    });
+    expect(
+      (
+        await as("ada@example.com", "POST", `/api/v1/runs/${id}/override`, {
+          taskId: "t01",
+          verdict: "reject",
+        })
+      ).status,
+    ).toBe(200);
+    release();
+    expect((await competing).status).toBe(429);
+    expect(paid).toBe(1);
+    expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+  });
+
+  it("releases a failed continuation without extending its original deadline", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      const { start, as, phases, owners, setAction } = setup({
+        RUNS_PER_DAY: "2",
+        RUN_MAX_MINUTES: "30",
+      });
+      const { id } = (await (await start("ada@example.com")).json()) as {
+        id: string;
+      };
+      phases.set(id, "done");
+      let paid = 0;
+      setAction(async () => {
+        paid++;
+        throw new Error("paid provider failed");
+      });
+      expect(
+        (
+          await as("ada@example.com", "POST", `/api/v1/runs/${id}/messages`, {
+            text: "Continue",
+          })
+        ).status,
+      ).toBe(500);
+      expect(await owners.get(id)).toMatchObject({ busy: false });
+      vi.setSystemTime(Date.now() + 30 * 60_000);
+      expect(
+        (
+          await as("ada@example.com", "POST", `/api/v1/runs/${id}/override`, {
+            taskId: "t01",
+            verdict: "approve",
+          })
+        ).status,
+      ).toBe(409);
+      expect(paid).toBe(1);
+      expect((await start("ada@example.com")).status).toBe(201);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("disables bearer, old cookies, session creation and the operator proxy in Access mode", async () => {
     const { as, env, calls } = setup();

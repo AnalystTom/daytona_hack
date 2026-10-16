@@ -523,6 +523,42 @@ describe("run paid-work deadlines", () => {
     },
   );
 
+  it.each(["approve", "reject"] as const)(
+    "allows explicit %s continuation after completion without extending the deadline",
+    async (verdict) => {
+      const { run, state, calls, startWorker } = await setup({
+        phase: "done",
+        tasks: [task("failed")],
+      });
+      state.sandboxId = "sb1";
+      state.previewUrl = "https://preview.test/";
+      const startedAt = state.startedAt;
+      await run.override("t01", verdict, "Make a variant");
+      expect(await run.getState()).toMatchObject({
+        id: "r1",
+        phase: "building",
+        startedAt,
+      });
+      if (verdict === "approve") expect(calls).toContain("verify_task");
+      else {
+        await run.alarm();
+        expect(startWorker).toHaveBeenCalledOnce();
+      }
+      expect((await run.getState()).startedAt).toBe(startedAt);
+    },
+  );
+
+  it("does not reopen paid verification when an already merged task is approved again", async () => {
+    const { run, calls } = await setup({
+      phase: "done",
+      tasks: [task("merged")],
+    });
+    await run.override("t01", "approve", "Keep it");
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("done");
+    expect(calls).toEqual([]);
+  });
+
   it("still starts and converses, plans, dispatches and verifies within the deadline", async () => {
     const first = await setup({ empty: true });
     await first.run.start("r1", "https://example.com", "rebuild");

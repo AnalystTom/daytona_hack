@@ -461,6 +461,14 @@ export class Run extends DurableObject<Env> {
   ) {
     await this.beforeWork();
     const t = this.task(taskId);
+    if (
+      this.s.phase === "done" &&
+      (verdict === "reject" || t.status !== "merged")
+    ) {
+      this.s.phase = "building";
+      await this.save();
+      await this.emit("phase", { phase: "building" });
+    }
     t.review = {
       verdict,
       reason: `Overridden by user: ${reason}`,

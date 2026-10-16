@@ -251,7 +251,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.get(first.runId)).toMatchObject(first);
     expect(await owners.list(owner, 0)).toHaveLength(1);
     const second = { ...a, runId: crypto.randomUUID() };
-    expect(await owners.reserve(second, 1, 2, [first.runId])).toBeUndefined();
+    expect(await owners.reserve(second, 1, 2, [first])).toBeUndefined();
     expect(
       await owners.reserve(
         {
@@ -266,7 +266,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     ).toBe("active_run_limit");
     expect(
       await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 2, [
-        second.runId,
+        second,
       ]),
     ).toBe("daily_run_limit");
     expect(await owners.list(owner, 0)).toHaveLength(2);
@@ -290,5 +290,32 @@ describe.skipIf(!surreal)("surreal run owners", () => {
         [],
       ),
     ).toBeUndefined();
+  });
+  it("re-admits existing runs without daily charges and ignores stale retirement snapshots", async () => {
+    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const a = {
+      runId: crypto.randomUUID(),
+      owner: `${crypto.randomUUID()}@example.com`,
+      createdAt: Date.now(),
+    };
+    expect(await owners.reserve(a, 1, 1, [])).toBeUndefined();
+    const old = (await owners.get(a.runId))!;
+    expect(
+      await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 1, [old]),
+    ).toBe("daily_run_limit");
+    expect(await owners.reserve(a, 1, 1, [])).toBeUndefined();
+    expect(await owners.get(a.runId)).toMatchObject({ ...a, busy: true });
+    const next = {
+      ...a,
+      runId: crypto.randomUUID(),
+      createdAt: a.createdAt + 86_400_000,
+    };
+    expect(await owners.reserve(next, 1, 1, [old])).toBe("active_run_limit");
+    await owners.finish(a.runId, a.owner);
+    expect(await owners.reserve(next, 1, 1, [old])).toBe("active_run_limit");
+    const current = (await owners.get(a.runId))!;
+    expect(await owners.reserve(next, 1, 1, [current])).toBeUndefined();
+    expect(await owners.reserve(a, 1, 1, [])).toBe("active_run_limit");
+    expect(await owners.get(a.runId)).toMatchObject({ ...a, busy: false });
   });
 });
