@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportDissection } from "../../shared/report";
 import type { BuildEvent } from "../../shared/build";
 import type { CanvasEvidence, DraftSpec } from "../../shared/workspace";
 import type { ChatEntry } from "./chat";
@@ -76,6 +77,7 @@ const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 export type RunView = {
   phase?: string;
+  report?: ReportDissection;
   hasPreview: boolean;
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
@@ -142,6 +144,11 @@ export function runView(
   for (const event of events) {
     const { data } = event;
     switch (event.type) {
+      case "report": {
+        const report = ReportDissection.safeParse(data);
+        if (report.success) view.report = report.data;
+        break;
+      }
       case "spec": {
         const spec = Spec.safeParse(data);
         if (spec.success) view.draftSpec = draftSpec(spec.data);

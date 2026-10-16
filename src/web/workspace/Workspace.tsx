@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { GOLDMAN_BRIEF } from "../../shared/report";
 import type { SpecCanvas } from "../../shared/workspace";
 import type { Override } from "../build/BuildBoard";
 import { navigate } from "../router";
@@ -22,6 +23,7 @@ import {
   type RunCallError,
   type RunCallResult,
   runAction,
+  saveReportEdit,
   signIn,
   startSignIn,
 } from "./runClient";
@@ -95,6 +97,7 @@ export function Workspace({
   phase.current = run.phase;
   const canvas: SpecCanvas = fixture?.canvas ?? {
     draftSpec: run.draftSpec,
+    report: run.report,
     evidence: run.evidence,
   };
   const canBuild = runId !== undefined && run.phase === "planned" && !starting;
@@ -411,7 +414,31 @@ export function Workspace({
           ) : (
             <Canvas key={view} layout={layout} onLayout={onLayout}>
               {view === "spec" ? (
-                <SpecView canvas={canvas} />
+                <>
+                  {!runId && !fixture && (
+                    <button
+                      type="button"
+                      className="button report-starter"
+                      disabled={pending}
+                      onClick={() => onSend(GOLDMAN_BRIEF)}
+                    >
+                      Goldman Sachs report
+                    </button>
+                  )}
+              <SpecView
+                canvas={canvas}
+                onSaveReport={async (figureId, edit) => {
+                  if (!runId) return false;
+                  const result = await saveReportEdit(runId, figureId, edit);
+                  if (!result.ok) {
+                    addNotice(result);
+                    return false;
+                  }
+                  pollSoon.current?.();
+                  return true;
+                }}
+              />
+                </>
               ) : (
                 <BuildView
                   draftSpec={canvas.draftSpec}

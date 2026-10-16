@@ -221,7 +221,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB hol
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
 - Runs are secure: every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low).
+- The report demo captures the Goldman Sachs article and embedded investment chart, stores figure/source provenance and edits in SurrealDB, and searches online with at most four OpenAI web-search calls and six original-source fetches. It starts no build workers. Only the exact starter automatically approves scope. Live failures replay a successful demo only with its original run ID and time shown. REA, variants and changes to login are out of this report demo.
 
 ## 14. Open questions
 

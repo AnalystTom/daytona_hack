@@ -1,3 +1,10 @@
+import {
+  GOLDMAN_BRIEF,
+  GOLDMAN_GOAL,
+  GOLDMAN_URL,
+  isGoldmanDemo,
+} from "../../shared/report";
+import { parseBrief } from "../workspace/chat";
 import { describe, expect, it } from "vitest";
 import {
   addFiles,
@@ -80,4 +87,17 @@ describe("addFiles", () => {
   it("keeps existing files and skips duplicates", () => {
     expect(addFiles([shot], [shot, other, other])).toEqual([shot, other]);
   });
+});
+
+it("selects the exact demo without extending automatic approval to edited briefs", () => {
+  expect(starters.goldman.draft).toBe(GOLDMAN_BRIEF);
+  expect(initialBrief(null, "?starter=goldman").text).toBe(GOLDMAN_BRIEF);
+  expect(parseBrief(GOLDMAN_BRIEF)).toEqual({
+    url: GOLDMAN_URL,
+    goal: GOLDMAN_GOAL,
+  });
+  expect(isGoldmanDemo(GOLDMAN_URL, GOLDMAN_GOAL)).toBe(true);
+  expect(isGoldmanDemo(GOLDMAN_URL, `${GOLDMAN_GOAL} Changed scope.`)).toBe(
+    false,
+  );
 });

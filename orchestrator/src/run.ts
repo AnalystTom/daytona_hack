@@ -20,13 +20,15 @@ import {
 } from "./inspect";
 import { llmJson, pageHtml, recall, remember, tracing } from "./services";
 import { RunTracer } from "./tracing";
+import { isReportGoal } from "./report";
 import {
-  extractClaims,
-  isReportGoal,
-  quoteLink,
-  secCapex,
-  verifyClaims,
-} from "./report";
+  isGoldmanDemo,
+  ReportEdit,
+  type ReportDissection,
+} from "../../src/shared/report";
+import { dissect } from "./dissection";
+import { attachRegions, captureReport } from "./report-capture";
+import { latestReport, saveEdit, saveReport } from "./report-store";
 import type {
   ChatMessage,
   Env,
@@ -58,7 +60,8 @@ interface State {
   previewUrl?: string;
   pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup" | "report";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
-  report?: unknown;
+  report?: ReportDissection;
+  demo?: boolean;
   error?: string;
 }
 
@@ -242,6 +245,28 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
+    if (isReportGoal(goal)) {
+      this.s.demo = isGoldmanDemo(url, goal);
+      this.s.spec.approved = this.s.demo;
+      this.s.spec.pages[0].confirmed = this.s.demo;
+      this.s.spec.pages[0].notes =
+        "Report figures, editable investment breakdown, source locations and bounded online source research";
+      this.s.spec.flows = [];
+      this.s.phase = "inspecting";
+      this.s.pending = "report";
+      await this.emit("spec", this.s.spec, signal);
+      await this.emit("phase", { phase: this.s.phase }, signal);
+      await this.addChat(
+        "assistant",
+        this.s.demo
+          ? "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed."
+          : "Capturing the report and researching its original sources. Unavailable figures and datasets will be marked not observed.",
+        signal,
+      );
+      await this.save(signal);
+      await this.ctx.storage.setAlarm(Date.now() + 100);
+      return this.s;
+    }
     try {
       await this.traced("inspector.first_look", "TOOL", url, () =>
         this.capture({
@@ -275,17 +300,6 @@ export class Run extends DurableObject<Env> {
       },
       signal,
     );
-    if (isReportGoal(goal)) {
-      // report mode: figures, sources and verification run in the background; chat answers now
-      this.s.pending = "report";
-      await this.save(signal);
-      await this.ctx.storage.setAlarm(Date.now() + 100);
-      await this.converse(
-        "Report mode: this is a financial report to reverse-engineer. Extracting every figure with its source sentence, the datasets behind it, and checking them against primary data (SEC filings) now; results will follow in chat.",
-        signal,
-      );
-      return this.s;
-    }
     await this.converse(
       `First look done. Main routes found: ${routes.join(", ")}`,
       signal,
@@ -293,109 +307,83 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
+  private reportStopped() {
+    return this.s.phase === "stopped";
+  }
+
   private async reportAnalysis() {
-    const url = this.s.spec.url;
-    const htmlEv = this.s.evidence.find((e) => e.kind === "html");
-    const html = htmlEv
-      ? new TextDecoder().decode(
-          (await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!,
-        )
-      : "";
-    const rep = await extractClaims(this.env, url, html);
-    await this.addChat(
-      "assistant",
-      `**Sources this report relies on** (${rep.author}, ${rep.published}):\n` +
-        rep.sources
-          .map(
-            (s) =>
-              `- **${s.name}** (${s.kind.replace(/_/g, " ")}): ${s.usedFor}. How to get it: ${s.howToGet}`,
-          )
-          .join("\n"),
-    );
-    await this.addChat(
-      "assistant",
-      `**Figures found** (${rep.claims.length}), each linked to its sentence in the source:\n` +
-        rep.claims
-          .map(
-            (c) =>
-              `- ${c.id}: **${c.value}** (${c.period}): ${c.statement}. Attributed to ${c.attributedTo}; based on ${c.basis}. [source](${quoteLink(url, c.quote)})`,
-          )
-          .join("\n"),
-    );
-    for (const c of rep.claims) {
-      await remember(
+    try {
+      const capture = await captureReport(this.env, this.s.spec.url);
+      if (this.reportStopped()) return;
+      await this.storeEvidence(capture.evidence, capture.blobs);
+      if (this.reportStopped()) return;
+      const report = await dissect(this.env, this.s.id, capture.article);
+      if (this.reportStopped()) return;
+      attachRegions(
+        report.figures,
+        capture,
+        new Map(report.sources.flatMap((s) => (s.url ? [[s.id, s.url]] : []))),
+      );
+      await saveReport(
         this.env,
-        this.memScope(),
-        `${rep.author} (${rep.published}) says ${c.statement} [${c.value}, ${c.period}] — source: "${c.quote}" ${url}`,
-        rep.published?.match(/^\d{4}-\d{2}-\d{2}/)
-          ? `${rep.published}T12:00:00Z`
-          : undefined,
+        { report, evidence: this.s.evidence },
+        this.s.demo === true,
+      );
+      if (this.reportStopped()) return;
+      this.s.report = report;
+    } catch (error) {
+      if (this.reportStopped()) return;
+      if (!this.s.demo) throw error;
+      const previous = await latestReport(this.env);
+      if (this.reportStopped()) return;
+      if (!previous)
+        throw new Error(
+          `Live dissection failed; no successful replay is available. ${String(error)}`,
+        );
+      this.s.report = {
+        ...previous.report,
+        runId: this.s.id,
+        edits: {},
+        storage: { table: "report_run", recordId: this.s.id },
+        replay: {
+          runId: previous.report.runId,
+          completedAt: previous.report.completedAt,
+          reason: String(error),
+        },
+      };
+      this.s.evidence = previous.evidence;
+      for (const evidence of previous.evidence)
+        await this.emit("evidence", evidence);
+      await saveReport(
+        this.env,
+        { report: this.s.report, evidence: this.s.evidence },
+        true,
       );
     }
-    let sec: Awaited<ReturnType<typeof secCapex>> | null = null;
-    if (rep.claims.some((c) => c.checkWith === "sec_hyperscaler_capex")) {
-      sec = await this.traced(
-        "data.sec_capex",
-        "TOOL",
-        "SEC EDGAR hyperscaler capex",
-        () => secCapex(),
-      );
-      await this.emit("evidence", {
-        id: "sec_capex",
-        page: url,
-        kind: "network",
-        tool: "fetch",
-        status: "observed",
-        capturedAt: new Date().toISOString(),
-        hash: "",
-        limits: sec.method,
-        summary: sec.dataset,
-      });
-      await this.addChat(
-        "assistant",
-        `**Primary data rebuilt from SEC filings:** hyperscaler cash capex calendar 2025 = **$${sec.calendar2025.totalUsdBn}bn** ` +
-          `(${Object.entries(sec.calendar2025.byCompanyUsdBn)
-            .map(([t, v]) => `${t} ${v}`)
-            .join(", ")}); ` +
-          `Jan–Jun 2026 = **$${sec.first2026.totalUsdBn}bn**. Method: ${sec.method}`,
-      );
-    }
-    const ver = await verifyClaims(
-      this.env,
-      rep,
-      rep.claims,
-      sec ?? "no primary dataset applies to these claims",
-    );
-    const icon = {
-      consistent: "✅",
-      inconsistent: "⚠️",
-      not_verifiable: "❓",
-    } as const;
+    if (this.reportStopped()) return;
+    await this.emit("report", this.s.report);
+    this.s.phase = "done";
+    await this.emit("phase", { phase: "done" });
     await this.addChat(
       "assistant",
-      `**Verification of every figure:**\n` +
-        ver.results
-          .map(
-            (r) =>
-              `- ${icon[r.verdict]} ${r.id} ${r.verdict.replace("_", " ")}: ${r.recomputed}. ${r.explanation}`,
-          )
-          .join("\n") +
-        (ver.beyond.length
-          ? `\n\n**Beyond the report:**\n${ver.beyond.map((b) => `- ${b}`).join("\n")}`
-          : ""),
+      this.s.report.replay
+        ? `Replay of run ${this.s.report.replay.runId} at ${this.s.report.replay.completedAt}. Live step failed: ${this.s.report.replay.reason}`
+        : `Report dissection saved: ${this.s.report.figures.length} figure records and ${this.s.report.sources.length} sources. Select a number on the canvas to inspect its quotation and source. Edits keep the original.`,
     );
-    await this.emit("verification", {
-      target: "report",
-      pass: ver.results.every((r) => r.verdict !== "inconsistent"),
-      summary: `${ver.results.filter((r) => r.verdict === "consistent").length} consistent, ${ver.results.filter((r) => r.verdict === "inconsistent").length} inconsistent, ${ver.results.filter((r) => r.verdict === "not_verifiable").length} not verifiable`,
-      findings: ver.results.map((r) => ({
-        item: r.id,
-        evidence: sec ? ["sec_capex"] : [],
-        problem: `${r.verdict}: ${r.explanation}`,
-      })),
-    });
-    this.s.report = { ...rep, sec, verification: ver };
     await this.save();
+  }
+
+  async editReport(figureId: string, input: unknown) {
+    if (!this.s.report || this.s.phase !== "done")
+      throw new Error("No completed report to edit");
+    if (!this.s.report.figures.some((f) => f.id === figureId))
+      throw new Error("Unknown report figure");
+    const edit = ReportEdit.parse(input);
+    await saveEdit(this.env, this.s.id, figureId, edit);
+    this.s.report.edits[figureId] = edit;
+    await this.save();
+    await this.emit("report", this.s.report);
+    return this.s.report;
   }
 
   /** Chat: the user is the captain; the orchestrator refines the spec. */
@@ -409,6 +397,10 @@ export class Run extends DurableObject<Env> {
   async approveSpec() {
     const signal = this.inspection.signal;
     signal.throwIfAborted();
+    if (isReportGoal(this.s.spec.goal))
+      throw new Error(
+        "Report dissection runs automatically; no build plan required",
+      );
     if (this.s.phase !== "brief")
       throw new Error(`cannot approve in phase ${this.s.phase}`);
     this.s.spec.approved = true;
@@ -471,6 +463,8 @@ export class Run extends DurableObject<Env> {
 
   /** Start build: needs an approved spec and a plan. */
   async startBuild() {
+    if (isReportGoal(this.s.spec.goal))
+      throw new Error("Report dissection does not start build workers");
     if (this.s.phase !== "planned")
       throw new Error(
         "No build started: tasks appear after the spec is approved.",
@@ -585,8 +579,10 @@ export class Run extends DurableObject<Env> {
       if (this.inspection.signal.aborted) return;
       this.s.error = String(e?.message || e);
       await this.emit("error", { message: this.s.error });
-      if (this.s.phase === "inspecting" || this.s.phase === "planning")
+      if (this.s.phase === "inspecting" || this.s.phase === "planning") {
         this.s.phase = "failed";
+        await this.emit("phase", { phase: "failed" });
+      }
       if (this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }

@@ -1,0 +1,142 @@
+import {
+  createSession,
+  endSession,
+  runSnippet,
+} from "../../src/worker/evidence/anchor";
+import type { ReportFigure } from "../../src/shared/report";
+import { sourceFetch } from "./dissection";
+import { sha256 } from "./services";
+import type { Env, Evidence } from "./types";
+
+type Region = NonNullable<ReportFigure["location"]["screenshot"]>;
+type Box = Omit<Region, "evidenceId" | "pageWidth" | "pageHeight"> & {
+  text: string;
+  iframe: boolean;
+};
+
+/** The screenshot and locations come from the same isolated Anchor page. */
+export async function captureReport(env: Env, url: string) {
+  let html: string;
+  let screenshot: ArrayBuffer | undefined;
+  let boxes: Box[] = [];
+  let pageWidth = 0;
+  let pageHeight = 0;
+  let limitation = "Anchor not configured; screenshot coordinates not observed";
+  if (env.ANCHORBROWSER_API_KEY) {
+    const key = env.ANCHORBROWSER_API_KEY;
+    const session = await createSession(key, { recording: false });
+    try {
+      const capture = await runSnippet<{
+        html: string;
+        png: string;
+        boxes: Box[];
+        pageWidth: number;
+        pageHeight: number;
+      }>(
+        key,
+        session.id,
+        `
+await page.setViewportSize({ width: 1440, height: 900 });
+const navigation = await page.goto(${JSON.stringify(url)}, { waitUntil: "load", timeout: 45000 });
+if (!navigation || !navigation.ok()) throw new Error("Report navigation failed");
+if (new URL(page.url()).origin !== new URL(${JSON.stringify(url)}).origin) throw new Error("Report redirected to another origin");
+await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+// Load lazy chart content before taking the full-page evidence.
+for (const frame of await page.locator("iframe").all()) await frame.scrollIntoViewIfNeeded().catch(() => {});
+await page.evaluate(() => window.scrollTo(0, 0));
+const locations = await page.evaluate(() => {
+  const boxes = Array.from(document.querySelectorAll("h1,h2,h3,h4,p,li,figcaption,td,th,iframe")).map((el) => {
+    const r = el.getBoundingClientRect();
+    return { text: el.tagName === "IFRAME" ? el.getAttribute("src") || "" : el.textContent || "", iframe: el.tagName === "IFRAME", x: r.x + scrollX, y: r.y + scrollY, width: r.width, height: r.height };
+  }).filter((r) => r.width > 0 && r.height > 0 && r.x >= 0 && r.y >= 0);
+  return { boxes, pageWidth: document.documentElement.scrollWidth, pageHeight: document.documentElement.scrollHeight };
+});
+const png = Buffer.from(await page.screenshot({ fullPage: true, type: "png", scale: "css" })).toString("base64");
+return { html: await page.content(), png, ...locations };
+`,
+      );
+      html = capture.html;
+      const bytes = Uint8Array.from(atob(capture.png), (c) => c.charCodeAt(0));
+      if (bytes.byteLength < 1_900_000) {
+        screenshot = bytes.buffer;
+        boxes = capture.boxes;
+        pageWidth = capture.pageWidth;
+        pageHeight = capture.pageHeight;
+        limitation =
+          "1440px full-page screenshot and DOM boxes from the same capture; chart boxes identify the embedded chart, not individual plotted marks";
+      } else
+        limitation =
+          "Screenshot exceeded the run's 1.9 MB blob limit; screenshot coordinates not observed";
+    } finally {
+      await endSession(key, session.id);
+    }
+  } else html = (await sourceFetch(url)).html;
+  const capturedAt = new Date().toISOString();
+  const hash = await sha256(html);
+  const evidence: Evidence[] = [
+    {
+      id: "ev_report_html",
+      kind: "html",
+      page: new URL(url).pathname,
+      tool: env.ANCHORBROWSER_API_KEY ? "anchor" : "fetch",
+      status: "observed",
+      capturedAt,
+      hash,
+      limits: "Report HTML; raw character offsets are retained per figure",
+      summary: "Captured report source",
+      path: "evidence/ev_report_html.html",
+    },
+    {
+      id: "ev_report_screen",
+      kind: "screenshot",
+      page: new URL(url).pathname,
+      tool: "anchor",
+      status: screenshot ? "observed" : "not_observed",
+      capturedAt,
+      hash: screenshot ? await sha256(screenshot) : "",
+      limits: limitation,
+      summary: screenshot
+        ? "Report screenshot with source regions"
+        : "Report screenshot not observed",
+    },
+  ];
+  const blobs: Record<string, string | ArrayBuffer> = { ev_report_html: html };
+  if (screenshot) blobs.ev_report_screen = screenshot;
+  return {
+    article: { html, url, capturedAt, hash },
+    evidence,
+    blobs,
+    boxes,
+    pageWidth,
+    pageHeight,
+  };
+}
+
+export function attachRegions(
+  figures: ReportFigure[],
+  capture: Pick<
+    Awaited<ReturnType<typeof captureReport>>,
+    "boxes" | "pageWidth" | "pageHeight"
+  >,
+  sourceUrls: Map<string, string>,
+) {
+  const normalize = (s: string) => s.replace(/\s+/g, " ").trim();
+  for (const f of figures) {
+    const box = capture.boxes.find((b) =>
+      f.sourceId === "article"
+        ? normalize(b.text) === normalize(f.quote)
+        : b.iframe &&
+          b.text.replace(/&amp;/g, "&") === sourceUrls.get(f.sourceId),
+    );
+    if (!box) continue;
+    f.location.screenshot = {
+      evidenceId: "ev_report_screen",
+      x: box.x,
+      y: box.y,
+      width: box.width,
+      height: box.height,
+      pageWidth: capture.pageWidth,
+      pageHeight: capture.pageHeight,
+    };
+  }
+}

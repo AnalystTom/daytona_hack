@@ -108,12 +108,19 @@ The user can promote an alternative; building then continues from that alternati
 
 At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
 
-### Financial reports (not in the demo)
+### Financial report demo
 
-Financial reports are left out of the demo for now.
-Later, Reversy can reconstruct financial reports as well as websites.
+The current demo target is Goldman Sachs' global AI investment article:
+`https://www.goldmansachs.com/insights/articles/global-investment-is-forecast-to-exceed-1-trillion-in-2026`.
+The Goldman Sachs starter fixes and approves its report-only scope and research plan automatically.
+It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
+The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
+Figures, sources and edits are stored per run in SurrealDB. A failed live demo can replay only the most recent successful demo run and labels its run ID and time.
+This path starts no build workers or variants. The website workflow remains available separately.
+
+Reversy can reconstruct financial reports as well as websites.
 Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
-It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
+For this report demo, the approved scope goes directly through capture and source research to the saved canvas dashboard; it does not start a code-build plan.
 A figure Reversy could not read is marked "not observed", never filled in.
 
 ## 6. Mascot
@@ -158,7 +165,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
 - Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
+- Out of this report demo: REA, variants, and changes to login or account management.
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

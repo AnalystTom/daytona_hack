@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportDissection } from "./report";
 import { EvidenceItem } from "./contracts";
 
 // What the workspace canvas renders in the Spec view. Fields stay absent until agreed in chat.
@@ -17,6 +18,7 @@ export type CanvasEvidence = z.infer<typeof CanvasEvidence>;
 
 export const SpecCanvas = z.object({
   draftSpec: DraftSpec.optional(),
+  report: ReportDissection.optional(),
   evidence: z.array(CanvasEvidence),
 });
 export type SpecCanvas = z.infer<typeof SpecCanvas>;

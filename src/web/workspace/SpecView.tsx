@@ -1,33 +1,11 @@
-import { useEffect, useState } from "react";
 import type {
   CanvasEvidence,
   DraftSpec,
   SpecCanvas,
 } from "../../shared/workspace";
 import { CanvasItem } from "./Canvas";
-import { fetchEvidence } from "./runClient";
-
-// Run evidence needs the operator token, so it is fetched and shown from a blob URL.
-function useEvidenceSrc(src: string) {
-  const fromRun = src.startsWith("/api/");
-  const [blobUrl, setBlobUrl] = useState<string>();
-  useEffect(() => {
-    if (!fromRun) return;
-    let url: string | undefined;
-    let live = true;
-    void fetchEvidence(src).then((result) => {
-      if (!live || !result.ok) return;
-      url = URL.createObjectURL(result.value);
-      setBlobUrl(url);
-    });
-    return () => {
-      live = false;
-      if (url) URL.revokeObjectURL(url);
-      setBlobUrl(undefined);
-    };
-  }, [src, fromRun]);
-  return fromRun ? blobUrl : src;
-}
+import { ReportCard } from "./ReportCard";
+import { useEvidenceSrc } from "./useEvidenceSrc";
 
 const NOT_CONFIRMED = "Not confirmed yet";
 
@@ -91,18 +69,24 @@ function EvidenceCaption({ item }: { item: CanvasEvidence }) {
 }
 
 function ScreenshotCard({ item }: { item: CanvasEvidence }) {
-  const src = useEvidenceSrc(item.src);
+  const { src, error } = useEvidenceSrc(item.src);
   return (
     <article className="card evidence-card">
       <header className="card-head">
         <ImageIcon />
         <h2 className="card-title">Target screenshot</h2>
       </header>
-      <img
-        className="evidence-media"
-        src={src}
-        alt={`Screenshot of ${item.pageOrState}`}
-      />
+      {error ? (
+        <p role="status">Source screenshot unavailable.</p>
+      ) : !src ? (
+        <p role="status">Loading screenshot…</p>
+      ) : (
+        <img
+          className="evidence-media"
+          src={src}
+          alt={`Screenshot of ${item.pageOrState}`}
+        />
+      )}
       <EvidenceCaption item={item} />
     </article>
   );
@@ -129,7 +113,13 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
   );
 }
 
-export function SpecView({ canvas }: { canvas: SpecCanvas }) {
+export function SpecView({
+  canvas,
+  onSaveReport,
+}: {
+  canvas: SpecCanvas;
+  onSaveReport?: React.ComponentProps<typeof ReportCard>["onSave"];
+}) {
   const screenshots = canvas.evidence.filter((e) => e.kind === "screenshot");
   const recordings = canvas.evidence.filter((e) => e.kind === "recording");
   if (!canvas.draftSpec && canvas.evidence.length === 0) {
@@ -146,6 +136,15 @@ export function SpecView({ canvas }: { canvas: SpecCanvas }) {
       {canvas.draftSpec && (
         <CanvasItem id="draft-spec" label="Draft spec" className="spec-card">
           <DraftSpecCard spec={canvas.draftSpec} />
+        </CanvasItem>
+      )}
+      {canvas.report && (
+        <CanvasItem id="report" label="Report dissection">
+          <ReportCard
+            report={canvas.report}
+            evidence={canvas.evidence}
+            onSave={onSaveReport}
+          />
         </CanvasItem>
       )}
       <div className="evidence-column">

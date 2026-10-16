@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportEdit } from "../../shared/report";
 import { ChatMessageRequest, CreateRunRequest } from "../../shared/runs";
 import {
   checkToken,
@@ -123,6 +124,15 @@ async function runRoute(
     if (action === "preview") return call(`${base}/preview`);
   }
   if (method === "POST") {
+    if (action === "report-edit") {
+      return call(
+        `${base}/report-edit`,
+        await readJson(
+          request,
+          z.object({ figureId: z.string().min(1).max(100), edit: ReportEdit }),
+        ),
+      );
+    }
     if (action === "messages") {
       return call(
         `${base}/messages`,
