@@ -1,5 +1,4 @@
 // Text preparation and goal detection for report-dissection runs.
-/** Article text: headings, paragraphs, list items and captions, in page order (skips nav and scripts). */
 export function articleText(html: string, max = 20000) {
   const out: string[] = [];
   for (const m of html.matchAll(

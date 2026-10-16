@@ -429,7 +429,11 @@ export function Workspace({
                     canvas={canvas}
                     onSaveReport={async (figureId, edit) => {
                       if (!runId) return false;
-                      const result = await saveReportEdit(runId, figureId, edit);
+                      const result = await saveReportEdit(
+                        runId,
+                        figureId,
+                        edit,
+                      );
                       if (!result.ok) {
                         addNotice(result);
                         return false;

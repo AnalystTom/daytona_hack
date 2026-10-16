@@ -23,7 +23,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | `POST /runs/:id/sign-in/skip` | | Plans without the stopped pages (async) |
 | `POST /runs/:id/build` | | Start website build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." Report goals return 500 with "Report dissection does not start build workers" |
 | `POST /runs/:id/report-edit` | `{figureId, edit: ReportEdit}` | Saves an edit to a known figure on a `done` report, emits `report`, and returns the updated `ReportDissection`; 500 for an incomplete report or unknown figure. Body validation is owned by [`runRoute`](../../src/worker/orchestrator/front.ts) and [`ReportEdit`](../../src/shared/report.ts) |
-| `POST /runs/:id/stop` | | Stops the run: cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
+| `POST /runs/:id/stop` | | Stops the run: cancels active website inspection/planning and report capture/research, prevents subsequent evidence writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -84,7 +84,7 @@ the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrat
 
 ## Evidence capture
 
-The orchestrator uses Reversy's evidence capture (`src/worker/evidence`) with `ANCHORBROWSER_API_KEY`, and stores new records and files in SurrealDB (`SURREALDB_*`). Persisted legacy evidence remains readable from the run's Durable Object blobs; both storage paths require the evidence ID to belong to the run.
+For website runs, the orchestrator uses Reversy's evidence capture (`src/worker/evidence`) with `ANCHORBROWSER_API_KEY`, and stores new records and files in SurrealDB (`SURREALDB_*`). Persisted legacy evidence remains readable from the run's Durable Object blobs; both storage paths require the evidence ID to belong to the run. Report capture follows the [report workflow](spec.md#report-dissection), with storage described in the [records contract](spec.md#12-records).
 
 - First look: one desktop screenshot of the start page.
 - Full pack, after the spec is approved: the artifacts and signed-in restrictions in the [evidence contract](spec.md#6-evidence), for up to 10 confirmed pages per pass (the rest are named in chat). The session recording is paused at 30 seconds, or ends sooner with capture; if pausing fails, it is not kept.
