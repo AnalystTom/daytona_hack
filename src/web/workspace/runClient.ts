@@ -7,7 +7,7 @@ import { OrchestratorEvent } from "./orchestrator";
 
 export type RunCallError = {
   ok: false;
-  error: "not_connected" | "operator_token" | "failed";
+  error: "not_connected" | "operator_token" | "not_found" | "failed";
   detail: string;
 };
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
@@ -86,6 +86,9 @@ async function call<T>(
           ? "The operator token was refused. Paste the current one."
           : "Runs spend money, so only operators can start, steer or follow them. Paste the operator token to continue.",
     };
+  }
+  if (response.status === 404) {
+    return { ok: false, error: "not_found", detail };
   }
   if ([405, 501].includes(response.status)) {
     return {
@@ -167,11 +170,21 @@ export function overrideVerdict(
 }
 
 // Events after `since`, oldest first.
-export function fetchEvents(
+export async function fetchEvents(
   runId: string,
   since: number,
   fetchImpl: typeof fetch = fetch,
 ) {
+  if (since === 0) {
+    const run = await call(
+      "GET",
+      runPath(runId),
+      undefined,
+      async (r) => CreatedRun.parse(await r.json()),
+      fetchImpl,
+    );
+    if (!run.ok) return run;
+  }
   return call(
     "GET",
     `${runPath(runId, "events")}?since=${since}`,

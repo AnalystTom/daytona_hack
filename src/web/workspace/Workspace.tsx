@@ -67,6 +67,7 @@ export function Workspace({
   // The run this session opened with; the URL gains a run ID later when a new session creates one.
   const [initialRunId] = useState(routeRunId);
   const [runId, setRunId] = useState(routeRunId);
+  const [confirmed, setConfirmed] = useState(false);
   // The brief's URL, until the run's own spec names the target.
   const [briefTarget, setBriefTarget] = useState<string>();
   const [layout, setLayout] = useState<Layout>(() =>
@@ -102,8 +103,9 @@ export function Workspace({
 
   // Lists this run among the browser's sessions, with its latest target and phase.
   useEffect(() => {
-    if (runId && !fixture) rememberSession({ runId, target, phase: run.phase });
-  }, [runId, target, run.phase, fixture]);
+    if (runId && confirmed && !fixture)
+      rememberSession({ runId, target, phase: run.phase });
+  }, [runId, confirmed, target, run.phase, fixture]);
 
   // Card positions are kept per session once there is a run to keep them under.
   useEffect(() => {
@@ -130,6 +132,19 @@ export function Workspace({
       const result = await fetchEvents(runId, since);
       busy = false;
       if (!live) return;
+      if (!result.ok && result.error === "not_found") {
+        setOffline(false);
+        setEntries((list) => [
+          ...list,
+          {
+            kind: "notice",
+            id: "events-not-found",
+            error: result.error,
+            detail: `${result.detail} Check the run ID or start a new session.`,
+          },
+        ]);
+        return;
+      }
       setOffline(!result.ok && result.error !== "operator_token");
       if (!result.ok && result.error === "operator_token") {
         const { error, detail } = result;
@@ -143,6 +158,7 @@ export function Workspace({
         );
       }
       if (result.ok) {
+        setConfirmed(true);
         const fresh = result.value.filter((event) => event.seq > since);
         if (fresh.length > 0) {
           since = Math.max(...fresh.map((event) => event.seq));
@@ -231,6 +247,7 @@ export function Workspace({
       briefParts.current = [];
       const briefUrl = parseBrief(message)?.url;
       setRunId(result.runId);
+      setConfirmed(true);
       setBriefTarget(briefUrl);
       // Recorded here too: the user may have switched sessions while the run was being created.
       if (!fixture) rememberSession({ runId: result.runId, target: briefUrl });

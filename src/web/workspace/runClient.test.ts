@@ -152,6 +152,42 @@ describe("run client", () => {
       "/api/v1/runs/run_1/events?since=2",
       { method: "GET", headers: {}, body: undefined },
     );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("confirms a run before reading its first events, even if there are none", async () => {
+    const fetchImpl = vi.fn(async (path: RequestInfo | URL) =>
+      path === "/api/v1/runs/run_1"
+        ? Response.json({ id: "run_1" })
+        : Response.json([]),
+    ) as unknown as typeof fetch;
+    expect(await fetchEvents("run_1", 0, fetchImpl)).toEqual({
+      ok: true,
+      value: [],
+    });
+    expect(vi.mocked(fetchImpl).mock.calls.map(([path]) => path)).toEqual([
+      "/api/v1/runs/run_1",
+      "/api/v1/runs/run_1/events?since=0",
+    ]);
+  });
+
+  it("reports an unknown run without reading its empty event stream", async () => {
+    const fetchImpl = reply(404, { message: "Run missing not found." });
+    expect(await fetchEvents("missing", 0, fetchImpl)).toEqual({
+      ok: false,
+      error: "not_found",
+      detail: "Run missing not found.",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not confirm unreadable run state as an empty event stream", async () => {
+    const fetchImpl = reply(200, {});
+    expect(await fetchEvents("run_1", 0, fetchImpl)).toMatchObject({
+      ok: false,
+      error: "failed",
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("fetches evidence as a blob", async () => {

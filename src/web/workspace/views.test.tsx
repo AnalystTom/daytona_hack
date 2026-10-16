@@ -81,6 +81,29 @@ describe("BuildView", () => {
 });
 
 describe("ChatPanel", () => {
+  it("shows the missing-run notice with recovery guidance", () => {
+    const html = renderToStaticMarkup(
+      <ChatPanel
+        entries={[
+          {
+            kind: "notice",
+            id: "events-not-found",
+            error: "not_found",
+            detail:
+              "Run missing not found. Check the run ID or start a new session.",
+          },
+        ]}
+        pending={false}
+        onSend={noop}
+        onRetry={noop}
+        onSaveToken={noop}
+      />,
+    );
+    expect(html).toContain("Not found.");
+    expect(html).toContain("Check the run ID or start a new session.");
+    expect(html).not.toContain("Reconnecting.");
+  });
+
   it("asks for a brief with Send brief disabled while empty", () => {
     const html = renderToStaticMarkup(
       <ChatPanel

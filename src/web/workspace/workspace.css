@@ -252,6 +252,7 @@
   box-sizing: border-box;
   height: 100%;
   padding: 2.5rem;
+  overflow: auto;
 }
 
 .preview-bar {
