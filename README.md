@@ -78,7 +78,7 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` requires it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
 
 Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
 A missing or wrong token answers 401.
@@ -183,16 +183,15 @@ Interaction recordings are not captured yet; a full pack keeps the session's pag
 
 Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason, and so is the session recording, which names the out-of-scope URLs.
 Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
-Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. Per-run ownership comes with the run API.
+Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the run API's interim access policy).
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 In a signed-in capture the DOM, assets and network log are stored as `not_observed` until masking exists.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 
 Worker bindings (secrets, set with `wrangler secret put`):
 
-- `OPERATOR_TOKEN` (the bearer token callers must send)
 - `ANCHOR_API_KEY`
-- the run API's `SURREALDB_*` bindings above
+- the run API's `OPERATOR_TOKEN` and `SURREALDB_*` bindings above
 
 Without them the endpoints answer `503` and list the missing names.
 Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's and SurrealDB's documented shapes rather than recorded from live calls.
