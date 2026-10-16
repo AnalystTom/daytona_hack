@@ -74,7 +74,7 @@ The [agent spec's verifier contract](spec.md#9-verifier) defines plan, task and 
 
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding.
 The public `/api/v1/runs/*` front door and operator proxy follow the [README's access policy](../../README.md#sign-in-with-cloudflare-access); `sandboxId` is dropped from front-door state and event JSON replies; captured evidence files retain their stored bytes unchanged.
-`orchestrator/scripts/demo-run.sh` drives one full run with `REVERSY_URL` and `OPERATOR_TOKEN` only before Access setup.
+`orchestrator/scripts/demo-run.sh` drives one full run with `REVERSY_URL` and `OPERATOR_TOKEN` (operator bearer, so only before Access setup).
 
 ## Evidence capture
 

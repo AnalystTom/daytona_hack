@@ -9,7 +9,6 @@ import {
   overrideVerdict,
   runAction,
   sendMessage,
-  signIn,
   startSignIn,
 } from "./runClient";
 
@@ -23,7 +22,7 @@ const reply = (status: number, body?: unknown) =>
 const brief = { url: "https://www.daytona.io/", goal: "copy the hero" };
 
 describe("run client", () => {
-  it("posts the URL and goal, relying on the session cookie, and returns the run id", async () => {
+  it("posts the URL and goal, relying on the anonymous session cookie, and returns the run id", async () => {
     const fetchImpl = reply(201, { id: "run_1", phase: "brief" });
     expect(await createRun(brief, fetchImpl)).toEqual({
       ok: true,
@@ -39,27 +38,7 @@ describe("run client", () => {
     });
   });
 
-  it("asks for the operator token when the session is missing", async () => {
-    expect(
-      await runAction(
-        "run_1",
-        "build",
-        reply(401, { code: "operator_token_required", message: "Wrong" }),
-      ),
-    ).toMatchObject({ ok: false, error: "operator_token" });
-    expect(
-      await fetchEvents(
-        "run_1",
-        0,
-        reply(401, { code: "operator_token_required" }),
-      ),
-    ).toMatchObject({
-      ok: false,
-      error: "operator_token",
-    });
-  });
-
-  it("never prompts for a token on Access refusals, including unstructured edge responses", async () => {
+  it("never prompts for a token on any 401, including unstructured edge responses", async () => {
     for (const body of [
       { code: "access_required", message: "Sign in through Access" },
       undefined,
@@ -72,7 +51,6 @@ describe("run client", () => {
           "/api/v1/runs/run_1/evidence/ev_1",
           reply(401, body),
         ),
-        await signIn("old-token", reply(401, body)),
       ])
         expect(result).toMatchObject({
           ok: false,
@@ -106,36 +84,12 @@ describe("run client", () => {
       () => fetchRunHistory(edge),
       () => fetchPreviewLink("r1", edge),
       () => fetchEvidence("/api/v1/runs/r1/evidence/ev1", edge),
-      () => signIn("token", edge),
     ])
       expect(await request()).toMatchObject({
         ok: false,
         error: "access_required",
       });
-    expect(edge).toHaveBeenCalledTimes(10);
-  });
-
-  it("signs in by posting the token to the session endpoint", async () => {
-    const fetchImpl = reply(204);
-    expect(await signIn("op-token", fetchImpl)).toEqual({
-      ok: true,
-      value: undefined,
-    });
-    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/session", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: '{"token":"op-token"}',
-    });
-    expect(
-      await signIn("nope", reply(401, { code: "unauthorized" })),
-    ).toMatchObject({
-      ok: false,
-      error: "operator_token",
-      detail: "The operator token was refused. Paste the current one.",
-    });
+    expect(edge).toHaveBeenCalledTimes(9);
   });
 
   it("reads a signed https preview link and refuses anything else", async () => {

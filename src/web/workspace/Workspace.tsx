@@ -22,7 +22,6 @@ import {
   type RunCallError,
   type RunCallResult,
   runAction,
-  signIn,
   startSignIn,
 } from "./runClient";
 import { SessionSwitcher } from "./SessionSwitcher";
@@ -47,7 +46,7 @@ const VIEWS: { id: View; label: string }[] = [
 const POLL_MS = 2000;
 // A finished run changes only when someone acts on it, so it is checked less often.
 const IDLE_POLL_MS = 15000;
-const EVENTS_TOKEN_NOTICE = "events-token";
+const EVENTS_ACCESS_NOTICE = "events-access";
 
 const idle = (phase?: string) =>
   phase === "done" || phase === "stopped" || phase === "failed";
@@ -163,21 +162,15 @@ export function Workspace({
         refuseRun();
         return;
       }
-      setOffline(
-        !result.ok &&
-          !["operator_token", "access_required"].includes(result.error),
-      );
-      if (
-        !result.ok &&
-        ["operator_token", "access_required"].includes(result.error)
-      ) {
+      setOffline(!result.ok && result.error !== "access_required");
+      if (!result.ok && result.error === "access_required") {
         const { error, detail } = result;
         setEntries((list) =>
-          list.some((e) => e.id === EVENTS_TOKEN_NOTICE)
+          list.some((e) => e.id === EVENTS_ACCESS_NOTICE)
             ? list
             : [
                 ...list,
-                { kind: "notice", id: EVENTS_TOKEN_NOTICE, error, detail },
+                { kind: "notice", id: EVENTS_ACCESS_NOTICE, error, detail },
               ],
         );
       }
@@ -324,26 +317,6 @@ export function Workspace({
     void send(id, entry.text);
   };
 
-  // Signing in resends the message the notice stopped, if any; a refused action is pressed again.
-  const onSaveToken = async (token: string, noticeId: string) => {
-    const result = await signIn(token);
-    if (!result.ok) {
-      const { error, detail } = result;
-      setEntries((list) =>
-        list.map((e) =>
-          e.id === noticeId && e.kind === "notice"
-            ? { ...e, error, detail }
-            : e,
-        ),
-      );
-      return;
-    }
-    const messageId = noticeId.replace(/-notice$/, "");
-    if (messageId !== noticeId) return onRetry(messageId);
-    setEntries((list) => list.filter((e) => e.id !== noticeId));
-    pollSoon.current?.();
-  };
-
   const onOverride = (override: Override) => {
     if (runId) void act(overrideVerdict(runId, override));
   };
@@ -483,7 +456,6 @@ export function Workspace({
         pending={pending}
         onSend={onSend}
         onRetry={onRetry}
-        onSaveToken={onSaveToken}
       />
     </div>
   );

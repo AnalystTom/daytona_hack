@@ -10,16 +10,25 @@ import {
 import { checkTargetUrl } from "../runs/url";
 import { resolveStore, type StoreEnv } from "../store";
 import { accessConfig, type AccessEnv } from "./access";
-import { type Owners, type RunOwner, surrealOwners } from "./owners";
-import { checkCaller, handleSession } from "./session";
+import {
+  type Owners,
+  type Refusal,
+  type RunOwner,
+  type SharedLimits,
+  surrealOwners,
+} from "./owners";
+import { checkCaller } from "./session";
 
 // The reversy-orchestrator Worker has no public address; this Worker is its front door.
 export interface OrchestratorEnv extends AccessEnv, StoreEnv {
   ORCHESTRATOR?: Fetcher;
   OPERATOR_TOKEN?: string;
-  // Admission limits for Cloudflare Access users; unset or invalid means the default.
+  // Admission limits per visitor (anonymous session or Access user); unset or invalid means the default.
   RUNS_PER_DAY?: string;
   ACTIVE_RUNS?: string;
+  // New runs per network address per day, and by everyone together per day.
+  RUNS_PER_IP_DAY?: string;
+  RUNS_PER_DAY_ALL?: string;
   // Must match the orchestrator's RUN_MAX_MINUTES; expired slots need confirmed cancellation.
   RUN_MAX_MINUTES?: string;
 }
@@ -41,54 +50,66 @@ const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
 
 // Handles /api/v1/runs/* (the workspace's run API) and /api/v1/orchestrator/* (operator testing).
-// Runs spend money and hold the target's data, so every route needs the operator token or a
-// Cloudflare Access sign-in; an Access user sees only their own runs, within the limits.
+// Runs spend money and hold the target's data, so every caller is an operator (bearer token), a
+// Cloudflare Access user or an anonymous visitor with a signed session cookie. Visitors and
+// Access users see only their own runs, and start new ones only within the limits.
 export async function handleOrchestrator(
   request: Request,
   env: OrchestratorEnv,
   deps: FrontDeps = {},
 ): Promise<Response | null> {
   const url = new URL(request.url);
-  if (url.pathname === "/api/v1/session") return handleSession(request, env);
   const operator =
     url.pathname === OPERATOR_PREFIX ||
     url.pathname.startsWith(`${OPERATOR_PREFIX}/`);
   const run = url.pathname.match(RUNS);
   if (!operator && !run) return null;
-  try {
-    // Operator testing stays bearer-only: the orchestrator's /sandboxes routes check the bearer too.
-    if (operator) {
-      if (accessConfig(env)) throw notFound();
-      await checkToken(request, env, "OPERATOR_TOKEN");
+  let setCookie: string | undefined;
+  const response = await (async () => {
+    try {
+      // Operator testing stays bearer-only: the orchestrator's /sandboxes routes check the bearer too.
+      if (operator) {
+        if (accessConfig(env)) throw notFound();
+        await checkToken(request, env, "OPERATOR_TOKEN");
+      }
+      const caller = operator
+        ? {}
+        : await checkCaller(request, env, deps.fetcher);
+      // Only a run start issues the cookie: parallel first requests would each mint a different
+      // session, and the last to arrive would orphan the run the first one created.
+      if (request.method === "POST" && run && run[1] === undefined) {
+        setCookie = caller.setCookie;
+      }
+      if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
+      if (operator) {
+        const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
+        return await passThrough(
+          request,
+          env.ORCHESTRATOR,
+          `${path}${url.search}`,
+        );
+      }
+      if (caller.owner !== undefined) {
+        return await userRunRoute(
+          request,
+          env,
+          env.ORCHESTRATOR,
+          deps.owners ?? ownersFor(env),
+          caller.owner,
+          url,
+          run?.[1],
+          run?.[2],
+        );
+      }
+      return await runRoute(request, env.ORCHESTRATOR, url, run?.[1], run?.[2]);
+    } catch (error) {
+      return errorResponse(request, error);
     }
-    const user = operator
-      ? undefined
-      : await checkCaller(request, env, deps.fetcher);
-    if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
-    if (operator) {
-      const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
-      return await passThrough(
-        request,
-        env.ORCHESTRATOR,
-        `${path}${url.search}`,
-      );
-    }
-    if (user !== undefined) {
-      return await userRunRoute(
-        request,
-        env,
-        env.ORCHESTRATOR,
-        deps.owners ?? ownersFor(env),
-        user,
-        url,
-        run?.[1],
-        run?.[2],
-      );
-    }
-    return await runRoute(request, env.ORCHESTRATOR, url, run?.[1], run?.[2]);
-  } catch (error) {
-    return errorResponse(request, error);
-  }
+  })();
+  if (!setCookie) return response;
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", setCookie);
+  return new Response(response.body, { status: response.status, headers });
 }
 
 // Forwards the request as is, bearer token included: the orchestrator's /sandboxes routes
@@ -123,7 +144,7 @@ const limit = (value: string | undefined, fallback: number) => {
 
 const ENDED = ["done", "stopped", "failed"];
 
-// An Access user's run routes: only their own runs, and new ones only within the limits.
+// A visitor's run routes: only their own runs, and new ones only within the limits.
 async function userRunRoute(
   request: Request,
   env: OrchestratorEnv,
@@ -194,13 +215,16 @@ async function userRunRoute(
   const { url: target, goal } = await readJson(request, CreateRunRequest);
   const checked = checkTargetUrl(target);
   if ("error" in checked) throw new Failure(400, "invalid_url", checked.error);
+  const shared = await sharedLimits(request, env);
   const now = Date.now();
   const id = crypto.randomUUID();
-  await admit(env, orchestrator, owners, {
-    runId: id,
-    owner: user,
-    createdAt: now,
-  });
+  await admit(
+    env,
+    orchestrator,
+    owners,
+    { runId: id, owner: user, createdAt: now },
+    shared,
+  );
   try {
     return await forward(orchestrator, "POST", "/runs", {
       id,
@@ -222,6 +246,7 @@ async function admit(
   orchestrator: Fetcher,
   owners: Owners,
   run: RunOwner,
+  shared?: SharedLimits,
 ) {
   const now = Date.now();
   const user = run.owner;
@@ -265,16 +290,39 @@ async function admit(
     limit(env.ACTIVE_RUNS, 1),
     limit(env.RUNS_PER_DAY, 3),
     ended,
+    shared,
   );
-  if (refusal) {
-    throw new Failure(
-      429,
-      refusal,
-      refusal === "active_run_limit"
-        ? "Stop an active run or let it finish before starting another."
-        : "You have reached today's run limit. Try again tomorrow (UTC).",
-    );
-  }
+  if (refusal) throw new Failure(429, refusal, REFUSALS[refusal]);
+}
+
+const REFUSALS: Record<Refusal, string> = {
+  active_run_limit:
+    "Stop an active run or let it finish before starting another.",
+  daily_run_limit:
+    "You have reached today's run limit. Try again tomorrow (UTC).",
+  ip_daily_limit:
+    "Too many runs have started from your network today. Try again tomorrow (UTC).",
+  global_daily_limit:
+    "Reversy has reached its run limit for today, so no new runs can start. Try again tomorrow (UTC).",
+};
+
+// The IP is stored only as a hash.
+async function sharedLimits(
+  request: Request,
+  env: OrchestratorEnv,
+): Promise<SharedLimits> {
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(ip),
+  );
+  return {
+    ip: [...new Uint8Array(digest).slice(0, 8)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join(""),
+    perIp: limit(env.RUNS_PER_IP_DAY, 6),
+    perAll: limit(env.RUNS_PER_DAY_ALL, 30),
+  };
 }
 
 async function runRoute(
