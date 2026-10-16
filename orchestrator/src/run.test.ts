@@ -71,7 +71,10 @@ const turn = (scope: string, userApproved: boolean) => ({
   userApproved,
   spec: {
     scope,
-    pages: [{ path: "/insights/article", confirmed: true, notes: "" }],
+    pages: [
+      { path: "/insights/article", confirmed: true, notes: "" },
+      { path: "//elsewhere.example/x", confirmed: true, notes: "" },
+    ],
     flows: [],
     openQuestions: [],
   },
@@ -140,6 +143,9 @@ describe("run scope", () => {
       "t01",
     ]);
     expect(state.chat.at(-2)?.text).toContain("Dropped t03");
+
+    // a page path that leaves the run's site is never fetched
+    expect(state.evidence.some((e: Evidence) => e.page === "/x")).toBe(false);
 
     // evidence: network observations, with honest labels; REA stays not observed
     const after = state.evidence.slice(2) as Evidence[];

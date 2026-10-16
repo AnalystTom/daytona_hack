@@ -354,7 +354,7 @@ export async function inspectBackend(
 
   for (const file of ["/robots.txt", "/sitemap.xml"]) {
     try {
-      const res = await fetch(origin + file);
+      const res = await fetch(origin + file, { redirect: "manual" });
       const body = res.ok ? (await res.text()).slice(0, 200_000) : "";
       const routes = [
         ...new Set(
