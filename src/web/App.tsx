@@ -1,7 +1,7 @@
 import { specFixture } from "./workspace/fixtures";
 import { Workspace } from "./workspace/Workspace";
 
-// Placeholder shell: the real workspace (Spec and Build views, kanban, chat) is a later task.
+// `/workspace` renders the workspace; every other path is still the placeholder shell.
 export function App() {
   if (window.location.pathname.replace(/\/$/, "") === "/workspace") {
     const fixture =
