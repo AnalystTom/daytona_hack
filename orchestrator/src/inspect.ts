@@ -77,7 +77,8 @@ export function toEvidence(record: EvidenceRecord): Evidence {
     status: record.label,
     capturedAt: record.capturedAt,
     hash: record.contentHash,
-    limits: record.limitations.join(" "),
+    // Redirect targets keep their query strings only in the stored record, never in events.
+    limits: record.limitations.join(" ").replace(/[?#][^\s"']*/g, ""),
     summary: `${observed ? "" : "No "}${record.kind} of ${record.pageOrState}`,
     path: observed
       ? `evidence/${record.id}.${extensions[record.contentType] ?? "bin"}`

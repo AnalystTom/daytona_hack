@@ -104,12 +104,16 @@ describe("toEvidence", () => {
       record({
         label: "not_observed",
         contentType: "text/plain",
-        limitations: ["Redirected to https://example.com/login"],
+        limitations: [
+          "Redirected to https://example.com/login?session=secret#x, outside the approved scope.",
+        ],
       }),
     );
     expect(missing.path).toBeUndefined();
     expect(missing.url).toBeUndefined();
-    expect(missing.limits).toContain("Redirected");
+    expect(missing.limits).toBe(
+      "Redirected to https://example.com/login outside the approved scope.",
+    );
     expect(missing.summary).toBe("No screenshot of / @ desktop 1440");
   });
 });
