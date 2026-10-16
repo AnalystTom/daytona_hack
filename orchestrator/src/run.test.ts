@@ -1,761 +1,880 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { EvidenceRecord } from "../../src/shared/evidence";
+import * as anchor from "../../src/worker/evidence/anchor";
+import {
+  CaptureError,
+  captureRun,
+  endSignIn,
+  leftScope,
+} from "../../src/worker/evidence/capture";
+import type { EvidenceStore, SignIn } from "../../src/worker/evidence/store";
+import {
+  fixturePageFacts,
+  fixturePngBase64,
+} from "../../src/worker/evidence/fixtures";
 import { Daytona } from "./daytona";
+import { capture, endSavedSignIn, evidenceStore, toEvidence } from "./inspect";
 import { Run } from "./run";
-import { tracing } from "./services";
-import type { Env, Phase, Task } from "./types";
-import orchestrator from "./index";
-import {
-  handleOrchestrator,
-  type OrchestratorEnv,
-} from "../../src/worker/orchestrator/front";
-import {
-  AUD,
-  accessJwt,
-  certs,
-  TEAM,
-} from "../../src/worker/orchestrator/access-fixtures";
-import type { Owners, RunOwner } from "../../src/worker/orchestrator/owners";
+import { llmJson } from "./services";
+import type { Env, Evidence, Phase } from "./types";
+import { verifyFinal, verifyPlan } from "./verifier";
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
     constructor(
-      public ctx: DurableObjectState,
-      public env: Env,
+      readonly ctx: unknown,
+      readonly env: unknown,
     ) {}
   },
 }));
-
-const task = (status: Task["status"]): Task => ({
-  id: "t01",
-  title: "Hero",
-  brief: "Build hero",
-  outOfScope: "",
-  acceptance: [],
-  evidence: [],
-  owns: ["index.html"],
-  dependsOn: [],
-  status,
-  attempts: 1,
-  branch: "task/t01",
-});
-
-async function setup(
-  options: {
-    phase?: Phase;
-    pending?: "inspect" | "build_setup" | "stop";
-    tasks?: Task[];
-    minutes?: string;
-    empty?: boolean;
-  } = {},
-) {
-  vi.useFakeTimers({ toFake: ["Date"] });
-  vi.setSystemTime(new Date("2026-10-16T12:00:00Z"));
-  const state = {
-    id: "r1",
-    startedAt: Date.now(),
-    phase: options.phase ?? "brief",
-    pending: options.pending,
-    spec: {
-      url: "https://example.com/",
-      goal: "Rebuild",
-      pages: [{ path: "/", confirmed: true }],
-      flows: [],
-      openQuestions: [],
-      approved: true,
-      revision: 1,
-    },
-    chat: [],
-    evidence: [],
-    tasks: options.tasks ?? [],
-    ...(options.phase === "building"
-      ? { sandboxId: "sb1", previewUrl: "https://preview.test/" }
-      : {}),
-  };
-  const data = new Map<string, unknown>(
-    options.empty ? [] : [["state", state]],
-  );
-  let ready!: Promise<unknown>;
-  const storage = {
-    get: async (key: string) => data.get(key),
-    put: async (key: string, value: unknown) => {
-      data.set(key, structuredClone(value));
-    },
-    list: async () => new Map([...data].filter(([k]) => k.startsWith("ev:"))),
-    setAlarm: vi.fn(async () => {}),
-    deleteAlarm: vi.fn(async () => {}),
-  };
-  const ctx = {
-    storage,
-    blockConcurrencyWhile: (fn: () => Promise<unknown>) => {
-      ready = fn();
-      return ready;
-    },
-    waitUntil: () => {},
-  };
-  const env = {
-    RUN_MAX_MINUTES: options.minutes,
-    ORCHESTRATOR_MODEL: "test",
-    WORKER_MODEL: "test",
-  } as Env;
-  const run = new Run(ctx as unknown as DurableObjectState, env);
-  await ready;
-  const calls: string[] = [];
-  const expire = () => vi.setSystemTime(Date.now() + 121 * 60_000);
-  const request = vi.fn(
-    async (input: string | URL | Request, init?: RequestInit) => {
-      const url = String(input);
-      if (url.includes("api.openai.com")) {
-        const body = JSON.parse(String(init?.body));
-        const name = body.text.format.name;
-        calls.push(name);
-        const output =
-          name === "orchestrator_turn"
-            ? { reply: "Which pages?", spec: state.spec, userApproved: false }
-            : name === "plan"
-              ? { tasks: [] }
-              : { pass: true, findings: [], summary: "Pass" };
-        return Response.json({ output_text: JSON.stringify(output) });
-      }
-      return new Response("<html>Observed page</html>");
-    },
-  );
-  vi.stubGlobal("fetch", request);
-  vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
-    exitCode: 0,
-    result: "",
-  });
-  vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
-  vi.spyOn(Daytona.prototype, "get").mockResolvedValue({
-    id: "sb1",
-    state: "started",
-  });
-  const startWorker = vi
-    .spyOn(Daytona.prototype, "startAsync")
-    .mockResolvedValue("cmd1");
-  vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue(undefined);
-  vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "sb1" });
-  vi.spyOn(Daytona.prototype, "remove").mockResolvedValue(undefined);
-  vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
-    "https://preview.test/",
-  );
-  vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
-    "https://preview.test/",
-  );
-  return {
-    run,
-    ctx,
-    state,
-    storage,
-    data,
-    env,
-    request,
-    calls,
-    expire,
-    startWorker,
-  };
-}
-
-afterEach(() => {
-  vi.restoreAllMocks();
-  vi.unstubAllGlobals();
-  vi.useRealTimers();
-  tracing.current = undefined;
-});
-
-function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
-  const original: RunOwner = {
-    runId: state.id,
-    owner: "ada@example.com",
-    createdAt: state.startedAt,
-    active: true,
-    busy: true,
-    revision: 1,
-  };
-  const records = [{ ...original }];
-  const owners: Owners = {
-    get: async (id) => records.find((r) => r.runId === id) ?? null,
-    list: async (owner) =>
-      records.filter((r) => r.owner === owner).map((r) => ({ ...r })),
-    finish: async (id, owner) => {
-      const record = records.find((r) => r.runId === id && r.owner === owner);
-      if (record) record.busy = false;
-    },
-    reserve: async (next, maxActive, _perDay, ended) => {
-      for (const record of records) {
-        if (
-          !record.busy &&
-          ended.some(
-            (old) =>
-              old.owner === record.owner &&
-              old.runId === record.runId &&
-              old.revision === record.revision,
-          )
-        )
-          record.active = false;
-      }
-      if (
-        records.filter((r) => r.owner === next.owner && r.active).length >=
-        maxActive
-      )
-        return "active_run_limit";
-      records.push({ ...next, active: true, busy: false });
-      return undefined;
-    },
-  };
-  const start = vi.fn(async (id: string) => ({ id, phase: "brief" }));
-  const backend = {
-    ...env,
-    RUNS: {
-      idFromName: (id: string) => id,
-      get: (id: string) => (id === state.id ? run : { start }),
-    },
-  } as unknown as Env;
-  const front: OrchestratorEnv = {
-    ACCESS_TEAM_DOMAIN: TEAM,
-    ACCESS_AUD: AUD,
-    ORCHESTRATOR: {
-      fetch: (input: string, init?: RequestInit) =>
-        orchestrator.fetch(new Request(input, init), backend),
-    } as unknown as Fetcher,
-  };
-  const send = async (path: string) =>
-    handleOrchestrator(
-      new Request(`https://reversy.test/api/v1/runs${path}`, {
-        method: "POST",
-        headers: {
-          origin: "https://reversy.test",
-          "cf-access-jwt-assertion": await accessJwt(),
+vi.mock("./inspect", async (original) => ({
+  ...(await original<typeof import("./inspect")>()),
+  capture: vi.fn(),
+  endSavedSignIn: vi.fn(),
+  evidenceStore: vi.fn(),
+}));
+vi.mock("./services", () => ({
+  tracing: {},
+  recall: async () => "",
+  remember: async () => {},
+  pageHtml: async () => ({ html: "<a href='/account'>", tool: "fetch" }),
+  llmJson: vi.fn(async (_env: unknown, opts: { name: string }) =>
+    opts.name === "plan"
+      ? { tasks: [] }
+      : {
+          reply: "Which pages?",
+          userApproved: false,
+          spec: {
+            pages: [{ path: "/account", confirmed: true, notes: "" }],
+            flows: [],
+            openQuestions: [],
+          },
         },
-        body: JSON.stringify(
-          path ? {} : { url: "https://example.com", goal: "Rebuild" },
-        ),
-      }),
-      front,
-      { owners, fetcher: certs },
-    );
-  return { send, start, records, original };
+  ),
+}));
+vi.mock("./verifier", () => ({
+  verifyPlan: vi.fn(async () => ({
+    target: "plan",
+    pass: true,
+    summary: "",
+    findings: [],
+  })),
+  verifyFinal: vi.fn(async () => ({
+    target: "final",
+    pass: true,
+    summary: "",
+    findings: [],
+  })),
+}));
+
+const captureMock = vi.mocked(capture);
+
+// A Durable Object context backed by a Map; alarms are run by hand.
+function fakeCtx() {
+  const storage = new Map<string, unknown>();
+  let loading: Promise<void> = Promise.resolve();
+  return {
+    storage: {
+      get: async (key: string) => storage.get(key),
+      put: async (key: string, value: unknown) => void storage.set(key, value),
+      list: async ({ prefix }: { prefix: string }) =>
+        new Map([...storage].filter(([k]) => k.startsWith(prefix))),
+      setAlarm: async () => {},
+      deleteAlarm: async () => {},
+    },
+    // A Durable Object finishes this before it takes any call.
+    blockConcurrencyWhile: (fn: () => Promise<void>) => {
+      loading = fn();
+      return loading;
+    },
+    loaded: () => loading,
+    waitUntil: () => {},
+    events: () =>
+      [...storage].filter(([k]) => k.startsWith("ev:")).map(([, v]) => v),
+  };
 }
 
-describe("provider-confirmed run cancellation", () => {
-  it.each(
-    ["explicit", "deadline", "admission"].flatMap((mode) =>
-      [
-        "stopped",
-        "archived",
-        "deleted",
-        "started",
-        "stopping",
-        "starting",
-        "error",
-        "missing",
-        "read failure",
-        "command failure",
-      ].map((provider) => [mode, provider]),
-    ),
-  )("handles %s stop with provider %s", async (mode, provider) => {
-    const phase = mode === "admission" ? "done" : "building";
-    const context = await setup({
+const redirected: EvidenceRecord = {
+  id: "ev_00000000-0000-4000-8000-000000000000",
+  runId: "run-1",
+  kind: "screenshot",
+  label: "not_observed",
+  pageOrState: "/account @ desktop 1440",
+  url: "https://example.com/account",
+  tool: "anchor",
+  capturedAt: "2026-10-16T10:00:00.000Z",
+  contentHash: "sha256:00",
+  limitations: [`Redirected to https://example.com/login, ${leftScope}.`],
+  contentType: "text/plain",
+  byteLength: 0,
+};
+
+beforeEach(() => {
+  captureMock.mockReset();
+  vi.mocked(endSavedSignIn).mockReset().mockResolvedValue(undefined);
+  vi.mocked(evidenceStore).mockReset();
+  vi.mocked(llmJson).mockClear();
+  vi.mocked(verifyFinal).mockClear();
+  vi.mocked(verifyPlan).mockClear();
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+async function persistedRun(
+  evidence: Evidence[] = [],
+  phase: Phase = "planned",
+  empty = false,
+) {
+  const ctx = fakeCtx();
+  if (!empty)
+    await ctx.storage.put("state", {
+      id: "run-1",
       phase,
-      tasks: [task("building")],
+      spec: {
+        url: "https://example.com/",
+        goal: "copy it",
+        pages: [{ path: "/account", confirmed: true }],
+        flows: [],
+        openQuestions: [],
+        approved: true,
+        revision: 1,
+      },
+      chat: [],
+      evidence,
+      tasks: [],
+      signInPaths: phase === "awaiting_sign_in" ? ["/account"] : undefined,
     });
-    const { run, state, data, calls, startWorker, expire } = context;
-    state.sandboxId = "sb1";
-    const get = vi.mocked(Daytona.prototype.get);
-    get.mockResolvedValue({
-      state: provider === "missing" ? undefined : provider,
-    });
-    if (provider === "read failure")
-      get.mockRejectedValue(new Error("provider read failed"));
-    if (provider === "command failure") {
-      get.mockResolvedValue({ state: "started" });
-      vi.mocked(Daytona.prototype.must).mockRejectedValue(
-        new Error("worker cancellation failed"),
+  const run = new Run(ctx as never, {} as Env);
+  await ctx.loaded();
+  return { run, ctx };
+}
+
+function bindCapture(signIn: SignIn | null = null) {
+  const records = new Map<string, EvidenceRecord>();
+  const store: EvidenceStore = {
+    putEvidence: async (record) => {
+      records.set(record.id, record);
+    },
+    getEvidence: async (id) => records.get(id) ?? null,
+    getContent: async () => null,
+    saveSignIn: async (_id, value) => {
+      signIn = value;
+    },
+    takeSignIn: async () => {
+      const saved = signIn;
+      signIn = null;
+      return saved;
+    },
+  };
+  captureMock.mockImplementation((_env, id, request, landed, control) =>
+    captureRun(
+      {
+        ...control,
+        anchorApiKey: "test-key",
+        store: {
+          ...store,
+          putEvidence: async (record, bytes, signal) => {
+            await store.putEvidence(record, bytes, signal);
+            control?.signal?.throwIfAborted();
+            await landed(toEvidence(record));
+          },
+        },
+        emit: () => {},
+      },
+      id,
+      request,
+    ),
+  );
+  vi.mocked(endSavedSignIn).mockImplementation((_env, id) =>
+    endSignIn({ anchorApiKey: "test-key", store }, id),
+  );
+  return { store, records, saved: () => signIn };
+}
+
+describe("Run sign-in handoff", () => {
+  it.each(["start", "resume", "skip", "gateway"] as const)(
+    "refuses expired %s capture work without spending or reopening the run",
+    async (action) => {
+      const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+      const state = await run.getState();
+      state.startedAt = Date.now() - 121 * 60_000;
+      const result =
+        action === "start"
+          ? run.startSignIn()
+          : action === "resume"
+            ? run.resumeSignIn()
+            : action === "skip"
+              ? run.skipSignIn()
+              : run.gatewayCapture("https://example.com/account");
+      await expect(result).rejects.toThrow(/limit/);
+      expect(captureMock).not.toHaveBeenCalled();
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      expect(ctx.events()).toContainEqual(
+        expect.objectContaining({ type: "phase", data: { phase: "stopped" } }),
       );
-    }
-    const client = frontFor(context);
-    const confirmed = ["stopped", "archived", "deleted", "started"].includes(
-      provider,
+    },
+  );
+
+  it("retains the target query through first look, gateway, approval, secure sign-in and resume", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    const url = "https://example.com/search?q=robots&token=private";
+    const target = "/search?q=robots&token=private";
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      reply: "Search page confirmed",
+      userApproved: false,
+      spec: {
+        pages: [{ path: "/search", confirmed: true }],
+        flows: [],
+        openQuestions: [],
+      },
+    });
+    await run.start("run-1", url, "copy it");
+    expect(captureMock.mock.lastCall?.[2].scope.paths).toEqual([target]);
+    await run.gatewayCapture(url);
+    expect(captureMock.mock.lastCall?.[2].scope.paths).toEqual([target]);
+    expect(
+      await run.gatewayCapture("https://example.com/search?q=agents"),
+    ).toMatchObject({ status: 403 });
+    expect(captureMock).toHaveBeenCalledTimes(2);
+    await run.approveSpec();
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [{ ...redirected, url }],
+    });
+    await run.alarm();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      mode: "full_pack",
+      scope: { paths: [target] },
+    });
+    expect((await run.getState()).signInPaths).toEqual([target]);
+    expect(
+      JSON.stringify(
+        ctx
+          .events()
+          .filter((event) => (event as { type: string }).type === "phase"),
+      ),
+    ).not.toContain("private");
+    expect((await run.getState()).chat.at(-1)?.text).not.toContain("private");
+    captureMock.mockResolvedValueOnce({
+      status: "awaiting_sign_in",
+      liveViewUrl: "https://live.example.test/sign-in",
+    });
+    await run.startSignIn();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      signIn: "start",
+      scope: { paths: [target] },
+    });
+    await run.resumeSignIn();
+    await run.alarm();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      signIn: "resume",
+      scope: { paths: [target] },
+    });
+    expect((await run.getState()).phase).toBe("planned");
+  });
+
+  it.each(["skip", "stop", "resume", "replace"] as const)(
+    "serializes %s with pending session creation and cleans up owned sessions",
+    async (action) => {
+      const { run } = await persistedRun([], "awaiting_sign_in");
+      let saved: SignIn | null = null;
+      const store: EvidenceStore = {
+        putEvidence: async () => {},
+        getEvidence: async () => null,
+        getContent: async () => null,
+        saveSignIn: async (_id, signIn) => {
+          saved = signIn;
+        },
+        takeSignIn: async () => {
+          const signIn = saved;
+          saved = null;
+          return signIn;
+        },
+      };
+      const deps = { anchorApiKey: "test-key", store, emit: () => {} };
+      captureMock.mockImplementation((_env, id, request) =>
+        captureRun(deps, id, request),
+      );
+      vi.mocked(endSavedSignIn).mockImplementation((_env, id) =>
+        endSignIn(deps, id),
+      );
+      const creating = deferred<void>();
+      const release = deferred<void>();
+      const live = new Set<string>();
+      let created = 0;
+      const create = vi
+        .spyOn(anchor, "createSession")
+        .mockImplementation(async () => {
+          const id = `session-${++created}`;
+          if (created === 1) {
+            creating.resolve();
+            await release.promise;
+          }
+          live.add(id);
+          return { id, liveViewUrl: `https://live.example.test/${id}` };
+        });
+      const end = vi
+        .spyOn(anchor, "endSession")
+        .mockImplementation(async (_key, id) => {
+          live.delete(id);
+        });
+
+      const first = run.startSignIn();
+      await creating.promise;
+      const next =
+        action === "skip"
+          ? run.skipSignIn()
+          : action === "stop"
+            ? run.stop()
+            : action === "resume"
+              ? run.resumeSignIn()
+              : run.startSignIn();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(endSavedSignIn).not.toHaveBeenCalled();
+      expect((await run.getState()).phase).toBe("awaiting_sign_in");
+
+      release.resolve();
+      await Promise.all([first, next]);
+      if (action === "replace") {
+        expect(create).toHaveBeenCalledTimes(2);
+        expect(live).toEqual(new Set(["session-2"]));
+        await run.skipSignIn();
+      } else if (action === "resume") {
+        expect((await run.getState()).pending).toBe("resume_sign_in");
+        expect(live).toEqual(new Set(["session-1"]));
+        await expect(run.startSignIn()).rejects.toThrow(
+          "no sign-in is pending",
+        );
+        await run.stop();
+      }
+      expect(live.size).toBe(0);
+      expect(saved).toBeNull();
+      expect(end).toHaveBeenCalledWith("test-key", "session-1");
+      expect((await run.getState()).phase).toBe(
+        action === "stop" || action === "resume" ? "stopped" : "inspecting",
+      );
+      if (action === "stop" || action === "resume") {
+        await run.alarm();
+        expect((await run.getState()).phase).toBe("stopped");
+        expect(captureMock).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  it("allows another sign-in transition after creation fails", async () => {
+    const { run } = await persistedRun([], "awaiting_sign_in");
+    captureMock.mockRejectedValueOnce(new Error("Anchor unavailable"));
+    captureMock.mockResolvedValueOnce({
+      status: "awaiting_sign_in",
+      liveViewUrl: "https://live.example.test/session-2",
+    });
+    const first = run.startSignIn();
+    const second = run.startSignIn();
+    await expect(first).rejects.toThrow("Anchor unavailable");
+    await expect(second).resolves.toEqual({
+      liveViewUrl: "https://live.example.test/session-2",
+    });
+    await run.skipSignIn();
+    expect((await run.getState()).phase).toBe("inspecting");
+  });
+
+  it("pauses for sign-in, survives a resume with no session, then plans on skip", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    await run.start("run-1", "https://example.com/", "copy it");
+    await run.approveSpec();
+
+    // Full pack: the confirmed page redirects to a login page.
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
+    });
+    await run.alarm();
+    let state = await run.getState();
+    expect(state.phase).toBe("awaiting_sign_in");
+    expect(state.signInPaths).toEqual(["/account"]);
+    await expect(run.startBuild()).rejects.toThrow();
+
+    // Only the caller gets the live view URL; it is never stored or emitted.
+    const live = "https://live.anchorbrowser.io?sessionId=secret";
+    captureMock.mockResolvedValueOnce({
+      status: "awaiting_sign_in",
+      liveViewUrl: live,
+    });
+    expect(await run.startSignIn()).toEqual({ liveViewUrl: live });
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+      signIn: "start",
+      scope: { origin: "https://example.com", paths: ["/account"] },
+    });
+
+    // Resume without a live session: back to waiting, not failed.
+    captureMock.mockRejectedValueOnce(
+      new CaptureError("No sign-in session to resume for this run.", 409),
     );
-    if (mode !== "explicit") expire();
-    if (mode === "deadline") await run.alarm();
-    else
-      expect(
-        (await client.send(mode === "explicit" ? "/r1/stop" : ""))?.status,
-      ).toBe(confirmed ? (mode === "explicit" ? 200 : 201) : 502);
-    expect(get).toHaveBeenCalledWith("sb1");
-    expect(data.get("state")).toMatchObject({
-      phase: confirmed ? "stopped" : phase,
-      pending: confirmed ? undefined : "stop",
-      startedAt: client.original.createdAt,
-      tasks: [
-        expect.objectContaining({ status: confirmed ? "stopped" : "building" }),
-      ],
+    await run.resumeSignIn();
+    await run.alarm();
+    state = await run.getState();
+    expect(captureMock.mock.lastCall?.[2]).toMatchObject({ signIn: "resume" });
+    expect(state.phase).toBe("awaiting_sign_in");
+    expect(state.chat.at(-1)?.text).toContain("No sign-in session");
+
+    expect(endSavedSignIn).not.toHaveBeenCalled();
+    await run.skipSignIn();
+    expect(endSavedSignIn).toHaveBeenCalledWith(expect.anything(), "run-1");
+    await run.alarm();
+    state = await run.getState();
+    expect(state.phase).toBe("planned");
+    expect(state.signInPaths).toBeUndefined();
+    expect(JSON.stringify([state, ctx.events()])).not.toContain(live);
+  });
+
+  it("refuses sign-in actions when no sign-in is pending", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    await run.start("run-1", "https://example.com/", "copy it");
+    await expect(run.startSignIn()).rejects.toThrow("no sign-in is pending");
+    await expect(run.resumeSignIn()).rejects.toThrow("no sign-in is pending");
+    await expect(run.skipSignIn()).rejects.toThrow("no sign-in is pending");
+  });
+
+  it("ends the saved sign-in session when stopped while awaiting sign-in", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    await run.start("run-1", "https://example.com/", "copy it");
+    await run.approveSpec();
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
     });
-    if (provider !== "started" && provider !== "command failure")
-      expect(Daytona.prototype.must).not.toHaveBeenCalled();
-    if (!confirmed) {
-      expect(client.records[0]).toMatchObject(client.original);
-      expect(client.start).not.toHaveBeenCalled();
-      await expect(run.message("continue")).rejects.toThrow(/stopping/);
-      expect((await client.send(""))?.status).toBe(
-        mode === "explicit" ? 429 : 502,
-      );
-      get.mockResolvedValue({ state: "stopped" });
-      if (mode === "explicit")
-        expect((await client.send("/r1/stop"))?.status).toBe(200);
-    }
-    if (mode !== "admission" || !confirmed)
-      expect((await client.send(""))?.status).toBe(201);
-    expect(client.records[0]).toMatchObject({
-      ...client.original,
-      active: false,
-      busy: false,
-    });
-    expect(client.start).toHaveBeenCalledOnce();
-    expect(calls).toEqual([]);
-    expect(startWorker).not.toHaveBeenCalled();
+    await run.alarm();
+    vi.mocked(endSavedSignIn).mockRejectedValueOnce(
+      new Error("Evidence storage is not configured"),
+    );
+
+    const state = await run.stop();
+
+    expect(endSavedSignIn).toHaveBeenCalledWith(expect.anything(), "run-1");
+    expect(state.phase).toBe("stopped");
   });
 });
 
-describe("run paid-work deadlines", () => {
-  it.each([undefined, "1"])(
-    "stops expired chat, approval, build and overrides (%s minutes)",
-    async (minutes) => {
-      for (const action of [
-        "message",
-        "approve",
-        "build",
-        "override",
-      ] as const) {
-        const { run, storage, calls, startWorker } = await setup({
-          phase: action === "build" ? "planned" : "brief",
-          tasks: [task("failed")],
-          minutes,
-        });
-        vi.setSystemTime(Date.now() + (minutes ? 1 : 120) * 60_000);
-        const result =
-          action === "message"
-            ? run.message("hello")
-            : action === "approve"
-              ? run.approveSpec()
-              : action === "build"
-                ? run.startBuild()
-                : run.override("t01", "approve", "yes");
-        await expect(result).rejects.toThrow(/limit/);
-        expect((await run.getState()).phase).toBe("stopped");
-        expect(storage.deleteAlarm).toHaveBeenCalled();
-        expect(calls).toEqual([]);
-        expect(startWorker).not.toHaveBeenCalled();
-      }
-    },
-  );
-
-  it("does not capture or converse when admission was already expired", async () => {
-    const { run, request } = await setup({ empty: true });
-    await expect(
-      run.start(
-        "late",
-        "https://example.com",
-        "rebuild",
-        Date.now() - 121 * 60_000,
-      ),
-    ).rejects.toThrow(/limit/);
-    expect(request).not.toHaveBeenCalled();
-  });
-
-  it("does not converse after first capture crosses the deadline", async () => {
-    const { run, request, calls, expire } = await setup({ empty: true });
-    request.mockImplementationOnce(async () => {
-      expire();
-      return new Response("<html>observed</html>");
-    });
-    await expect(
-      run.start("r1", "https://example.com", "rebuild"),
-    ).rejects.toThrow(/limit/);
-    expect(calls).toEqual([]);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not plan after page inspection crosses the deadline", async () => {
-    const { run, request, calls, expire } = await setup({
-      phase: "inspecting",
-      pending: "inspect",
-    });
-    request.mockImplementationOnce(async () => {
-      expire();
-      return new Response("<html>observed</html>");
-    });
-    await run.alarm();
-    expect(calls).toEqual([]);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not invoke the model after memory recall crosses the deadline", async () => {
-    const { run, env, request, calls, expire } = await setup();
-    env.SPECTRON_URL = "https://memory.test";
-    request.mockImplementationOnce(async () => {
-      expire();
-      return Response.json({ context: "observed" });
-    });
-    await expect(run.message("hello")).rejects.toThrow(/limit/);
-    expect(calls).toEqual([]);
-  });
-
-  it("does not verify a plan after planning crosses the deadline", async () => {
-    const { run, request, calls, expire } = await setup({
-      phase: "inspecting",
-      pending: "inspect",
-    });
-    request.mockImplementation(async (input) => {
-      if (String(input).includes("api.openai.com")) {
-        calls.push("plan");
-        expire();
-        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
-      }
-      return new Response("<html>observed</html>");
-    });
-    await run.alarm();
-    expect(calls).toEqual(["plan"]);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not dispatch a worker after preparation crosses the deadline", async () => {
-    const { run, expire, startWorker } = await setup({
-      phase: "building",
-      tasks: [task("queued")],
-    });
-    vi.mocked(Daytona.prototype.writeFile).mockImplementationOnce(async () => {
-      expire();
-    });
-    await run.alarm();
-    expect(startWorker).not.toHaveBeenCalled();
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not execute a worker when session creation crosses the deadline", async () => {
-    const { run, expire, request, startWorker, env } = await setup({
-      phase: "building",
-      tasks: [task("queued")],
-    });
-    startWorker.mockRestore();
-    env.DAYTONA_API_URL = "https://daytona.test";
-    const paths: string[] = [];
-    request.mockImplementation(async (input) => {
-      const url = String(input);
-      paths.push(url);
-      if (url.endsWith("toolbox-proxy-url"))
-        return Response.json({ url: "https://toolbox.test" });
-      if (url.endsWith("/process/session")) {
-        expire();
-        return Response.json({});
-      }
-      throw new Error(`Unexpected request: ${url}`);
-    });
-    await run.alarm();
-    expect(paths).toHaveLength(2);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not review after collecting a worker crosses the deadline", async () => {
-    const { run, expire, calls } = await setup({
-      phase: "building",
-      tasks: [task("building")],
-    });
-    vi.mocked(Daytona.prototype.exec).mockImplementation(async () => {
-      expire();
-      return { exitCode: 0, result: "0" };
-    });
-    await run.alarm();
-    expect(calls).toEqual([]);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it("does not verify a merge after the preview fetch crosses the deadline", async () => {
-    const { run, expire, calls, request } = await setup({
-      phase: "building",
-      tasks: [task("failed")],
-    });
-    request.mockImplementationOnce(async () => {
-      expire();
-      return new Response("<html>rebuilt</html>");
-    });
-    await expect(run.override("t01", "approve", "yes")).rejects.toThrow(
-      /limit/,
-    );
-    expect(calls).toEqual([]);
-  });
-
-  it("does not perform final verification after reading the preview crosses the deadline", async () => {
-    const { run, expire, calls, request } = await setup({ phase: "building" });
-    request.mockImplementationOnce(async () => {
-      expire();
-      return new Response("<html>rebuilt</html>");
-    });
-    await run.alarm();
-    expect(calls).toEqual([]);
-    expect((await run.getState()).phase).toBe("stopped");
-  });
-
-  it.each(["brief", "building", "done", "failed"] as const)(
-    "keeps %s runs blocked and nonterminal until worker cancellation completes",
-    async (phase) => {
-      const { run, state, data, ctx, env, calls, storage, startWorker } =
-        await setup({ phase, tasks: [task("building")] });
-      state.sandboxId = "sb1";
-      let release!: () => void;
-      let entered!: () => void;
-      const started = new Promise<void>((resolve) => {
-        entered = resolve;
-      });
-      const blocked = new Promise<string>((resolve) => {
-        release = () => resolve("");
-      });
-      vi.mocked(Daytona.prototype.must).mockImplementationOnce(async () => {
-        entered();
-        return blocked;
-      });
-      const stopping = run.stop();
-      await started;
-      expect(await run.getState()).toMatchObject({ phase, pending: "stop" });
-      expect(data.get("state")).toMatchObject({ phase, pending: "stop" });
-      const reloaded = new Run(ctx as unknown as DurableObjectState, env);
-      await Promise.resolve();
-      await expect(reloaded.message("continue")).rejects.toThrow(/stopping/);
-      await expect(run.override("t01", "approve", "continue")).rejects.toThrow(
-        /stopping/,
+describe("Run inspection cancellation and recovery", () => {
+  it.each([
+    ["resume", "success"],
+    ["resume", "redirect"],
+    ["resume", "failure"],
+    ["inspect", "success"],
+    ["gateway", "success"],
+    ["first_look", "success"],
+  ] as const)(
+    "stays stopped after %s capture settles with %s",
+    async (kind, outcome) => {
+      const { run, ctx } = await persistedRun(
+        [],
+        kind === "resume" ? "awaiting_sign_in" : "brief",
+        kind === "first_look",
       );
-      await run.alarm();
-      expect(storage.setAlarm).not.toHaveBeenCalled();
-      expect(calls).toEqual([]);
-      expect(startWorker).not.toHaveBeenCalled();
-      release();
-      await stopping;
-      expect(await run.getState()).toMatchObject({
-        phase: "stopped",
-        pending: undefined,
-      });
-      expect(data.get("state")).toMatchObject({
-        phase: "stopped",
-        pending: undefined,
-      });
-    },
-  );
-
-  it.each(["network", "command"] as const)(
-    "keeps cancellation pending after a %s failure until an explicit successful stop",
-    async (kind) => {
-      const { run, data, calls, storage } = await setup({
-        phase: "building",
-        tasks: [task("building")],
-      });
-      vi.mocked(Daytona.prototype.must).mockRestore();
-      if (kind === "network")
-        vi.mocked(Daytona.prototype.exec).mockRejectedValueOnce(
-          new Error("toolbox unavailable"),
-        );
-      else
-        vi.mocked(Daytona.prototype.exec).mockResolvedValueOnce({
-          exitCode: 1,
-          result: "workers still running",
-        });
-      await expect(run.stop()).rejects.toThrow();
-      expect(data.get("state")).toMatchObject({
-        phase: "building",
-        pending: "stop",
-      });
-      await expect(run.message("continue")).rejects.toThrow(/stopping/);
-      await expect(run.override("t01", "reject", "retry")).rejects.toThrow(
-        /stopping/,
+      const memory = bindCapture(
+        kind === "resume"
+          ? { sessionId: "active-session", origin: "https://example.com" }
+          : null,
       );
-      await run.alarm();
-      expect(calls).toEqual([]);
-      expect(storage.setAlarm).not.toHaveBeenCalled();
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "active-session",
+        liveViewUrl: "https://live.example.test/session",
+      });
+      const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockImplementation(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "failure")
+            throw new anchor.AnchorError("Session was closed");
+          return fixturePageFacts(
+            outcome === "redirect"
+              ? "https://example.com/login"
+              : kind === "first_look"
+                ? "https://example.com/"
+                : "https://example.com/account",
+          );
+        });
+      let operation: Promise<unknown>;
+      if (kind === "resume") {
+        await run.resumeSignIn();
+        operation = run.alarm();
+      } else if (kind === "inspect") {
+        await run.approveSpec();
+        operation = run.alarm();
+      } else if (kind === "gateway") {
+        operation = run.gatewayCapture("https://example.com/account");
+      } else {
+        operation = run.start("run-1", "https://example.com/", "copy it");
+      }
+      const settled = operation.then(
+        () => null,
+        (error: Error) => error,
+      );
+      await entered.promise;
       await run.stop();
-      expect(await run.getState()).toMatchObject({
-        phase: "stopped",
-        pending: undefined,
-      });
+      expect(close).toHaveBeenCalledExactlyOnceWith(
+        "test-key",
+        "active-session",
+      );
+      const state = structuredClone(await run.getState());
+      const events = structuredClone(ctx.events());
+      release.resolve();
+      const error = await settled;
+      if (kind === "gateway") expect(error?.name).toBe("AbortError");
+      else expect(error).toBeNull();
+      expect(await run.getState()).toEqual(state);
+      expect((await run.getState()).phase).toBe("stopped");
+      expect(ctx.events()).toEqual(events);
+      expect(memory.records.size).toBe(0);
+      expect(memory.saved()).toBeNull();
+      expect(snippet).toHaveBeenCalledTimes(1);
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledTimes(1);
     },
   );
 
-  it("keeps expired runs blocked when cancellation fails", async () => {
-    const { run, expire, data, calls, storage } = await setup({
-      phase: "building",
-      tasks: [task("building")],
+  it("closes a session whose creation finishes after Stop", async () => {
+    const { run, ctx } = await persistedRun([], "brief");
+    bindCapture();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    vi.spyOn(anchor, "createSession").mockImplementation(async () => {
+      entered.resolve();
+      await release.promise;
+      return {
+        id: "late-session",
+        liveViewUrl: "https://live.example.test/late",
+      };
     });
-    vi.mocked(Daytona.prototype.must).mockRejectedValueOnce(
-      new Error("cancellation refused"),
-    );
-    expire();
-    await run.alarm();
-    expect(data.get("state")).toMatchObject({
-      phase: "building",
-      pending: "stop",
-    });
-    await run.alarm();
-    expect(calls).toEqual([]);
-    expect(storage.setAlarm).not.toHaveBeenCalled();
-  });
-
-  it("checks the deadline again after worker launch returns", async () => {
-    const { run, expire, calls, startWorker } = await setup({
-      phase: "building",
-      tasks: [task("queued")],
-    });
-    startWorker.mockImplementationOnce(async () => {
-      expire();
-      return "cmd1";
-    });
-    await run.alarm();
-    expect(startWorker).toHaveBeenCalledOnce();
-    expect(calls).toEqual([]);
-    expect(await run.getState()).toMatchObject({
-      phase: "stopped",
-      pending: undefined,
-    });
-  });
-
-  it("blocks plan verification after stop arrives during planning", async () => {
-    const { run, request, calls } = await setup({
-      phase: "inspecting",
-      pending: "inspect",
-    });
-    request.mockImplementation(async (input) => {
-      if (String(input).includes("api.openai.com")) {
-        calls.push("plan");
-        await run.stop();
-        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
-      }
-      return new Response("<html>observed</html>");
-    });
-    await run.alarm();
-    expect(calls).toEqual(["plan"]);
+    const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+    const snippet = vi
+      .spyOn(anchor, "runSnippet")
+      .mockRejectedValue(new Error("Unexpected browser call"));
+    await run.approveSpec();
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
+    expect(snippet).not.toHaveBeenCalled();
     expect((await run.getState()).phase).toBe("stopped");
+    expect(ctx.events()).toEqual(events);
   });
 
-  it.each(["provider", "json", "refusal", "recording"] as const)(
-    "makes final verification %s failures terminal without another paid attempt",
-    async (failure) => {
-      const { run, request, calls, storage, ctx, env, data } = await setup({
-        phase: "building",
-      });
-      request.mockImplementation(async (input, init) => {
-        if (String(input).includes("api.openai.com")) {
-          const body = JSON.parse(String(init?.body));
-          calls.push(body.text.format.name);
-          if (failure === "provider")
-            return Response.json({ error: "unavailable" }, { status: 503 });
-          if (failure === "json") return Response.json({ output_text: "{" });
-          if (failure === "refusal")
-            return Response.json({
-              output: [{ content: [{ type: "refusal", refusal: "No" }] }],
-            });
-          return Response.json({
-            output_text: JSON.stringify({
-              pass: true,
-              findings: [],
-              summary: "Pass",
-            }),
-          });
-        }
-        return new Response("<html>observed</html>");
-      });
-      if (failure === "recording") {
-        const put = storage.put;
-        let failed = false;
-        storage.put = async (key, value) => {
-          if (
-            !failed &&
-            typeof value === "object" &&
-            value !== null &&
-            "type" in value &&
-            value.type === "verification"
-          ) {
-            failed = true;
-            throw new Error("event write failed");
-          }
-          await put(key, value);
-        };
-      }
-      await run.alarm();
-      expect(await run.getState()).toMatchObject({
-        phase: "failed",
-        error: expect.any(String),
-      });
-      expect(data.get("state")).toMatchObject({ phase: "failed" });
-      expect(storage.deleteAlarm).toHaveBeenCalled();
-      expect(storage.setAlarm).not.toHaveBeenCalled();
-      await run.alarm();
-      const reloaded = new Run(ctx as unknown as DurableObjectState, env);
-      await Promise.resolve();
-      await reloaded.alarm();
-      expect(calls).toEqual(["verify_final"]);
-      expect(storage.setAlarm).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each(["approve", "reject"] as const)(
-    "allows explicit %s continuation after completion without extending the deadline",
-    async (verdict) => {
-      const { run, state, calls, startWorker } = await setup({
-        phase: "done",
-        tasks: [task("failed")],
-      });
-      state.sandboxId = "sb1";
-      state.previewUrl = "https://preview.test/";
-      const startedAt = state.startedAt;
-      await run.override("t01", verdict, "Make a variant");
-      expect(await run.getState()).toMatchObject({
-        id: "r1",
-        phase: "building",
-        startedAt,
-      });
-      if (verdict === "approve") expect(calls).toContain("verify_task");
-      else {
-        await run.alarm();
-        expect(startWorker).toHaveBeenCalledOnce();
-      }
-      expect((await run.getState()).startedAt).toBe(startedAt);
-    },
-  );
-
-  it("does not reopen paid verification when an already merged task is approved again", async () => {
-    const { run, calls } = await setup({
-      phase: "done",
-      tasks: [task("merged")],
+  it("closes a resumed session taken from storage after Stop", async () => {
+    const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+    const memory = bindCapture({
+      sessionId: "late-session",
+      origin: "https://example.com",
     });
-    await run.override("t01", "approve", "Keep it");
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const take = memory.store.takeSignIn;
+    vi.spyOn(memory.store, "takeSignIn").mockImplementationOnce(async (id) => {
+      const saved = await take(id);
+      entered.resolve();
+      await release.promise;
+      return saved;
+    });
+    const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+    const snippet = vi
+      .spyOn(anchor, "runSnippet")
+      .mockRejectedValue(new Error("Unexpected browser call"));
+    await run.resumeSignIn();
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
+    expect(snippet).not.toHaveBeenCalled();
+    expect(memory.saved()).toBeNull();
+    expect((await run.getState()).phase).toBe("stopped");
+    expect(ctx.events()).toEqual(events);
+  });
+
+  it("suppresses sign-in recovery events when Stop interrupts their state save", async () => {
+    const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
+    });
+    await run.resumeSignIn();
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const put = ctx.storage.put;
+    vi.spyOn(ctx.storage, "put").mockImplementationOnce(async (key, value) => {
+      await put(key, value);
+      entered.resolve();
+      await release.promise;
+    });
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const state = structuredClone(await run.getState());
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(await run.getState()).toEqual(state);
+    expect(ctx.events()).toEqual(events);
+  });
+
+  it.each([
+    ["plan", "resolve"],
+    ["plan", "reject"],
+    ["verify", "resolve"],
+    ["verify", "reject"],
+  ] as const)(
+    "discards an in-flight %s %s after Stop",
+    async (stage, outcome) => {
+      const { run, ctx } = await persistedRun([], "awaiting_sign_in");
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      if (stage === "plan") {
+        vi.mocked(llmJson).mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "reject") throw new Error("Late plan failure");
+          return {
+            tasks: [
+              {
+                id: "t01",
+                title: "Late task",
+                brief: "late",
+                outOfScope: "",
+                acceptance: [],
+                evidence: [],
+                owns: [],
+                dependsOn: [],
+              },
+            ],
+          };
+        });
+      } else {
+        vi.mocked(verifyPlan).mockImplementationOnce(async () => {
+          entered.resolve();
+          await release.promise;
+          if (outcome === "reject") throw new Error("Late verifier failure");
+          return {
+            target: "plan",
+            pass: false,
+            summary: "Late verdict",
+            findings: [],
+          };
+        });
+      }
+      await run.skipSignIn();
+      const inspection = run.alarm();
+      await entered.promise;
+      await run.stop();
+      const state = structuredClone(await run.getState());
+      const events = structuredClone(ctx.events());
+      release.resolve();
+      await inspection;
+      expect((await run.getState()).phase).toBe("stopped");
+      expect(await run.getState()).toEqual(state);
+      expect(ctx.events()).toEqual(events);
+      if (stage === "plan") expect(verifyPlan).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["retry", "skip"] as const)(
+    "recovers from an expired resumed session through %s",
+    async (action) => {
+      const { run } = await persistedRun([], "awaiting_sign_in");
+      const memory = bindCapture({
+        sessionId: "expired-session",
+        origin: "https://example.com",
+      });
+      const close = vi.spyOn(anchor, "endSession").mockResolvedValue();
+      vi.spyOn(anchor, "createSession").mockResolvedValue({
+        id: "new-session",
+        liveViewUrl: "https://live.example.test/new",
+      });
+      let calls = 0;
+      vi.spyOn(anchor, "runSnippet").mockImplementation(async () => {
+        if (++calls === 1)
+          throw new anchor.AnchorError(
+            "Anchor POST execute-code failed with 404",
+          );
+        return (calls - 2) % 3 === 0
+          ? fixturePageFacts("https://example.com/account")
+          : { finalUrl: "https://example.com/account", png: fixturePngBase64 };
+      });
+      await run.resumeSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("awaiting_sign_in");
+      expect((await run.getState()).signInPaths).toEqual(["/account"]);
+      expect((await run.getState()).chat.at(-1)?.text).toContain(
+        "open secure sign-in again",
+      );
+      expect(memory.saved()).toBeNull();
+      expect(memory.records.size).toBe(0);
+      expect(llmJson).not.toHaveBeenCalled();
+      expect(close).toHaveBeenCalledWith("test-key", "expired-session");
+      if (action === "retry") {
+        await expect(run.startSignIn()).resolves.toEqual({
+          liveViewUrl: "https://live.example.test/new",
+        });
+        await run.resumeSignIn();
+      } else await run.skipSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("planned");
+      expect((await run.getState()).signInPaths).toBeUndefined();
+      expect(memory.saved()).toBeNull();
+      if (action === "retry")
+        expect(close).toHaveBeenCalledWith("test-key", "new-session");
+    },
+  );
+});
+
+describe("Run persisted evidence", () => {
+  const html = new TextEncoder().encode("<main>Original page</main>");
+  const png = new Uint8Array([0, 255, 13, 10]);
+  const json = new TextEncoder().encode('{ "sandboxId": "string" }');
+  const legacy = (
+    id: string,
+    kind: Evidence["kind"],
+    ext: string,
+  ): Evidence => ({
+    ...toEvidence(redirected),
+    id,
+    kind,
+    status: "observed",
+    path: `evidence/${id}.${ext}`,
+  });
+
+  it("reads only member legacy blobs and keeps them available to planning, build and verification", async () => {
+    const { run, ctx } = await persistedRun(
+      [
+        legacy("ev_001", "screenshot", "png"),
+        legacy("ev_002", "html", "html"),
+        legacy("ev_003", "styles", "json"),
+        legacy("ev_004", "assets", "json"),
+      ],
+      "awaiting_sign_in",
+    );
+    for (const [id, bytes] of [
+      ["ev_001", png],
+      ["ev_002", html],
+      ["ev_003", json],
+      ["ev_004", json],
+      ["ev_999", png],
+    ] as const)
+      await ctx.storage.put(`blob:${id}`, bytes.buffer);
+    expect(await run.evidenceFile("ev_999")).toBeNull();
+    for (const [id, type, content] of [
+      ["ev_001", "image/png", png],
+      ["ev_002", "text/html", html],
+      ["ev_003", "application/json", json],
+      ["ev_004", "application/json", json],
+    ] as const) {
+      expect(await run.evidenceFile(id)).toEqual({
+        contentType: type,
+        content,
+      });
+    }
+    expect(evidenceStore).not.toHaveBeenCalled();
+
+    await run.skipSignIn();
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("planned");
+    expect(vi.mocked(llmJson).mock.calls.at(-1)?.[1].input).toContain(
+      "<main>Original page</main>",
+    );
+
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({
+      id: "sandbox-1",
+    });
+    vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "startAsync").mockResolvedValue("preview");
+    vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
+      "https://preview.example.test",
+    );
+    vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
+      "https://preview.example.test/signed",
+    );
+    await run.startBuild();
+    await run.alarm();
+    for (const [path, bytes] of [
+      ["ev_001.png", png],
+      ["ev_002.html", html],
+      ["ev_003.json", json],
+      ["ev_004.json", json],
+    ] as const)
+      expect(write).toHaveBeenCalledWith(
+        "sandbox-1",
+        `/home/daytona/evidence/${path}`,
+        bytes,
+      );
+    expect((await run.getState()).phase).toBe("building");
     await run.alarm();
     expect((await run.getState()).phase).toBe("done");
-    expect(calls).toEqual([]);
+    expect(vi.mocked(verifyFinal).mock.calls[0]?.[5]).toBe(
+      "<main>Original page</main>",
+    );
   });
 
-  it("still starts and converses, plans, dispatches and verifies within the deadline", async () => {
-    const first = await setup({ empty: true });
-    await first.run.start("r1", "https://example.com", "rebuild");
-    await first.run.message("the hero");
-    expect(first.calls).toEqual(["orchestrator_turn", "orchestrator_turn"]);
-    await first.run.approveSpec();
-    await first.run.alarm();
-    expect(first.calls).toContain("plan");
-    expect(first.calls).toContain("verify_plan");
-    expect((await first.run.getState()).phase).toBe("planned");
-    const planned = await setup({ phase: "planned" });
-    await planned.run.startBuild();
-    await planned.run.alarm();
-    expect(Daytona.prototype.create).toHaveBeenCalled();
-    expect(planned.startWorker).toHaveBeenCalled();
-    const building = await setup({
-      phase: "building",
-      tasks: [task("queued")],
+  it("reads modern evidence from the shared store without falling back to a local blob", async () => {
+    const record = {
+      ...redirected,
+      label: "observed" as const,
+      kind: "dom" as const,
+      contentType: "text/html",
+    };
+    const { run, ctx } = await persistedRun([toEvidence(record)]);
+    await ctx.storage.put(`blob:${record.id}`, png.buffer);
+    const store: EvidenceStore = {
+      putEvidence: async () => {},
+      getEvidence: vi.fn(async () => record),
+      getContent: vi.fn(async () => html),
+      saveSignIn: async () => {},
+      takeSignIn: async () => null,
+    };
+    vi.mocked(evidenceStore).mockReturnValue(store);
+    expect(await run.evidenceFile(record.id)).toEqual({
+      contentType: "text/html",
+      content: html,
     });
-    building.startWorker.mockClear();
-    await building.run.alarm();
-    expect(building.startWorker).toHaveBeenCalledOnce();
-    await building.run.override("t01", "approve", "yes");
-    expect(building.calls).toContain("verify_task");
-    await building.run.alarm();
-    expect(building.calls).toContain("verify_final");
-    expect((await building.run.getState()).phase).toBe("done");
+    expect(store.getEvidence).toHaveBeenCalledWith(record.id);
+    expect(store.getContent).toHaveBeenCalledWith(record.id);
+    expect(
+      await run.evidenceFile("ev_11111111-1111-4111-8111-111111111111"),
+    ).toBeNull();
+    expect(store.getEvidence).toHaveBeenCalledTimes(1);
   });
 });

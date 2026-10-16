@@ -133,7 +133,19 @@ export function Workspace({
       busy = false;
       if (!live) return;
       if (!result.ok && result.error === "not_found") {
-        setOffline(
+        setOffline(false);
+        setEntries((list) => [
+          ...list,
+          {
+            kind: "notice",
+            id: "events-not-found",
+            error: result.error,
+            detail: `${result.detail} Check the run ID or start a new session.`,
+          },
+        ]);
+        return;
+      }
+      setOffline(
         !result.ok &&
           !["operator_token", "access_required"].includes(result.error),
       );

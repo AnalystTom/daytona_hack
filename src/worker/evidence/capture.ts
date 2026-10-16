@@ -29,6 +29,7 @@ export interface CaptureDeps {
   anchorApiKey: string;
   store: EvidenceStore;
   signal?: AbortSignal;
+  beforeWork?: () => Promise<void>;
   onSession?: (close: () => Promise<void>) => void;
   // Appends the event to the run; the caller adds the envelope (IDs, sequence, timestamp).
   emit: (event: CaptureEvent) => void | Promise<void>;
@@ -109,6 +110,7 @@ export async function captureRun(
   request: CaptureRequest,
 ): Promise<CaptureResult> {
   deps.signal?.throwIfAborted();
+  await deps.beforeWork?.();
   const { scope, mode } = request;
   const full = mode === "full_pack";
   const key = deps.anchorApiKey;
@@ -256,6 +258,7 @@ export async function captureRun(
     };
 
     try {
+      await deps.beforeWork?.();
       let facts: anchor.PageFacts | undefined;
       if (!fallback) {
         try {
@@ -300,6 +303,7 @@ export async function captureRun(
         }
         for (const [, viewport] of shots) {
           deps.signal?.throwIfAborted();
+          await deps.beforeWork?.();
           const limit =
             "Full-page capture after load; lazy-loaded or animated content may differ.";
           if (fallback) {
@@ -396,6 +400,7 @@ export async function captureRun(
       );
     } else {
       try {
+        await deps.beforeWork?.();
         const video = await anchor.primaryRecording(key, sessionId);
         if (video) {
           await save(recording, "observed", "video/mp4", video, [

@@ -305,7 +305,10 @@ export class Run extends DurableObject<Env> {
           `No screenshot: ${notObservedReason(redactQuery(shots[0]?.limitations.join(" ") ?? ""))}`,
         );
     } catch (e: any) {
-      if (signal.aborted) return this.s;
+      if (signal.aborted) {
+        if (this.overTime()) throw e;
+        return this.s;
+      }
       // The conversation can start without the screenshot.
       const message = String(e?.message || e);
       await this.emit(
@@ -371,6 +374,7 @@ export class Run extends DurableObject<Env> {
   /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
   startSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       const result = await this.capture({
         mode: "full_pack",
         scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
@@ -385,6 +389,7 @@ export class Run extends DurableObject<Env> {
   /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
   resumeSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       this.awaitingSignIn();
       return this.continueInspection("resume_sign_in");
     });
@@ -393,6 +398,7 @@ export class Run extends DurableObject<Env> {
   /** Plan without the stopped pages. */
   skipSignIn() {
     return this.serializeSignIn(async () => {
+      await this.beforeWork();
       this.awaitingSignIn();
       await endSavedSignIn(this.env, this.s.id);
       return this.continueInspection("plan");
@@ -406,6 +412,7 @@ export class Run extends DurableObject<Env> {
   }
 
   private async continueInspection(pending: "resume_sign_in" | "plan") {
+    await this.beforeWork();
     this.s.phase = "inspecting";
     this.s.pending = pending;
     await this.save();
@@ -429,7 +436,13 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  async stop() {
+  stop() {
+    return this.serializeSignIn(() => this.cancelWork());
+  }
+
+  private async cancelWork() {
+    this.inspection.abort();
+    await Promise.all([...this.captureSessions].map((close) => close()));
     this.s.pending = "stop";
     await this.save();
     await this.ctx.storage.deleteAlarm();
@@ -446,6 +459,8 @@ export class Run extends DurableObject<Env> {
         );
       }
     }
+    if (this.s.signInPaths?.length)
+      await endSavedSignIn(this.env, this.s.id).catch(() => {});
     for (const t of this.s.tasks) {
       if (["queued", "building", "in_review"].includes(t.status)) {
         t.status = "stopped";
@@ -513,7 +528,7 @@ export class Run extends DurableObject<Env> {
     const overTime = this.overTime();
     if (!overTime) return;
     this.s.error = `Stopped: ${overTime}.`;
-    await this.stop();
+    await this.cancelWork();
     throw new Error(this.s.error);
   };
 
@@ -691,7 +706,8 @@ export class Run extends DurableObject<Env> {
 
   // ---------- phase 2+3: inspect and plan ----------
   /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
-  private capture(request: CaptureRequest) {
+  private async capture(request: CaptureRequest) {
+    await this.beforeWork();
     const signal = this.inspection.signal;
     signal.throwIfAborted();
     let closeSession: (() => Promise<void>) | undefined;
@@ -717,14 +733,20 @@ export class Run extends DurableObject<Env> {
       },
       {
         signal,
+        beforeWork: this.beforeWork,
         onSession: (close) => {
           closeSession = close;
           this.captureSessions.add(close);
         },
       },
-    ).finally(() => {
-      if (closeSession) this.captureSessions.delete(closeSession);
-    });
+    )
+      .then(async (result) => {
+        await this.beforeWork();
+        return result;
+      })
+      .finally(() => {
+        if (closeSession) this.captureSessions.delete(closeSession);
+      });
   }
 
   private async storeEvidence(

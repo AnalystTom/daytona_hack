@@ -93,7 +93,7 @@ function setup(
       if (
         request.method === "POST" &&
         action !== undefined &&
-        ["messages", "override", "approve", "build"].includes(action)
+        ["messages", "override", "approve", "build", "sign-in"].includes(action)
       )
         await onAction?.(id, action);
       if (action === "stop") {
@@ -228,6 +228,9 @@ describe("Cloudflare Access users", () => {
       ["POST", `/api/v1/runs/${id}/build`],
       ["POST", `/api/v1/runs/${id}/approve`],
       ["POST", `/api/v1/runs/${id}/stop`],
+      ["POST", `/api/v1/runs/${id}/sign-in`],
+      ["POST", `/api/v1/runs/${id}/sign-in/resume`],
+      ["POST", `/api/v1/runs/${id}/sign-in/skip`],
     ] as const) {
       const response = await as("bob@example.com", method, path);
       expect(response.status).toBe(404);
@@ -367,6 +370,9 @@ describe("Cloudflare Access users", () => {
     });
     for (const [action, body] of [
       ["messages", { text: "Make a variant" }],
+      ["sign-in", {}],
+      ["sign-in/resume", {}],
+      ["sign-in/skip", {}],
       ["override", { taskId: "t01", verdict: "approve", reason: "Continue" }],
       ["override", { taskId: "t01", verdict: "reject", reason: "Retry" }],
     ] as const) {

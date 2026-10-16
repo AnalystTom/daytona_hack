@@ -4,7 +4,12 @@ import { OrchestratorEvent } from "./orchestrator";
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
 export type RunCallError = {
   ok: false;
-  error: "not_connected" | "operator_token" | "not_found" | "access_required" | "failed";
+  error:
+    | "not_connected"
+    | "operator_token"
+    | "not_found"
+    | "access_required"
+    | "failed";
   detail: string;
 };
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;

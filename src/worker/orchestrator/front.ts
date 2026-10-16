@@ -142,7 +142,15 @@ async function userRunRoute(
     }
     if (
       request.method === "POST" &&
-      ["messages", "override", "approve", "build"].includes(action ?? "")
+      [
+        "messages",
+        "override",
+        "approve",
+        "build",
+        "sign-in",
+        "sign-in/resume",
+        "sign-in/skip",
+      ].includes(action ?? "")
     ) {
       if (
         Date.now() - owned.createdAt >=

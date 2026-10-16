@@ -123,6 +123,40 @@ function deps(store: EvidenceStore) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("captureRun (fixture Anchor responses)", () => {
+  it("closes the session and refuses further paid calls when the run expires between viewports", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    const { deps: d } = deps(memory.store);
+    let expired = false;
+    const put = memory.store.putEvidence;
+    memory.store.putEvidence = async (record, bytes, signal) => {
+      await put(record, bytes, signal);
+      if (record.kind === "screenshot") expired = true;
+    };
+    await expect(
+      captureRun(
+        {
+          ...d,
+          beforeWork: async () => {
+            if (expired) throw new Error("Run reached its deadline");
+          },
+        },
+        "run_1",
+        { mode: "full_pack", scope },
+      ),
+    ).rejects.toThrow(/deadline/);
+    expect(
+      [...memory.records.values()].filter(
+        (record) => record.kind === "screenshot",
+      ),
+    ).toHaveLength(1);
+    expect(
+      calls.filter((call) => call.path === "/v1/tools/execute-code"),
+    ).toHaveLength(2);
+    expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    expect(calls.some((call) => call.path.endsWith("/recordings"))).toBe(false);
+  });
+
   it("stores the actual query-dependent response returned to its executable navigation snippet", async () => {
     const realFetch = globalThis.fetch;
     const requested: string[] = [];
