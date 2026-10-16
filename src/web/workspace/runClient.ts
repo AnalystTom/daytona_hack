@@ -93,13 +93,17 @@ export function createRun(
   brief: { url: string; goal: string },
   fetchImpl: typeof fetch = fetch,
 ) {
-  return call(
-    "POST",
-    "/api/v1/runs",
-    brief,
-    async (r) => ({ runId: CreatedRun.parse(await r.json()).id }),
-    fetchImpl,
-  );
+  const start = () =>
+    call(
+      "POST",
+      "/api/v1/runs",
+      brief,
+      async (r) => ({ runId: CreatedRun.parse(await r.json()).id }),
+      fetchImpl,
+    );
+  return typeof navigator !== "undefined" && navigator.locks
+    ? navigator.locks.request("reversy.createRun", start)
+    : start();
 }
 
 export function sendMessage(

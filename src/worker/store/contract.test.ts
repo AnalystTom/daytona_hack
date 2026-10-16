@@ -503,6 +503,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     };
     const headers = {
       origin: "https://reversy.test",
+      "cf-connecting-ip": "203.0.113.1",
       "cf-access-jwt-assertion": await accessJwt({ email: original.owner }),
     };
     const start = () =>

@@ -311,10 +311,31 @@ async function sharedLimits(
   request: Request,
   env: OrchestratorEnv,
 ): Promise<SharedLimits> {
-  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  const ip = request.headers.get("cf-connecting-ip");
+  if (!ip) {
+    throw new Failure(
+      503,
+      "client_ip_required",
+      "Your network address could not be determined. No run was started.",
+    );
+  }
+  let network = ip;
+  if (ip.includes(":")) {
+    const address = new URL(`http://[${ip}]/`).hostname.slice(1, -1);
+    const [head = [], tail] = address
+      .split("::")
+      .map((part) => (part ? part.split(":") : []));
+    const groups = tail
+      ? [...head, ...Array(8 - head.length - tail.length).fill("0"), ...tail]
+      : head;
+    network = groups
+      .slice(0, 4)
+      .map((group) => group.padStart(4, "0"))
+      .join(":");
+  }
   const digest = await crypto.subtle.digest(
     "SHA-256",
-    new TextEncoder().encode(ip),
+    new TextEncoder().encode(network),
   );
   return {
     ip: [...new Uint8Array(digest).slice(0, 8)]

@@ -39,15 +39,16 @@ function setup(vars: Partial<OrchestratorEnv> = {}) {
       method?: string;
       json?: unknown;
       cookie?: string;
-      ip?: string;
+      ip?: string | null;
       headers?: Record<string, string>;
     } = {},
   ) => {
     const headers: Record<string, string> = {
       origin: SITE,
-      "cf-connecting-ip": init.ip ?? "203.0.113.1",
       ...init.headers,
     };
+    if (init.ip !== null)
+      headers["cf-connecting-ip"] = init.ip ?? "203.0.113.1";
     if (init.cookie) headers.cookie = init.cookie;
     return handleOrchestrator(
       new Request(`${SITE}${path}`, {
@@ -238,6 +239,44 @@ describe("anonymous visitors", () => {
 });
 
 describe("run limits", () => {
+  it.each([null, ""])(
+    "refuses a start without a client IP (%s) before reserving or forwarding it",
+    async (ip) => {
+      const { call, start, seen } = setup({ RUNS_PER_DAY_ALL: "1" });
+      const refused = await call("/api/v1/runs", {
+        method: "POST",
+        json: BRIEF,
+        ip,
+      });
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toMatchObject({
+        code: "client_ip_required",
+      });
+      expect(seen).toHaveLength(0);
+      expect((await start(cookieOf(refused))).response.status).toBe(201);
+    },
+  );
+
+  it.each([
+    ["2001:db8:abcd:1234::1", "2001:db8:abcd:1234:ffff:ffff:ffff:ffff"],
+    ["2001:db8::1", "2001:0DB8:0000:0000:ffff:ffff:ffff:ffff"],
+    ["::1", "0:0:0:0:ffff:ffff:ffff:ffff"],
+    ["2001:db8:1::abcd:0:1", "2001:db8:1:0:abcd:ffff:ffff:ffff"],
+    ["::ffff:192.0.2.1", "0:0:0:0:0:ffff:c633:6401"],
+  ])("shares the IPv6 /64 quota between %s and %s", async (first, second) => {
+    const { start, seen } = setup({ RUNS_PER_IP_DAY: "1" });
+    expect((await start(undefined, first)).response.status).toBe(201);
+    const refused = await start(undefined, second);
+    expect(refused.response.status).toBe(429);
+    expect(await refused.response.json()).toMatchObject({
+      code: "ip_daily_limit",
+    });
+    expect(seen).toHaveLength(1);
+    expect(
+      (await start(undefined, "2001:db8:ffff:ffff::1")).response.status,
+    ).toBe(201);
+  });
+
   it("allow three runs per session per day by default, then say so", async () => {
     const { start, phases } = setup({ ACTIVE_RUNS: "10" });
     let cookie: string | undefined;

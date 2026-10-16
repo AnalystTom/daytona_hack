@@ -66,7 +66,10 @@ function setup(
     path: string,
     json?: unknown,
   ) => {
-    const headers: Record<string, string> = { origin: SITE };
+    const headers: Record<string, string> = {
+      origin: SITE,
+      "cf-connecting-ip": "203.0.113.1",
+    };
     if (email === "operator") headers.authorization = "Bearer operator-secret";
     else if (email) {
       headers["cf-access-jwt-assertion"] = await accessJwt({ email });
@@ -134,6 +137,33 @@ describe("in-memory admission contract", () => {
 });
 
 describe("Cloudflare Access users", () => {
+  it("cannot start paid work without a client IP even with valid Access identity", async () => {
+    const { env, owners, calls } = setup();
+    const response = await handleOrchestrator(
+      new Request(`${SITE}/api/v1/runs`, {
+        method: "POST",
+        headers: {
+          origin: SITE,
+          "cf-access-jwt-assertion": await accessJwt({
+            email: "ada@example.com",
+          }),
+        },
+        body: JSON.stringify({
+          url: "https://example.com",
+          goal: "Rebuild it",
+        }),
+      }),
+      env,
+      { owners, fetcher: certs },
+    );
+    expect(response?.status).toBe(503);
+    expect(await response?.json()).toMatchObject({
+      code: "client_ip_required",
+    });
+    expect(calls).toHaveLength(0);
+    expect(await owners.list("ada@example.com", 0)).toEqual([]);
+  });
+
   it("need a valid sign-in: no token box, no JWT means 401", async () => {
     const { as, calls } = setup();
     const missing = await as(null, "GET", "/api/v1/runs/r1/events");

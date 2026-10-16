@@ -110,7 +110,7 @@ A signed-in user (or, without Access, an anonymous visitor session) sees and act
 | Variable | Default | Limit |
 |---|---|---|
 | `RUNS_PER_DAY` | `3` | Runs one user or visitor session may start per UTC day (`daily_run_limit`) |
-| `RUNS_PER_IP_DAY` | `6` | Runs one network address (`CF-Connecting-IP`, stored only as a hash) may start per UTC day (`ip_daily_limit`) |
+| `RUNS_PER_IP_DAY` | `6` | Runs one IPv4 address or IPv6 /64 (`CF-Connecting-IP`, stored only as a hash; missing addresses refuse starts) may start per UTC day (`ip_daily_limit`) |
 | `RUNS_PER_DAY_ALL` | `30` | New runs everyone together may start per UTC day (`global_daily_limit`) |
 | `ACTIVE_RUNS` | `1` | Active reservations per user, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
 | `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: paid work is refused at the original admission deadline; expired slots require confirmed cancellation (or no stored run state) and successful storage cleanup |

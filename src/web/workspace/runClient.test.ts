@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createRun,
   fetchEvents,
@@ -21,22 +21,103 @@ const reply = (status: number, body?: unknown) =>
 
 const brief = { url: "https://www.daytona.io/", goal: "copy the hero" };
 
-describe("run client", () => {
-  it("posts the URL and goal, relying on the anonymous session cookie, and returns the run id", async () => {
-    const fetchImpl = reply(201, { id: "run_1", phase: "brief" });
-    expect(await createRun(brief, fetchImpl)).toEqual({
-      ok: true,
-      value: { runId: "run_1" },
-    });
-    expect(fetchImpl).toHaveBeenCalledWith("/api/v1/runs", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "X-Requested-With": "XMLHttpRequest",
-      },
-      body: JSON.stringify(brief),
-    });
+function lockRunStarts() {
+  const queues = new Map<string, Promise<unknown>>();
+  const request = vi.fn((name: string, start: () => Promise<unknown>) => {
+    const running = (queues.get(name) ?? Promise.resolve()).then(start);
+    queues.set(
+      name,
+      running.catch(() => undefined),
+    );
+    return running;
   });
+  vi.stubGlobal("navigator", { locks: { request } });
+  return request;
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("run client", () => {
+  it.each([undefined, {}])(
+    "posts the brief without Web Locks (%j), relying on the session cookie",
+    async (navigatorState) => {
+      vi.stubGlobal("navigator", navigatorState);
+      const fetchImpl = reply(201, { id: "run_1", phase: "brief" });
+      expect(await createRun(brief, fetchImpl)).toEqual({
+        ok: true,
+        value: { runId: "run_1" },
+      });
+      expect(fetchImpl).toHaveBeenCalledWith("/api/v1/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "X-Requested-With": "XMLHttpRequest",
+        },
+        body: JSON.stringify(brief),
+      });
+    },
+  );
+
+  it("establishes one visitor cookie before another client instance starts a run", async () => {
+    const request = lockRunStarts();
+    vi.resetModules();
+    const otherTab = await import("./runClient");
+    let cookie: string | undefined;
+    const owners: string[] = [];
+    let entered!: () => void;
+    let release!: () => void;
+    const began = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl = vi.fn<typeof fetch>(async () => {
+      const owner = cookie ?? `visitor_${owners.length + 1}`;
+      owners.push(owner);
+      const id = `run_${owners.length}`;
+      if (owners.length === 1) {
+        entered();
+        await blocked;
+      }
+      cookie = owner;
+      return Response.json({ id }, { status: 201 });
+    });
+    const first = createRun(brief, fetchImpl);
+    const second = otherTab.createRun(brief, fetchImpl);
+    try {
+      await began;
+      expect(request).toHaveBeenCalledTimes(2);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+    }
+    expect(await Promise.all([first, second])).toEqual([
+      { ok: true, value: { runId: "run_1" } },
+      { ok: true, value: { runId: "run_2" } },
+    ]);
+    expect(owners).toEqual([cookie, cookie]);
+  });
+
+  it.each(["network", "response"])(
+    "releases the creation lock after a %s failure",
+    async (failure) => {
+      lockRunStarts();
+      const fetchImpl = vi
+        .fn<typeof fetch>()
+        .mockImplementationOnce(async () => {
+          if (failure === "network") throw new TypeError("offline");
+          return Response.json({});
+        })
+        .mockResolvedValueOnce(Response.json({ id: "run_2" }, { status: 201 }));
+      const [failed, next] = await Promise.all([
+        createRun(brief, fetchImpl),
+        createRun(brief, fetchImpl),
+      ]);
+      expect(failed).toMatchObject({ ok: false });
+      expect(next).toEqual({ ok: true, value: { runId: "run_2" } });
+    },
+  );
 
   it("never prompts for a token on any 401, including unstructured edge responses", async () => {
     for (const body of [
