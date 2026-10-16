@@ -5,11 +5,51 @@ The user gives a site and a goal in chat, refines the scope in conversation, and
 Daytona HackSprint, New York, 16 October 2026.
 
 This file and [`orchestrator/spec.md`](orchestrator/spec.md) sit alongside *Reversy implementation specification, Revision 2* (the detailed handoff: routes, schemas, limits, security and acceptance tests).
-Where this repo records a decision made after Revision 2, it wins; the decisions are listed in section 7.
+Where this repo records a decision made after Revision 2, it wins; the decisions are listed in section 8.
 Design source: the team's Excalidraw board ("Reversy: minimal canvas workspace"), captured in `docs/screens/`.
 That board revision replaces the earlier confirmation form, six-stage stepper and Compare concepts.
 
-## 1. One workspace: canvas on the left, chat on the right
+## 1. Public landing page and app entry
+
+The path into the product: public landing page → chat start (Entry A) → Spec canvas → Build and review.
+
+### Public landing page
+
+![Public landing page](screens/board-landing.png)
+
+The landing page introduces Reversy, explains the workflow and leads into chat.
+
+- **Header:** Reversy (beaver logo), "How it works" (scrolls to the workflow), "Workspace" (scrolls to the workspace preview), and **Start a project**.
+- **Hero:** "Take it apart. Make it yours." with "Turn a website into a clear spec, captured evidence, and a build you can review.", **Start a project**, "See how it works", and the chainsaw beaver.
+- **From a brief to a build:** three steps. Refine the brief (share a URL and a goal, shape the scope in chat); Inspect the evidence (target screenshots, recordings and findings beside the spec); Build and review (follow tasks and inspect the evidence behind each review).
+- **Keep the work in view:** "Chat on the right. Spec, evidence, and tasks on one canvas.", with the workspace preview labelled "Workspace concept".
+- **Start with something specific:** three starter links: Rebuild a landing page, Recreate one interaction, Work from screenshots.
+- **Closing call:** "What would you like to make yours?" with **Start a project**, then the footer.
+
+Rules:
+
+- Every **Start a project** button opens Entry A. There is no separate questionnaire or duplicate brief entry.
+- A starter link opens Entry A with an editable draft. Choosing a starter never begins capture or a build; a missing URL or file is asked for in chat.
+- The page stays honest: the workspace preview is labelled as a concept until real app media replaces it, and there are no invented users, testimonials, scores, results or speed claims.
+
+### Entry A: chat start
+
+![Entry A: chat start with the beaver and starter prompts](screens/board-entry-a.png)
+
+- A centred greeting ("What would you like to make yours?", "Share a website and a goal. We'll refine the rest in chat."), one composer and the beaver.
+- Four starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Work from screenshots, Inspect a website.
+- A starter fills an editable draft; Send carries the same brief into the workspace chat.
+- Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
+
+### Entry B: direct entry into an empty workspace
+
+![Entry B: empty workspace with the chat ready](screens/board-entry-b.png)
+
+- Opening the workspace directly shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
+- No questionnaire or input form, and no spec, capture or task card until it actually exists.
+- A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
+
+## 2. One workspace: canvas on the left, chat on the right
 
 The app shell is minimal: a canvas plus a right-hand chat.
 There is no left navigation sidebar, giant title, numbered stepper, decorative mascot scene or separate Compare screen.
@@ -23,7 +63,7 @@ The chat stays visible while Reversy inspects, plans and builds, and is where th
 **The canvas holds the work.**
 Spec and Build show different objects in the same environment.
 
-## 2. Spec view: refine the brief in chat, build the spec on the canvas
+## 3. Spec view: refine the brief in chat, build the spec on the canvas
 
 ![Spec view: draft spec, target screenshot and video evidence beside the chat](screens/workspace-minimal-canvas.png)
 
@@ -37,7 +77,7 @@ The canvas is the specification and evidence surface:
 The board's raster is a layout reference only; the live canvas shows the original captured artifacts.
 When a page needs an account, an inline state asks the user to open secure sign-in or skip that page.
 
-## 3. Build view: build and review on the same canvas
+## 4. Build view: build and review on the same canvas
 
 ![Build view: kanban with Queued, Building, In review and Merged](screens/workspace-build-review.png)
 
@@ -53,7 +93,7 @@ When a page needs an account, an inline state asks the user to open secure sign-
 **Steering:** the user can message the orchestrator at any time and override a review verdict.
 A message that changes the approved spec becomes a proposed change; applying it creates a new spec revision for approval rather than editing a running build.
 
-## 4. Scope for this version
+## 5. Scope for this version
 
 Demo target: `https://www.daytona.io/` (Daytona has agreed).
 Two pieces of work run in parallel, each split into tasks on the kanban:
@@ -71,7 +111,7 @@ Given a published report, it rebuilds the tables, charts and key figures as an e
 It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
 A figure Reversy could not read is marked "not observed", never filled in.
 
-## 5. Mascot
+## 6. Mascot
 
 ![Chainsaw beaver mascot](screens/mascot-chainsaw-beaver.png)
 
@@ -80,7 +120,7 @@ It stays quiet in the workspace: a small chat avatar or a brief state illustrati
 The current image is concept art, not a final brand asset.
 The other four options on the board (chainsaw robot, spanner raccoon, toolkit octopus, clockwork beetle) are not used.
 
-## 6. Look and feel
+## 7. Look and feel
 
 All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the board and Revision 2 set the direction, they win.
 
@@ -89,7 +129,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 - Canvas: soft dotted background, white rounded cards with thin borders, restrained shadows.
 - Controls are real HTML, and every state comes from real data.
 
-## 7. Platform and decisions
+## 8. Platform and decisions
 
 | Piece | Use |
 |---|---|
