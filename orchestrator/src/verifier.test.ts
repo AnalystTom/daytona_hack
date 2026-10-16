@@ -95,6 +95,91 @@ const env = { ORCHESTRATOR_MODEL: "m" } as Env;
 afterEach(() => vi.unstubAllGlobals());
 
 describe("backend verification", () => {
+  it("authorizes signed route probes without exposing the credential to the verifier", async () => {
+    const token = "test-preview-secret+with/slash";
+    const encoded = encodeURIComponent(token);
+    const signed = `${PREVIEW}?tkn=${encoded}`;
+    const paths = [
+      "/api/articles?id=1&tag=a%20b&tag=c",
+      "/api/plain",
+      "/api/redirect?q=2",
+      "/api/fail?id=3",
+      "//elsewhere.example/api",
+    ];
+    const captured = [
+      ev("ev_001", paths[0], "observed"),
+      { ...ev("ev_003", "/", "inferred"), routes: paths.slice(1) },
+    ];
+    const requests: { url: string; init?: RequestInit }[] = [];
+    const inputs: Record<string, unknown>[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "https://api.openai.com/v1/responses") {
+        const body = JSON.parse(String(init?.body));
+        inputs.push(JSON.parse(body.input));
+        expect(String(init?.body)).not.toContain(token);
+        expect(String(init?.body)).not.toContain(encoded);
+        return Response.json({
+          output_text: JSON.stringify({
+            pass: true,
+            summary: "ok",
+            findings: [],
+          }),
+        });
+      }
+      requests.push({ url, init });
+      if (new URL(url).searchParams.get("tkn") !== token)
+        return new Response("Unauthorized", { status: 401 });
+      if (url === signed) return new Response(`<main>${token}</main>`);
+      if (new URL(url).pathname === "/api/fail")
+        throw new Error(`Failed request to ${url}`);
+      if (new URL(url).pathname === "/api/redirect")
+        return new Response(`<a href="${signed}">${token}</a>`, {
+          status: 302,
+          headers: { location: `${PREVIEW}next?tkn=${encoded}&q=2` },
+        });
+      return Response.json({ items: [] });
+    });
+    for (const scope of ["backend", "both"] as const) {
+      await verifyTask(env, spec(scope), captured, task, signed);
+      await verifyFinal(env, spec(scope), captured, [task], signed);
+    }
+    const expected = paths
+      .slice(0, 4)
+      .map(
+        (path) =>
+          `${PREVIEW.slice(0, -1)}${path}${path.includes("?") ? "&" : "?"}tkn=${encoded}`,
+      );
+    const probes = requests.filter((r) => r.url !== signed);
+    expect(probes.map((r) => r.url)).toEqual([
+      ...expected,
+      ...expected,
+      ...expected,
+      ...expected,
+    ]);
+    for (const probe of probes) {
+      expect(probe.init?.method ?? "GET").toBe("GET");
+      expect(probe.init?.redirect).toBe("manual");
+      expect(probe.init?.signal).toBeInstanceOf(AbortSignal);
+    }
+    expect(inputs).toHaveLength(4);
+    for (const input of inputs) {
+      expect(input.routes).toEqual([
+        expect.objectContaining({
+          path: paths[0],
+          status: 200,
+          shape: { items: [] },
+        }),
+        expect.objectContaining({ path: paths[1], status: 200 }),
+        expect.objectContaining({ path: paths[2], status: 302 }),
+        { path: paths[3], error: "route request failed" },
+        { path: paths[4], error: "route leaves the preview origin" },
+      ]);
+      expect(JSON.stringify(input)).not.toContain(token);
+      expect(JSON.stringify(input)).not.toContain(encoded);
+    }
+  });
+
   it("keeps all ten observed queries when combined capture adds redacted network labels", async () => {
     const { requests, inputs } = stub();
     const captured: Evidence[] = [];

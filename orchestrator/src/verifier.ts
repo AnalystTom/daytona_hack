@@ -70,12 +70,16 @@ function routesOf(evidence: Evidence[]) {
 
 async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
   if (!previewUrl) return [];
+  const preview = new URL(previewUrl);
+  const token = preview.searchParams.get("tkn");
   return Promise.all(
     routes.map(async (path) => {
       try {
-        const url = new URL(path, previewUrl);
-        if (url.origin !== new URL(previewUrl).origin)
+        const url = new URL(path, preview);
+        if (url.origin !== preview.origin)
           return { path, error: "route leaves the preview origin" };
+        if (token)
+          url.search += `${url.search ? "&" : "?"}tkn=${encodeURIComponent(token)}`;
         const res = await fetch(url, {
           redirect: "manual",
           signal: AbortSignal.timeout(PROBE_MS),
@@ -114,8 +118,8 @@ async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
             ? { outline: outline(text, 1000) }
             : { shape }),
         };
-      } catch (e) {
-        return { path, error: String(e).slice(0, 200) };
+      } catch {
+        return { path, error: "route request failed" };
       }
     }),
   );
@@ -126,12 +130,24 @@ async function check(
   name: string,
   instructions: string,
   input: unknown,
+  previewUrl?: string,
 ) {
+  const token = previewUrl && new URL(previewUrl).searchParams.get("tkn");
+  let payload = JSON.stringify(input);
+  if (token) {
+    for (const secret of [
+      JSON.stringify(token).slice(1, -1),
+      encodeURIComponent(token),
+      new URLSearchParams({ tkn: token }).toString().slice(4),
+    ])
+      payload = payload.replaceAll(secret, "[redacted]");
+    payload = payload.replace(/([?&]tkn=)[^&\s"'<>\\]*/g, "$1[redacted]");
+  }
   return llmJson<Omit<Verdict, "target" | "taskId">>(env, {
     name,
     model: env.VERIFIER_MODEL || env.ORCHESTRATOR_MODEL,
     instructions: `${BASE}\n${instructions}`,
-    input: JSON.stringify(input),
+    input: payload,
     schema: SCHEMA,
   });
 }
@@ -201,6 +217,7 @@ export async function verifyTask(
       previewHtml: preview,
       routes,
     },
+    previewUrl,
   );
   return { target: "task", taskId: task.id, ...v };
 }
@@ -237,6 +254,7 @@ export async function verifyFinal(
       rebuiltOutline: preview,
       routes,
     },
+    previewUrl,
   );
   return { target: "final", ...v };
 }
