@@ -1,15 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EvidenceRecord } from "../../shared/evidence";
+import { SurrealRunStore } from "../store/surreal";
 import { surrealOk } from "./fixtures";
 import { surrealStore } from "./store";
 
-const env = {
-  SURREALDB_URL: "https://db.example.test/",
-  SURREALDB_NAMESPACE: "reversy",
-  SURREALDB_DATABASE: "main",
-  SURREALDB_USER: "user",
-  SURREALDB_PASSWORD: "pass",
+const config = {
+  url: "https://db.example.test/",
+  namespace: "reversy",
+  database: "main",
+  user: "user",
+  password: "pass",
 };
+const db = (database = config.database) =>
+  new SurrealRunStore({ ...config, database });
 
 const record: EvidenceRecord = {
   id: "ev_00000000-0000-4000-8000-000000000000",
@@ -26,11 +29,8 @@ const record: EvidenceRecord = {
   byteLength: 3,
 };
 
-const defineTables =
-  "DEFINE TABLE IF NOT EXISTS sign_in; DEFINE TABLE IF NOT EXISTS evidence; DEFINE TABLE IF NOT EXISTS evidence_chunk; ";
-
-// Fixture SurrealDB RPC endpoint: records each statement after the table
-// definitions and answers from a queue.
+// Fixture SurrealDB RPC endpoint: records each statement after the run store's
+// schema and answers from a queue.
 function fakeSurreal(responses: unknown[]) {
   const requests: {
     sql: string;
@@ -42,9 +42,10 @@ function fakeSurreal(responses: unknown[]) {
     vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe("https://db.example.test/rpc");
       const { params } = JSON.parse(String(init.body));
-      expect(params[0].startsWith(defineTables)).toBe(true);
+      if (params[0].includes("DEFINE TABLE"))
+        return Response.json(surrealOk([]));
       requests.push({
-        sql: params[0].slice(defineTables.length),
+        sql: params[0],
         vars: params[1],
         headers: new Headers(init.headers),
       });
@@ -59,7 +60,7 @@ afterEach(() => vi.unstubAllGlobals());
 describe("surrealStore (fixture SurrealDB responses)", () => {
   it("writes content chunks before the record, with namespace and auth headers", async () => {
     const requests = fakeSurreal([]);
-    await surrealStore(env).putEvidence(record, new Uint8Array([60, 104, 62]));
+    await surrealStore(db()).putEvidence(record, new Uint8Array([60, 104, 62]));
 
     expect(requests.map((r) => r.sql)).toEqual([
       `CREATE evidence_chunk:\`${record.id}_0\` CONTENT $chunk`,
@@ -87,7 +88,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
       surrealOk([2]),
       surrealOk(["PGg+", "PC9oPg=="]),
     ]);
-    const bytes = await surrealStore(env).getContent(record.id);
+    const bytes = await surrealStore(db()).getContent(record.id);
 
     expect(new TextDecoder().decode(bytes as Uint8Array)).toBe("<h></h>");
     expect(requests[1]?.sql).toBe(
@@ -97,7 +98,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
 
   it("reads a record back and returns null when absent", async () => {
     fakeSurreal([surrealOk([record]), surrealOk([])]);
-    const store = surrealStore(env);
+    const store = surrealStore(db());
     expect(await store.getEvidence(record.id)).toEqual(record);
     expect(await store.getEvidence(record.id)).toBeNull();
   });
@@ -107,7 +108,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
       surrealOk([{ sessionId: "s1", origin: "https://example.com" }]),
       surrealOk([]),
     ]);
-    const store = surrealStore(env);
+    const store = surrealStore(db());
     expect(await store.takeSignIn("run_1")).toEqual({
       sessionId: "s1",
       origin: "https://example.com",
@@ -118,6 +119,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
 
   it("works on a fresh database whose tables do not exist yet", async () => {
     // Like SurrealDB 3.x: reading or deleting from an undefined table fails.
+    const defined = new Set<string>();
     vi.stubGlobal(
       "fetch",
       vi.fn(async (_url: string, init: RequestInit) => {
@@ -126,11 +128,10 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
           .split(";")
           .map((s) => s.trim())
           .filter(Boolean);
-        const defined = new Set<string>();
         return Response.json({
           id: 1,
           result: statements.map((statement) => {
-            const table = /^DEFINE TABLE IF NOT EXISTS (\w+)$/.exec(statement);
+            const table = /^DEFINE TABLE IF NOT EXISTS (\w+)/.exec(statement);
             if (table) {
               defined.add(table[1] as string);
               return { status: "OK", result: null };
@@ -146,7 +147,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
         });
       }),
     );
-    const store = surrealStore(env);
+    const store = surrealStore(db("fresh"));
     expect(await store.takeSignIn("run_1")).toBeNull();
     expect(await store.getEvidence(record.id)).toBeNull();
     expect(await store.getContent(record.id)).toBeNull();
@@ -154,7 +155,7 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
 
   it("raises statement errors and refuses ids that could inject SurrealQL", async () => {
     fakeSurreal([{ id: 1, result: [{ status: "ERR", result: "boom" }] }]);
-    const store = surrealStore(env);
+    const store = surrealStore(db());
     await expect(store.getEvidence(record.id)).rejects.toThrow("boom");
     await expect(
       store.getEvidence("ev_x`; REMOVE TABLE evidence; --"),

@@ -1,16 +1,7 @@
 import { EvidenceRecord } from "../../shared/evidence";
+import type { SurrealRunStore } from "../store/surreal";
 
-// Evidence records and their files live in SurrealDB, reached over its HTTP RPC endpoint.
-// shortcut: own minimal client until the run API's store lands on main; switch to it then.
-
-export const surrealBindings = [
-  "SURREALDB_URL",
-  "SURREALDB_NAMESPACE",
-  "SURREALDB_DATABASE",
-  "SURREALDB_USER",
-  "SURREALDB_PASSWORD",
-] as const;
-type SurrealEnv = Record<(typeof surrealBindings)[number], string>;
+// Evidence records and their files live in SurrealDB, next to the run they belong to.
 
 // A signed-in Anchor session, bound to the origin the user signed in to.
 export interface SignIn {
@@ -50,51 +41,10 @@ const toBase64 = (bytes: Uint8Array) => {
 export const fromBase64 = (text: string) =>
   Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 
-export function surrealStore(env: SurrealEnv): EvidenceStore {
-  const endpoint = `${env.SURREALDB_URL.replace(/\/+$/, "")}/rpc`;
-  const headers = {
-    Accept: "application/json",
-    "Content-Type": "application/json",
-    "Surreal-NS": env.SURREALDB_NAMESPACE,
-    "Surreal-DB": env.SURREALDB_DATABASE,
-    Authorization: `Basic ${btoa(`${env.SURREALDB_USER}:${env.SURREALDB_PASSWORD}`)}`,
-  };
-
-  // SurrealDB 3.x rejects reads and deletes on tables that do not exist yet.
-  const defineTables = ["sign_in", "evidence", "evidence_chunk"]
-    .map((table) => `DEFINE TABLE IF NOT EXISTS ${table};`)
-    .join(" ");
-
-  // Runs one statement, after the table definitions, and returns its result rows.
-  async function query<T>(
-    sql: string,
-    vars: Record<string, unknown> = {},
-  ): Promise<T[]> {
-    const response = await fetch(endpoint, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        id: 1,
-        method: "query",
-        params: [`${defineTables} ${sql}`, vars],
-      }),
-    });
-    if (!response.ok) {
-      throw new Error(`SurrealDB request failed with ${response.status}`);
-    }
-    const body = (await response.json()) as {
-      result?: { status: string; result: unknown }[];
-      error?: { message: string };
-    };
-    const failed = body.result?.find((s) => s.status !== "OK");
-    const statement = body.result?.at(-1);
-    if (body.error || failed || statement?.status !== "OK") {
-      throw new Error(
-        `SurrealDB query failed: ${body.error?.message ?? String((failed ?? statement)?.result)}`,
-      );
-    }
-    return statement.result as T[];
-  }
+export function surrealStore(db: SurrealRunStore): EvidenceStore {
+  // Runs one statement and returns its result rows.
+  const query = async <T>(sql: string, vars: Record<string, unknown> = {}) =>
+    ((await db.query(sql, vars))[0] ?? []) as T[];
 
   return {
     async putEvidence(record, content) {

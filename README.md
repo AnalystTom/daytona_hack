@@ -181,8 +181,8 @@ Interaction recordings are not captured yet; a full pack keeps the session's pag
 | `GET /api/v1/evidence/:id` | The evidence record (shared `EvidenceRecord` in `src/shared/evidence.ts`). |
 | `GET /api/v1/evidence/:id/content` | The stored file. |
 
-Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason.
-Until the run API's event function is on `main`, capture events are returned in the capture response, and `captureRun` takes an `emit` function.
+Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason, and so is the session recording, which names the out-of-scope URLs.
+Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
 Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. Per-run ownership comes with the run API.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 In a signed-in capture the DOM, assets and network log are stored as `not_observed` until masking exists.
@@ -192,11 +192,7 @@ Worker bindings (secrets, set with `wrangler secret put`):
 
 - `OPERATOR_TOKEN` (the bearer token callers must send)
 - `ANCHOR_API_KEY`
-- `SURREALDB_URL` (the SurrealDB HTTP base URL; requests go to its `/rpc` endpoint)
-- `SURREALDB_NAMESPACE`
-- `SURREALDB_DATABASE`
-- `SURREALDB_USER`
-- `SURREALDB_PASSWORD`
+- the run API's `SURREALDB_*` bindings above
 
 Without them the endpoints answer `503` and list the missing names.
 Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's and SurrealDB's documented shapes rather than recorded from live calls.

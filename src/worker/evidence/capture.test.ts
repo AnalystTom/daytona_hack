@@ -152,7 +152,9 @@ describe("captureRun (fixture Anchor responses)", () => {
   });
 
   it("stops a page that redirects off-origin and stores nothing from it", async () => {
-    fakeAnchor({ "https://example.com/pricing": "https://evil.test/pricing" });
+    const calls = fakeAnchor({
+      "https://example.com/pricing": "https://evil.test/pricing",
+    });
     const memory = memoryStore();
     const { deps: d, events } = deps(memory.store);
 
@@ -169,6 +171,12 @@ describe("captureRun (fixture Anchor responses)", () => {
       );
     }
     expect(events[1]?.type).toBe("evidence.page_stopped");
+    const recording = items.find((i) => i.kind === "recording");
+    expect(recording?.label).toBe("not_observed");
+    expect(recording?.limitations[0]).toBe(
+      "Session left the approved scope: https://evil.test/pricing",
+    );
+    expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
   });
 
   it("stops a page that redirects to an unapproved path on the same origin", async () => {

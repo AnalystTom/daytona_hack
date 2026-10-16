@@ -25,7 +25,7 @@ export type CaptureResult =
 export interface CaptureDeps {
   anchorApiKey: string;
   store: EvidenceStore;
-  // The run API's event function; it adds the envelope (IDs, sequence, timestamp).
+  // Appends the event to the run; the caller adds the envelope (IDs, sequence, timestamp).
   emit: (event: CaptureEvent) => void | Promise<void>;
 }
 
@@ -133,6 +133,8 @@ export async function captureRun(
     items.push(record);
     return record.id;
   };
+  // Final URLs of pages that left the scope; the session recording shows them too.
+  const outOfScope: string[] = [];
   const notObserved = (expected: Expected, reason: string) =>
     save(expected, "not_observed", "text/plain", new Uint8Array(), [reason]);
 
@@ -174,6 +176,7 @@ export async function captureRun(
         anchor.navigateSnippet(url, scope.origin, full),
       );
       if (!inScope(facts.finalUrl, scope)) {
+        outOfScope.push(facts.finalUrl);
         stopped = `Redirected to ${facts.finalUrl}, outside the approved scope; capture stopped for this page.`;
       } else {
         if (full) {
@@ -202,6 +205,7 @@ export async function captureRun(
             png: string;
           }>(key, sessionId, anchor.screenshotSnippet(viewport));
           if (!inScope(shot.finalUrl, scope)) {
+            outOfScope.push(shot.finalUrl);
             stopped = `Page moved to ${shot.finalUrl}, outside the approved scope; capture stopped for this page.`;
             break;
           }
@@ -242,6 +246,11 @@ export async function captureRun(
       await notObserved(
         recording,
         "Recording is off in signed-in sessions so the user's sign-in is never recorded.",
+      );
+    } else if (outOfScope.length) {
+      await notObserved(
+        recording,
+        `Session left the approved scope: ${outOfScope.join(", ")}`,
       );
     } else {
       try {
