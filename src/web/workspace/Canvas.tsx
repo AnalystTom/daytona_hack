@@ -101,6 +101,8 @@ export function Canvas({
     const el = viewport.current;
     if (!el) return;
     const onWheel = (event: WheelEvent) => {
+      // Let scrollable card content (e.g. the task log) scroll natively until it hits its end.
+      if (!event.ctrlKey && !event.metaKey && canScroll(event, el)) return;
       event.preventDefault();
       setEasing(false);
       const rect = el.getBoundingClientRect();
@@ -357,4 +359,33 @@ export function CanvasItem({
       )}
     </div>
   );
+}
+
+function canScroll(event: WheelEvent, viewport: HTMLElement): boolean {
+  for (
+    let node = event.target instanceof Element ? event.target : null;
+    node && node !== viewport;
+    node = node.parentElement
+  ) {
+    const style = getComputedStyle(node);
+    const scrollsY = /auto|scroll/.test(style.overflowY);
+    const scrollsX = /auto|scroll/.test(style.overflowX);
+    if (
+      scrollsY &&
+      node.scrollHeight > node.clientHeight &&
+      ((event.deltaY > 0 &&
+        node.scrollTop + node.clientHeight < node.scrollHeight) ||
+        (event.deltaY < 0 && node.scrollTop > 0))
+    )
+      return true;
+    if (
+      scrollsX &&
+      node.scrollWidth > node.clientWidth &&
+      ((event.deltaX > 0 &&
+        node.scrollLeft + node.clientWidth < node.scrollWidth) ||
+        (event.deltaX < 0 && node.scrollLeft > 0))
+    )
+      return true;
+  }
+  return false;
 }

@@ -26,6 +26,7 @@ import {
   startSignIn,
 } from "./runClient";
 import { SessionSwitcher } from "./SessionSwitcher";
+import { SpecView } from "./SpecView";
 import {
   type Layout,
   loadLayout,
@@ -33,7 +34,6 @@ import {
   rememberSession,
   saveLayout,
 } from "./sessions";
-import { SpecView } from "./SpecView";
 import "./workspace.css";
 
 type View = "spec" | "build" | "preview";
@@ -229,8 +229,11 @@ export function Workspace({
     setDelivery(id, result.error ? "failed" : "sent");
     if (result.runId && runId === undefined) {
       briefParts.current = [];
+      const briefUrl = parseBrief(message)?.url;
       setRunId(result.runId);
-      setBriefTarget(parseBrief(message)?.url);
+      setBriefTarget(briefUrl);
+      // Recorded here too: the user may have switched sessions while the run was being created.
+      if (!fixture) rememberSession({ runId: result.runId, target: briefUrl });
       // The run's ID goes in the URL so a refresh or a shared link reopens this session.
       const state = window.history.state;
       if (mounted.current)
