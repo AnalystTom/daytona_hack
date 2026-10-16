@@ -1,8 +1,8 @@
 import { z } from "zod";
 
 // Each run is a session with its own workspace. The orchestrator cannot list runs, so this
-// browser keeps the runs it has opened; a run created through the API joins once its
-// /workspace/<runId> link is opened.
+// browser keeps successfully created or confirmed runs; opening a link alone does not
+// establish that the run exists.
 // shortcut: sessions and card layouts live in this browser's localStorage; move them server side with login.
 
 export const PHASES: Record<string, string> = {

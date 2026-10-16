@@ -49,11 +49,12 @@ Rules:
 - No questionnaire or input form, and no spec, capture or task card until it actually exists.
 - A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
 
-## 2. One workspace: canvas on the left, chat on the right
+## 2. Session workspaces: canvas on the left, chat on the right
 
-The app shell is minimal: a canvas plus a right-hand chat.
+Each run has its own workspace: a canvas plus a right-hand chat.
 There is no left navigation sidebar, giant title, numbered stepper, decorative mascot scene or separate Compare screen.
-The header holds the Reversy name, two canvas views (**Spec** and **Build**) and a **Start build** button.
+The header holds the Reversy name, session menu, **Spec**, **Build** and **Preview** views, and a **Start build** button.
+Session navigation, browser persistence and canvas controls are documented in the [workspace usage guide](../README.md#workspace).
 
 **Chat is how the user and Reversy talk.**
 The user gives a URL and a goal, then refines the scope in conversation; questions and follow-ups stay in the chat panel, not in a form.
@@ -81,7 +82,7 @@ When a page needs an account, an inline state asks the user to open secure sign-
 
 ![Build view: kanban with Queued, Building, In review and Merged](screens/workspace-build-review.png)
 
-- **Start build** needs an approved, saved spec. Until then the board reads "No build started: tasks appear after the spec is approved."
+- **Start build** is enabled when the run reaches `planned`. Before tasks arrive, the board shows the run's inspection, planning, plan-ready or building phase; otherwise it reads "No build started. Tasks appear after the spec is approved."
 - The kanban has four columns, **Queued**, **Building**, **In review** and **Merged**, driven by real task events. **Stop build** halts the work.
 - Selecting a task opens its log, preview and review on the canvas.
 - A submitted task links to its real diff and visual evidence. The reviewer's verdict and reason appear only once recorded.
@@ -160,7 +161,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
-- UI: the minimal canvas workspace (chat on the right; Spec and Build views; kanban) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
+- UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.
 
 Still open: the hard spend cap, and which sponsor accounts actually work.
