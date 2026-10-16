@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import { AUD, accessJwt, certs, TEAM } from "./access-fixtures";
 import { handleOrchestrator, type OrchestratorEnv } from "./front";
 import type { Owners, RunOwner } from "./owners";
@@ -67,7 +67,7 @@ function memoryOwners(): Owners {
 // A stand-in orchestrator that keeps each run's phase; it never starts anything real.
 function setup(
   vars: Partial<OrchestratorEnv> = {},
-  onStart?: (id: string) => Promise<Response | void>,
+  onStart?: (id: string) => Promise<Response> | Promise<void>,
 ) {
   const phases = new Map<string, string>();
   const pending = new Map<string, string>();
@@ -92,9 +92,10 @@ function setup(
       if (!phases.has(id)) return new Response("");
       if (
         request.method === "POST" &&
-        ["messages", "override", "approve", "build"].includes(action ?? "")
+        action !== undefined &&
+        ["messages", "override", "approve", "build"].includes(action)
       )
-        await onAction?.(id, action!);
+        await onAction?.(id, action);
       if (action === "stop") {
         if (onStop) return onStop();
         phases.set(id, "stopped");
@@ -357,6 +358,7 @@ describe("Cloudflare Access users", () => {
     });
     const a = (await (await start("ada@example.com")).json()) as { id: string };
     const original = await owners.get(a.id);
+    assert(original);
     phases.set(a.id, "done");
     const b = (await (await start("ada@example.com")).json()) as { id: string };
     let paid = 0;
@@ -412,8 +414,8 @@ describe("Cloudflare Access users", () => {
     expect((await continuing).status).toBe(200);
     expect(await owners.get(a.id)).toMatchObject({
       runId: a.id,
-      owner: original!.owner,
-      createdAt: original!.createdAt,
+      owner: original.owner,
+      createdAt: original.createdAt,
       busy: false,
     });
     setAction(async (id, action) => {
@@ -528,7 +530,8 @@ describe("Cloudflare Access users", () => {
       const { id } = (await (await start("ada@example.com")).json()) as {
         id: string;
       };
-      const original = (await owners.get(id))!;
+      const original = await owners.get(id);
+      assert(original);
       const finish = owners.finish;
       let storageUnavailable = true;
       owners.finish = async (...args) => {
@@ -546,7 +549,8 @@ describe("Cloudflare Access users", () => {
           })
         ).status,
       ).toBe(503);
-      const abandoned = (await owners.get(id))!;
+      const abandoned = await owners.get(id);
+      assert(abandoned);
       expect(abandoned).toMatchObject({
         runId: id,
         createdAt: original.createdAt,
@@ -631,7 +635,8 @@ describe("Cloudflare Access users", () => {
       const { id } = (await (await start("ada@example.com")).json()) as {
         id: string;
       };
-      const original = (await owners.get(id))!;
+      const original = await owners.get(id);
+      assert(original);
       await owners.reserve(original, 1, 3, []);
       phases.delete(id);
       vi.setSystemTime(original.createdAt + 120 * 60_000);
@@ -688,11 +693,14 @@ describe("Cloudflare Access users", () => {
       }),
       fallback,
     );
-    const cookie = login!.headers.get("set-cookie")!.split(";")[0]!;
-    for (const headers of [
+    assert(login);
+    const cookie = login.headers.get("set-cookie")?.split(";")[0];
+    assert(cookie);
+    const headerCases: HeadersInit[] = [
       { authorization: "Bearer operator-secret" },
       { cookie },
-    ]) {
+    ];
+    for (const headers of headerCases) {
       const response = await handleOrchestrator(
         new Request(`${SITE}/api/v1/runs/r1`, { headers }),
         env,
@@ -756,7 +764,9 @@ describe("Cloudflare Access users", () => {
     expect((await start("ada@example.com")).status).toBe(502);
     const list = await as("ada@example.com", "GET", "/api/v1/runs");
     const rows = (await list.json()) as { id: string }[];
-    const id = rows[0]!.id;
+    const row = rows[0];
+    assert(row);
+    const id = row.id;
     expect(
       (await as("ada@example.com", "GET", `/api/v1/runs/${id}`)).status,
     ).toBe(200);

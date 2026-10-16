@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, it } from "vitest";
+import { assert, beforeAll, describe, expect, it } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import type { Run } from "../../shared/runs";
 import { MemoryRunStore } from "./memory";
@@ -279,7 +279,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
       owner: a.owner,
       busy: false,
     });
-    const currentA = (await owners.get(a.runId))!;
+    const currentA = await owners.get(a.runId);
+    assert(currentA);
     expect(
       await owners.reserve({ ...b, runId: crypto.randomUUID() }, 1, 1, [
         currentA,
@@ -385,7 +386,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
       createdAt: Date.now(),
     };
     expect(await owners.reserve(a, 1, 1, [])).toBeUndefined();
-    const old = (await owners.get(a.runId))!;
+    const old = await owners.get(a.runId);
+    assert(old);
     expect(
       await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 1, [old]),
     ).toBe("daily_run_limit");
@@ -399,7 +401,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.reserve(next, 1, 1, [old])).toBe("active_run_limit");
     await owners.finish(a.runId, a.owner);
     expect(await owners.reserve(next, 1, 1, [old])).toBe("active_run_limit");
-    const current = (await owners.get(a.runId))!;
+    const current = await owners.get(a.runId);
+    assert(current);
     expect(await owners.reserve(next, 1, 1, [current])).toBeUndefined();
     expect(await owners.reserve(a, 1, 1, [])).toBe("active_run_limit");
     expect(await owners.get(a.runId)).toMatchObject({ ...a, busy: false });
@@ -421,7 +424,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     };
     expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
     expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
-    const abandoned = (await owners.get(original.runId))!;
+    const abandoned = await owners.get(original.runId);
+    assert(abandoned);
     storageUnavailable = true;
     await expect(
       owners.finish(original.runId, original.owner),
@@ -499,16 +503,17 @@ describe.skipIf(!surreal)("surreal run owners", () => {
       env,
       { owners, fetcher: certs },
     );
-    const rows = (await history!.json()) as { id: string; createdAt: string }[];
+    assert(history);
+    const rows = (await history.json()) as { id: string; createdAt: string }[];
     expect(rows).toHaveLength(2);
     expect(rows).toContainEqual({
       id: original.runId,
       createdAt: new Date(original.createdAt).toISOString(),
     });
     const day = new Date(original.createdAt).toISOString().slice(0, 10);
-    const newDay = rows
-      .find((row) => row.id !== original.runId)!
-      .createdAt.slice(0, 10);
+    const newRun = rows.find((row) => row.id !== original.runId);
+    assert(newRun);
+    const newDay = newRun.createdAt.slice(0, 10);
     const [charged] = await store.query(
       "SELECT VALUE runs FROM ONLY type::record('run_quota', [array::join($owner, ''), $day])",
       { owner: Array.from(original.owner), day },
