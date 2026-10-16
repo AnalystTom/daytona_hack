@@ -65,10 +65,10 @@ export async function captureRun(
       recording: false,
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
-    const previous = await deps.store.takeSignIn(runId);
-    if (previous)
-      await anchor.endSession(key, previous.sessionId).catch(() => {});
     try {
+      const previous = await deps.store.takeSignIn(runId);
+      if (previous)
+        await anchor.endSession(key, previous.sessionId).catch(() => {});
       await deps.store.saveSignIn(runId, {
         sessionId: session.id,
         origin: scope.origin,

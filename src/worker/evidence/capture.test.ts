@@ -351,6 +351,23 @@ describe("captureRun session cleanup", () => {
     });
   });
 
+  it("ends the new sign-in session when reading the earlier one fails", async () => {
+    const calls = fakeAnchor();
+    const { store } = memoryStore();
+    store.takeSignIn = async () => {
+      throw new Error("SurrealDB request failed with 500");
+    };
+    const { deps: d } = deps(store);
+
+    await expect(
+      captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "start" }),
+    ).rejects.toThrow("SurrealDB request failed");
+    expect(calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      path: `/v1/sessions/${fixtureSession.data.id}`,
+    });
+  });
+
   it("ends a run's earlier sign-in session when sign-in starts again", async () => {
     const calls = fakeAnchor();
     const memory = memoryStore();
