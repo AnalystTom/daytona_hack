@@ -309,7 +309,7 @@ export async function captureRun(
             deps.signal?.throwIfAborted();
             await take("image/png", png, [
               limit,
-              "Taken with Anchor's screenshot tool: the page's DOM, tokens and requests were not read.",
+              "Taken with Anchor's screenshot tool: the page's DOM, tokens and requests were not read, and its final URL is only checked for HTTP redirects before the shot, so a script redirect would go unnoticed.",
             ]);
             continue;
           }
