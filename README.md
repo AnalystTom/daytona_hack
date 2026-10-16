@@ -92,10 +92,37 @@ A model error, refusal, truncated reply or malformed verdict returns 502, never 
 ## Run API
 
 `/api/v1/runs` is the front door to the private `reversy-orchestrator` Worker (`orchestrator/`), reached through the `ORCHESTRATOR` service binding.
-Every route under it needs `Authorization: Bearer <OPERATOR_TOKEN>` or the session cookie, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
+Every route under it needs a Cloudflare Access sign-in, `Authorization: Bearer <OPERATOR_TOKEN>` or the operator session cookie, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
 `POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it.
-Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated write without our `Origin`.
+Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated (or Access-authenticated) write without our `Origin`.
 `/api/v1/orchestrator/*` stays bearer-only.
+
+### Sign-in with Cloudflare Access
+
+Once `ACCESS_TEAM_DOMAIN` and `ACCESS_AUD` are set, the Worker verifies the `Cf-Access-Jwt-Assertion` header that Access adds to each request (RS256 signature against `https://<ACCESS_TEAM_DOMAIN>/cdn-cgi/access/certs`, audience, issuer and expiry) and treats the verified email as the user.
+A signed-in user never sees the operator-token box. They see and act on only the runs they started (anyone else's run answers 404), `GET /api/v1/runs` lists them as `[{ id, createdAt }]`, and starting a run is refused with 429 when they hit a limit:
+
+| Variable | Default | Limit |
+|---|---|---|
+| `RUNS_PER_DAY` | `3` | Runs one user may start per UTC day (`daily_run_limit`) |
+| `ACTIVE_RUNS` | `1` | Runs one user may have going at once, anything not `done`, `stopped` or `failed` (`active_run_limit`) |
+| `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: the orchestrator stops a run this long after it started, and the front door stops counting it as active |
+
+Owners and daily counts are stored in SurrealDB (`run_owner`, `run_quota`), so Access users also need the `SURREALDB_*` bindings; without them their run routes answer 503.
+The operator token still works as a bearer (scripts, tests) and through the session cookie, with no limits or ownership; it is the fallback until Access is live and is to be removed after that.
+Without both Access bindings, everything behaves as before: the operator token is the only way in. Setting only one of them answers 503 naming the other.
+
+To turn it on (in the Cloudflare dashboard; nothing here configures Cloudflare):
+
+1. **Zero Trust**: open **Zero Trust** from the account home. The first time, pick a team name and the Free plan (up to 50 users). The team domain is `<team-name>.cloudflareaccess.com`, shown under **Settings** (**Team name and domain**). That value, without `https://`, is `ACCESS_TEAM_DOMAIN`.
+2. **Login methods**: under **Settings** > **Authentication** > **Login methods**, **One-time PIN** (emailed code) is there by default. Optionally add **GitHub** or **Google**, each with its own OAuth app as the dashboard describes.
+3. **Application**: go to **Access** (newer dashboards: **Access controls**) > **Applications** > **Add an application** > **Self-hosted**. Name it `reversy` and add three public hostnames, each `reversy.thomasmann2001.workers.dev` with path `start`, `workspace` and `api/v1` (Access covers every path below each one). The landing page `/` and its assets stay public. If `workers.dev` is not offered as a domain there, use the Worker's own switch instead (**Workers & Pages** > `reversy` > **Settings** > **Domains & Routes** > `workers.dev` > **Enable Cloudflare Access**, then **Manage Cloudflare Access** to edit that application). That switch protects the whole hostname, landing page included, unless the application's paths can be narrowed as above.
+4. **Policy**: add an **Allow** policy naming who may sign in (specific emails, or an email domain). Pick the login methods from step 2 and a session duration (24 hours suits the workspace).
+5. **Audience**: open the application's **Overview** (or **Basic information**) and copy the **Application Audience (AUD) Tag**. That is `ACCESS_AUD`.
+6. Set both on `reversy` (`npx wrangler secret put ACCESS_TEAM_DOMAIN`, the same for `ACCESS_AUD`, or as variables in its dashboard **Settings**), plus `RUNS_PER_DAY` / `ACTIVE_RUNS` / `RUN_MAX_MINUTES` if the defaults are wrong.
+
+Scripts that call `/api/v1` with the operator token then go through Access too. Give them an Access **service token** (**Access** > **Service Auth**, plus a **Service Auth** policy on the application) and send `CF-Access-Client-Id` and `CF-Access-Client-Secret` alongside the bearer.
+When an Access session runs out, the workspace's requests are redirected to the login page and show as "could not be reached" until the page is reloaded.
 
 The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
@@ -115,13 +142,15 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
-| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route (or the session cookie it signs), `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` |
+| `OPERATOR_TOKEN` | Interim operator secret; every `/api/v1/runs` route (unless signed in with [Cloudflare Access](#sign-in-with-cloudflare-access)), `/api/v1/orchestrator/*` and the [evidence routes](#evidence-capture) require it as `Authorization: Bearer <token>` (or, for run routes, the session cookie it signs) |
+| `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | [Cloudflare Access](#sign-in-with-cloudflare-access) team domain and application audience tag; with both set, signed-in users reach their own runs without the operator token |
+| `RUNS_PER_DAY`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | Optional limits for Access users (defaults 3, 1 and 120) |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
 Without the SurrealDB bindings the store answers 503 naming the missing ones; without `OPERATOR_TOKEN` or `ORCHESTRATOR` every run route does the same.
 A missing or wrong token answers 401.
 
-Interim access policy: the operator token is the only access control; there is no user identity, run ownership or rate limiting yet.
+Access policy: until Cloudflare Access is set up, the operator token is the only access control. With Access, run routes have per-user ownership and limits; the evidence and operator routes stay operator-only.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 

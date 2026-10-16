@@ -8,6 +8,12 @@ import {
   readJson,
   sameSecret,
 } from "../runs/api";
+import {
+  ACCESS_HEADER,
+  type AccessEnv,
+  accessConfig,
+  verifyAccessJwt,
+} from "./access";
 
 // __Host- keeps the cookie on this exact host, Secure and Path=/.
 export const SESSION_COOKIE = "__Host-reversy_session";
@@ -56,28 +62,44 @@ const session = (value: string, maxAge: number) =>
     },
   });
 
-// Run routes take the operator token as a bearer (scripts) or the session cookie (this site's pages).
-// A request from another site is refused outright; a cookie only counts on a request that names our origin
-// when it changes something.
-export async function checkOperator(
+// Run routes take the operator token as a bearer (scripts), a Cloudflare Access sign-in, or the
+// session cookie (this site's pages). Returns the Access user's email, or undefined for the operator.
+// The operator token is the fallback until Access is live: its run-route paths are the bearer and
+// cookie branches here, plus handleSession above, so removing it later touches only this file.
+// A request from another site is refused outright; a cookie (ours or Access's) only counts on a
+// request that names our origin when it changes something.
+export async function checkCaller(
   request: Request,
-  env: { OPERATOR_TOKEN?: string },
-) {
+  env: { OPERATOR_TOKEN?: string } & AccessEnv,
+  fetcher?: typeof fetch,
+): Promise<string | undefined> {
   const origin = request.headers.get("origin");
   const own = origin === new URL(request.url).origin;
   if (origin !== null && !own) throw foreignOrigin();
   if (request.headers.has("authorization")) {
-    return checkToken(request, env, "OPERATOR_TOKEN");
+    await checkToken(request, env, "OPERATOR_TOKEN");
+    return undefined;
   }
-  if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
-  if (!(await validSession(request, env.OPERATOR_TOKEN))) {
-    throw new Failure(
-      401,
-      "unauthorized",
-      "Sign in with the operator token to use runs.",
-    );
+  const access = accessConfig(env);
+  const jwt = request.headers.get(ACCESS_HEADER);
+  let email: string | undefined;
+  if (access && jwt) {
+    email = await verifyAccessJwt(jwt, access, fetcher);
+  } else {
+    if (!env.OPERATOR_TOKEN && !access) throw notConfigured(["OPERATOR_TOKEN"]);
+    const secret = env.OPERATOR_TOKEN;
+    if (!secret || !(await validSession(request, secret))) {
+      throw new Failure(
+        401,
+        "unauthorized",
+        access
+          ? "Sign in through Cloudflare Access to use runs."
+          : "Sign in with the operator token to use runs.",
+      );
+    }
   }
   if (!["GET", "HEAD"].includes(request.method) && !own) throw foreignOrigin();
+  return email;
 }
 
 async function validSession(request: Request, secret: string) {

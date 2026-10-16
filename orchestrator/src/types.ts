@@ -13,6 +13,7 @@ export interface Env extends StoreEnv {
   VERIFIER_MODEL?: string;
   WORKER_MODEL: string;
   MAX_WORKERS: string;
+  RUN_MAX_MINUTES?: string; // a run is stopped this long after it started (default 120)
   SPECTRON_URL?: string;
   SPECTRON_CONTEXT_ID?: string;
   SPECTRON_API_KEY?: string;

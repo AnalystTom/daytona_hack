@@ -33,6 +33,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
+A run still working `RUN_MAX_MINUTES` (default 120) after it started is stopped with an `error` event saying so.
 
 ## Events
 
@@ -71,7 +72,7 @@ The [agent spec's verifier contract](spec.md#9-verifier) defines plan, task and 
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
 the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
 (reads included; `sandboxId` is dropped from `/api/v1/runs` state and event JSON replies; evidence files retain their stored bytes unchanged).
-`/api/v1/runs/*` also accepts the signed session cookie that `POST /api/v1/session` sets on this site (see the README's Run API).
+`/api/v1/runs/*` also accepts the signed session cookie that `POST /api/v1/session` sets on this site, or a Cloudflare Access sign-in, which limits the user to their own runs (see the README's Run API).
 `orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
 
 ## Evidence capture

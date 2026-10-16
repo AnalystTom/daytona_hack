@@ -64,6 +64,7 @@ interface State {
   pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   error?: string;
+  startedAt?: number; // epoch ms; runs from before this field have no time limit
 }
 
 const now = () => new Date().toISOString();
@@ -230,6 +231,7 @@ export class Run extends DurableObject<Env> {
     const signal = this.inspection.signal;
     this.s = {
       id,
+      startedAt: Date.now(),
       phase: "brief",
       chat: [],
       evidence: [],
@@ -473,6 +475,17 @@ export class Run extends DurableObject<Env> {
 
   // ---------- alarm loop ----------
   async alarm() {
+    // Runs spend money while they work, so one that outlives its time limit is stopped.
+    const limitMinutes = Number(this.env.RUN_MAX_MINUTES) || 120;
+    if (
+      this.s.startedAt &&
+      Date.now() - this.s.startedAt > limitMinutes * 60_000
+    ) {
+      this.s.error = `Stopped: the run reached its ${limitMinutes}-minute limit.`;
+      await this.emit("error", { message: this.s.error });
+      await this.stop();
+      return;
+    }
     try {
       const pending = this.s.pending;
       if (

@@ -8,12 +8,26 @@ import {
   readJson,
 } from "../runs/api";
 import { checkTargetUrl } from "../runs/url";
-import { checkOperator, handleSession } from "./session";
+import { resolveStore, type StoreEnv } from "../store";
+import type { AccessEnv } from "./access";
+import { type Owners, surrealOwners } from "./owners";
+import { checkCaller, handleSession } from "./session";
 
 // The reversy-orchestrator Worker has no public address; this Worker is its front door.
-export interface OrchestratorEnv {
+export interface OrchestratorEnv extends AccessEnv, StoreEnv {
   ORCHESTRATOR?: Fetcher;
   OPERATOR_TOKEN?: string;
+  // Limits for Cloudflare Access users (the operator has none); unset or invalid means the default.
+  RUNS_PER_DAY?: string;
+  ACTIVE_RUNS?: string;
+  // Must match the orchestrator's RUN_MAX_MINUTES: an older run is stopped, so it is not counted.
+  RUN_MAX_MINUTES?: string;
+}
+
+// Tests swap in an in-memory owner store and a fake Access certs fetch.
+export interface FrontDeps {
+  owners?: Owners;
+  fetcher?: typeof fetch;
 }
 
 const OverrideRequest = z.object({
@@ -27,10 +41,12 @@ const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
 
 // Handles /api/v1/runs/* (the workspace's run API) and /api/v1/orchestrator/* (operator testing).
-// Runs spend money and hold the target's data, so every route needs the operator token.
+// Runs spend money and hold the target's data, so every route needs the operator token or a
+// Cloudflare Access sign-in; an Access user sees only their own runs, within the limits.
 export async function handleOrchestrator(
   request: Request,
   env: OrchestratorEnv,
+  deps: FrontDeps = {},
 ): Promise<Response | null> {
   const url = new URL(request.url);
   if (url.pathname === "/api/v1/session") return handleSession(request, env);
@@ -42,7 +58,9 @@ export async function handleOrchestrator(
   try {
     // Operator testing stays bearer-only: the orchestrator's /sandboxes routes check the bearer too.
     if (operator) await checkToken(request, env, "OPERATOR_TOKEN");
-    else await checkOperator(request, env);
+    const user = operator
+      ? undefined
+      : await checkCaller(request, env, deps.fetcher);
     if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
     if (operator) {
       const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
@@ -50,6 +68,18 @@ export async function handleOrchestrator(
         request,
         env.ORCHESTRATOR,
         `${path}${url.search}`,
+      );
+    }
+    if (user !== undefined) {
+      return await userRunRoute(
+        request,
+        env,
+        env.ORCHESTRATOR,
+        deps.owners ?? ownersFor(env),
+        user,
+        url,
+        run?.[1],
+        run?.[2],
       );
     }
     return await runRoute(request, env.ORCHESTRATOR, url, run?.[1], run?.[2]);
@@ -75,6 +105,95 @@ async function passThrough(
       : await request.arrayBuffer(),
   });
   return withoutCors(response);
+}
+
+function ownersFor(env: StoreEnv) {
+  const resolved = resolveStore(env);
+  if ("missing" in resolved) throw notConfigured(resolved.missing);
+  return surrealOwners(resolved.store);
+}
+
+const limit = (value: string | undefined, fallback: number) => {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+};
+
+const ENDED = ["done", "stopped", "failed"];
+
+// An Access user's run routes: only their own runs, and new ones only within the limits.
+async function userRunRoute(
+  request: Request,
+  env: OrchestratorEnv,
+  orchestrator: Fetcher,
+  owners: Owners,
+  user: string,
+  url: URL,
+  runId: string | undefined,
+  action: string | undefined,
+): Promise<Response> {
+  if (runId !== undefined) {
+    // Someone else's run answers exactly like a run that does not exist.
+    if ((await owners.get(runId))?.owner !== user) {
+      throw new Failure(404, "run_not_found", `Run ${runId} not found.`);
+    }
+    return runRoute(request, orchestrator, url, runId, action);
+  }
+  if (request.method === "GET") {
+    const runs = await owners.list(user, 0);
+    return Response.json(
+      runs.map((r) => ({
+        id: r.runId,
+        createdAt: new Date(r.createdAt).toISOString(),
+      })),
+    );
+  }
+  if (request.method !== "POST") throw notFound();
+
+  const now = Date.now();
+  const maxMinutes = limit(env.RUN_MAX_MINUTES, 120);
+  const recent = await owners.list(user, now - maxMinutes * 60_000);
+  let active = 0;
+  for (const owned of recent) {
+    const reply = await forward(orchestrator, "GET", `/runs/${owned.runId}`);
+    // A run id the orchestrator never saw answers 200 with an empty body.
+    const { phase } = JSON.parse((await reply.text()) || "{}") as {
+      phase?: string;
+    };
+    if (phase && !ENDED.includes(phase)) active++;
+  }
+  const maxActive = limit(env.ACTIVE_RUNS, 1);
+  if (active >= maxActive) {
+    throw new Failure(
+      429,
+      "active_run_limit",
+      `You can have ${maxActive} run${maxActive === 1 ? "" : "s"} going at a time. Stop one or let it finish before starting another.`,
+    );
+  }
+  // shortcut: two starts at the same instant can both pass the active check (the daily count
+  // still holds); a per-user lock would close that if it matters.
+  const day = new Date(now).toISOString().slice(0, 10);
+  const perDay = limit(env.RUNS_PER_DAY, 3);
+  if ((await owners.count(user, day, 1)) > perDay) {
+    await owners.count(user, day, -1);
+    throw new Failure(
+      429,
+      "daily_run_limit",
+      `You have started ${perDay} run${perDay === 1 ? "" : "s"} today, the daily limit. Try again tomorrow (UTC).`,
+    );
+  }
+  let created: Response;
+  try {
+    created = await runRoute(request, orchestrator, url, undefined, action);
+  } catch (error) {
+    await owners.count(user, day, -1);
+    throw error;
+  }
+  const { id } = (await created.clone().json()) as { id?: unknown };
+  if (typeof id !== "string") {
+    throw new Failure(502, "orchestrator_error", "The run has no id.");
+  }
+  await owners.claim(id, user, now);
+  return created;
 }
 
 async function runRoute(
