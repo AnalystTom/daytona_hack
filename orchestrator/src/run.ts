@@ -498,7 +498,7 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  /** User approved the spec in chat or via button: inspect fully, then plan. */
+  /** Approval schedules report dissection or website inspection and planning. */
   async approveSpec() {
     await this.beforeWork();
     const signal = this.inspection.signal;

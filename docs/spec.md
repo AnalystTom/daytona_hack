@@ -1,7 +1,7 @@
 # Reversy: product spec
 
 Reversy ("Take it apart. Make it yours.") is a reverse-engineering assistant.
-The user gives a site and a goal in chat, refines the scope in conversation, and watches agents inspect the site and rebuild it on a shared canvas.
+The user gives a URL and a goal in chat, refines the scope in conversation, and watches agents work on a shared canvas.
 Daytona HackSprint, New York, 16 October 2026.
 
 This file and [`orchestrator/spec.md`](orchestrator/spec.md) sit alongside *Reversy implementation specification, Revision 2* (the detailed handoff: routes, schemas, limits, security and acceptance tests).
@@ -11,7 +11,7 @@ That board revision replaces the earlier confirmation form, six-stage stepper an
 
 ## 1. Public landing page and app entry
 
-Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). After the user sends a brief, the work moves through the Spec canvas to Build and review.
+Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). Website runs move through the Spec canvas to Build and review; the [financial report demo](#financial-report-demo) stays in Spec.
 
 ### Public landing page
 
@@ -107,7 +107,7 @@ A known response shape or inferred route does not establish content values. Miss
 This applies throughout chat, planning, implementation, review and verification, including deliberate changes. Test fakes stay in tests, and capture must not expand to collect private values.
 The [agent evidence rules](orchestrator/spec.md#6-evidence) define the API response for unavailable data.
 
-First demo target: `https://www.daytona.io/` (Daytona has agreed).
+First website demo target: `https://www.daytona.io/` (Daytona has agreed).
 Its two pieces of work are each split into tasks on the kanban:
 
 1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown on the canvas, of how it changes the page and the visitor's path through it.

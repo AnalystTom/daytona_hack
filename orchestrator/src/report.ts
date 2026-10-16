@@ -18,4 +18,6 @@ export function articleText(html: string, max = 20000) {
 }
 
 export const isReportGoal = (goal: string) =>
-  /\b(?:reconstruct|dissect|rebuild)\s+(?:(?:this|that|the|a|an)\s+)?(?:(?:financial|investment)\s+)?reports?\b/i.test(goal);
+  /\b(?:reconstruct|dissect|rebuild)\s+(?:(?:this|that|the|a|an)\s+)?(?:(?:financial|investment)\s+)?reports?\b/i.test(
+    goal,
+  );

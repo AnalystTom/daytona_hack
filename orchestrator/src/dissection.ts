@@ -496,7 +496,7 @@ For each figure return a trace: matches only when the independently fetched quot
   };
   for (const s of researched.sources) {
     if (
-      !cleanText(s.articleQuote) ||
+      cleanText(s.articleQuote).length === 0 ||
       !cleanText(s.articleQuote).toLowerCase().includes(s.name.toLowerCase()) ||
       !articleNormalized.includes(cleanText(s.articleQuote))
     )
