@@ -254,7 +254,7 @@ function TokenForm({ onSave }: { onSave: (token: string) => void }) {
         className="button button-primary"
         disabled={!token.trim()}
       >
-        Save token
+        Sign in
       </button>
     </form>
   );

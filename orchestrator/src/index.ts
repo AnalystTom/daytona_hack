@@ -72,6 +72,18 @@ export default {
         return json(
           await run.events(parseInt(url.searchParams.get("since") || "0", 10)),
         );
+      if (req.method === "GET" && action === "preview") {
+        const url = await run.previewLink();
+        return url
+          ? json({ url })
+          : json(
+              {
+                error:
+                  "No preview: the build has not served one, or the run stopped.",
+              },
+              404,
+            );
+      }
       if (req.method === "GET" && action === "evidence") {
         const blob = await run.evidenceBlob(parts[3]);
         return blob
@@ -103,6 +115,7 @@ const ROUTES = [
   "POST /sandboxes/:id/captain {text} / GET /sandboxes/:id/screen (Bearer OPERATOR_TOKEN, from the backend)",
   "POST /runs {url, goal} -> run state (first look + first chat reply)",
   "GET  /runs/:id -> state {phase, spec, chat, evidence, tasks, previewUrl}",
+  "GET  /runs/:id/preview -> {url}: a 30-minute signed link to the private sandbox preview",
   "GET  /runs/:id/events?since=N -> [{seq, ts, type, data}]",
   "GET  /runs/:id/evidence/:evId -> screenshot png",
   "POST /runs/:id/messages {text}",

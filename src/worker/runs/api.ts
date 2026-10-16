@@ -354,16 +354,19 @@ export async function checkToken(
   const token =
     runId === undefined ? secret : await runBridgeToken(secret, runId);
   const given = request.headers.get("authorization") ?? "";
-  // Comparing digests keeps the comparison time independent of the secret.
+  if (!(await sameSecret(given, `Bearer ${token}`))) {
+    throw new Failure(401, "unauthorized", "Missing or wrong bearer token.");
+  }
+}
+
+// Comparing digests keeps the comparison time independent of the secret.
+export async function sameSecret(given: string, expected: string) {
   const [a, b] = await Promise.all(
-    [given, `Bearer ${token}`].map((value) =>
+    [given, expected].map((value) =>
       crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
     ),
   );
-  const same = new Uint8Array(a as ArrayBuffer).every(
+  return new Uint8Array(a as ArrayBuffer).every(
     (byte, i) => byte === new Uint8Array(b as ArrayBuffer)[i],
   );
-  if (!same) {
-    throw new Failure(401, "unauthorized", "Missing or wrong bearer token.");
-  }
 }

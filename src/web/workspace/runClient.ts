@@ -2,7 +2,8 @@ import { z } from "zod";
 import { OrchestratorEvent } from "./orchestrator";
 
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
-// Runs spend money and hold the target's data, so every call carries the operator token.
+// Runs spend money and hold the target's data, so every call needs the operator session cookie,
+// which only the server can read (POST /api/v1/session sets it).
 
 export type RunCallError = {
   ok: false;
@@ -17,32 +18,26 @@ const ErrorBody = z.union([
   z.object({ error: z.string().min(1) }).transform((b) => b.error),
 ]);
 
-const TOKEN_KEY = "reversy.operatorToken";
+// Older pages kept the operator token in localStorage; the HttpOnly session cookie replaces it.
+try {
+  localStorage.removeItem("reversy.operatorToken");
+} catch {
+  // Storage blocked: nothing was kept there.
+}
 
-// shortcut: the operator token lives in this browser's localStorage until there is a login system.
-export const operatorToken = {
-  get(): string | undefined {
-    try {
-      return localStorage.getItem(TOKEN_KEY) || undefined;
-    } catch {
-      return undefined;
-    }
-  },
-  set(token: string) {
-    try {
-      localStorage.setItem(TOKEN_KEY, token);
-    } catch {
-      // Storage blocked: the token cannot be kept, and the next call asks again.
-    }
-  },
-};
-
-const tokenNeeded: RunCallError = {
-  ok: false,
-  error: "operator_token",
-  detail:
-    "Runs spend money, so only operators can start, steer or follow them. Paste the operator token to continue.",
-};
+// Swaps the operator token for the session cookie; the token itself is never stored.
+export async function signIn(
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+): Promise<RunCallResult<undefined>> {
+  return call(
+    "POST",
+    "/api/v1/session",
+    { token },
+    async () => undefined,
+    fetchImpl,
+  );
+}
 
 async function call<T>(
   method: "GET" | "POST",
@@ -51,9 +46,7 @@ async function call<T>(
   parse: (response: Response) => Promise<T>,
   fetchImpl: typeof fetch,
 ): Promise<RunCallResult<T>> {
-  const token = operatorToken.get();
-  if (!token) return tokenNeeded;
-  const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+  const headers: Record<string, string> = {};
   if (method === "POST") headers["content-type"] = "application/json";
   let response: Response;
   try {
@@ -87,7 +80,10 @@ async function call<T>(
     return {
       ok: false,
       error: "operator_token",
-      detail: "The operator token was refused. Paste the current one.",
+      detail:
+        path === "/api/v1/session"
+          ? "The operator token was refused. Paste the current one."
+          : "Runs spend money, so only operators can start, steer or follow them. Paste the operator token to continue.",
     };
   }
   if ([405, 501].includes(response.status)) {
@@ -177,9 +173,25 @@ export function fetchEvents(
   );
 }
 
-// An evidence file; <img> cannot send the token, so the page shows it from a blob.
+// An evidence file, shown from a blob so a refused read becomes a notice rather than a broken image.
 export function fetchEvidence(path: string, fetchImpl: typeof fetch = fetch) {
   return call("GET", path, undefined, (r) => r.blob(), fetchImpl);
+}
+
+const PreviewLink = z.object({ url: z.url({ protocol: /^https$/ }) });
+
+// A short-lived signed link to the run's private preview.
+export function fetchPreviewLink(
+  runId: string,
+  fetchImpl: typeof fetch = fetch,
+) {
+  return call(
+    "GET",
+    runPath(runId, "preview"),
+    undefined,
+    async (r) => PreviewLink.parse(await r.json()).url,
+    fetchImpl,
+  );
 }
 
 const validEvent = (value: unknown) => {

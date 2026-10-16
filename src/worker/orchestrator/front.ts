@@ -8,6 +8,7 @@ import {
   readJson,
 } from "../runs/api";
 import { checkTargetUrl } from "../runs/url";
+import { checkOperator, handleSession } from "./session";
 
 // The reversy-orchestrator Worker has no public address; this Worker is its front door.
 export interface OrchestratorEnv {
@@ -32,13 +33,16 @@ export async function handleOrchestrator(
   env: OrchestratorEnv,
 ): Promise<Response | null> {
   const url = new URL(request.url);
+  if (url.pathname === "/api/v1/session") return handleSession(request, env);
   const operator =
     url.pathname === OPERATOR_PREFIX ||
     url.pathname.startsWith(`${OPERATOR_PREFIX}/`);
   const run = url.pathname.match(RUNS);
   if (!operator && !run) return null;
   try {
-    await checkToken(request, env, "OPERATOR_TOKEN");
+    // Operator testing stays bearer-only: the orchestrator's /sandboxes routes check the bearer too.
+    if (operator) await checkToken(request, env, "OPERATOR_TOKEN");
+    else await checkOperator(request, env);
     if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
     if (operator) {
       const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
@@ -61,9 +65,11 @@ async function passThrough(
   orchestrator: Fetcher,
   path: string,
 ) {
+  const headers = new Headers(request.headers);
+  headers.delete("cookie");
   const response = await orchestrator.fetch(`https://orchestrator${path}`, {
     method: request.method,
-    headers: request.headers,
+    headers,
     body: ["GET", "HEAD"].includes(request.method)
       ? undefined
       : await request.arrayBuffer(),
@@ -113,6 +119,8 @@ async function runRoute(
       return call(`${base}/events?since=${since}`);
     }
     if (EVIDENCE.test(action)) return call(`${base}/${action}`);
+    // A fresh short-lived signed link to the run's private sandbox preview.
+    if (action === "preview") return call(`${base}/preview`);
   }
   if (method === "POST") {
     if (action === "messages") {
