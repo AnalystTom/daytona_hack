@@ -38,6 +38,31 @@ export const ReportFigure = z.object({
   group: z.enum(["key_figures", "investment_breakdown", "not_observed"]),
 });
 export type ReportFigure = z.infer<typeof ReportFigure>;
+export function exactQuoteEvidence(
+  figure: ReportFigure,
+  trace: { value: string; quote: string },
+) {
+  const text = (s: string) => s.replace(/\s+/g, " ").trim();
+  const value = text(figure.value);
+  if (
+    !value ||
+    text(trace.value) !== value ||
+    text(trace.quote) !== text(figure.quote)
+  )
+    return false;
+  if (
+    figure.unit !== "year" &&
+    (!figure.unit.trim() ||
+      figure.unit === "number" ||
+      !figure.unit.split(/\s+/).every((part) => value.includes(part)))
+  )
+    return false;
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(
+    `(?<![\\p{L}\\p{N}_.,+−–$€£-])${escaped}(?![\\p{L}\\p{N}_+−–-]|[.,]\\d)`,
+    "u",
+  ).test(text(trace.quote));
+}
 export const ReportSource = z.object({
   id: z.string().min(1),
   url: z.url({ protocol: /^https?$/ }).nullable(),
