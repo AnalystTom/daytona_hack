@@ -28,16 +28,20 @@ export const askForUrl =
 // A bare host like wikipedia.com/wiki: dotted labels ending in a common or two-letter TLD, not part of an email.
 // shortcut: fixed TLD list, so rarer gTLDs need https:// — widen the list if users hit it.
 const bareHost =
-  /(?<![@\w.-])(?:[a-z0-9-]+\.)+(?!(?:js|ts|py|md|rs|sh|go)\b)(?:com|org|net|io|dev|app|ai|co|edu|gov|info|xyz|site|tech|cloud|[a-z]{2})(?::\d+)?(?:[/?#][^\s<>"]*)?(?![\w@:/?#-]|\.[a-z0-9-])/i;
+  /^(?:[a-z0-9-]+\.)+(?!(?:js|ts|py|md|rs|sh|go)\b)(?:com|org|net|io|dev|app|ai|co|edu|gov|info|xyz|site|tech|cloud|[a-z]{2})(?::\d+)?(?:[/?#][^\s<>"]*)?$/i;
 
 // Splits a brief into the target URL and the goal around it; undefined when there is no URL.
 export function parseBrief(
   text: string,
 ): { url: string; goal: string } | undefined {
-  const found =
-    text.match(/(?:https?:\/\/|\bwww\.)[^\s<>"]+/i) ?? text.match(bareHost);
-  if (!found) return undefined;
-  const raw = found[0].replace(/[.,;:!?)\]]+$/, "");
+  const explicit = text.match(/https?:\/\/[^\s<>"]+/i);
+  const raw = (explicit ?? text.split(/\s+/))
+    .map((token) => token.replace(/[.,;:!?)\]]+$/, ""))
+    .find(
+      (token) =>
+        explicit !== null || (!token.includes("@") && bareHost.test(token)),
+    );
+  if (!raw) return undefined;
   const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
   const goal = text
     .replace(raw, " ")

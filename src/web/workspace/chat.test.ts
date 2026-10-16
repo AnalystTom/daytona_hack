@@ -59,6 +59,7 @@ describe("parseBrief", () => {
     "example.com?view=mobile",
     "example.com#pricing",
     "example.com:8443/dashboard?view=mobile#pricing",
+    "www.example.com:8443/dashboard?view=mobile#pricing",
   ])("preserves the complete bare address %s", (address) => {
     expect(parseBrief(`Rebuild ${address}, only the header.`)).toEqual({
       url: `https://${address}`,
@@ -66,12 +67,28 @@ describe("parseBrief", () => {
     });
   });
 
-  it.each(["shop.com.auction", "example.com:invalid/dashboard"])(
-    "rejects an address instead of matching its prefix: %s",
-    (address) => {
-      expect(parseBrief(address)).toBeUndefined();
-    },
-  );
+  it.each([
+    "shop.com.auction",
+    "example.com:invalid/dashboard",
+    "bücher.de",
+    "example.com+tag@example.org",
+    "www.example.com+tag@example.org",
+    "www.shop.com.auction",
+    "example.com/path@name",
+    "example.com?email=tom@example.org",
+    "example.com#tom@example.org",
+  ])("rejects the complete unsupported token: %s", (address) => {
+    expect(parseBrief(`Rebuild ${address}.`)).toBeUndefined();
+  });
+
+  it("continues to the next complete address after rejected tokens", () => {
+    expect(
+      parseBrief("bücher.de example.com+tag@example.org wikipedia.com"),
+    ).toEqual({
+      url: "https://wikipedia.com",
+      goal: "bücher.de example.com+tag@example.org",
+    });
+  });
 
   it("finds no URL in plain text", () => {
     expect(parseBrief("rebuild the daytona landing page")).toBeUndefined();
@@ -100,16 +117,19 @@ describe("deliver", () => {
     expect(client.sendMessage).not.toHaveBeenCalled();
   });
 
-  it.each(["copy the hero", "shop.com.auction"])(
-    "asks for the URL instead of creating a run for %s",
-    async (message) => {
-      const client: RunClient = { createRun: vi.fn(), sendMessage: vi.fn() };
-      expect(await deliver(undefined, message, client)).toEqual({
-        needsUrl: true,
-      });
-      expect(client.createRun).not.toHaveBeenCalled();
-    },
-  );
+  it.each([
+    "copy the hero",
+    "shop.com.auction",
+    "bücher.de",
+    "example.com+tag@example.org",
+    "www.example.com+tag@example.org",
+  ])("asks for the URL instead of creating a run for %s", async (message) => {
+    const client: RunClient = { createRun: vi.fn(), sendMessage: vi.fn() };
+    expect(await deliver(undefined, message, client)).toEqual({
+      needsUrl: true,
+    });
+    expect(client.createRun).not.toHaveBeenCalled();
+  });
 
   it("sends later messages to the existing run", async () => {
     const client: RunClient = {
