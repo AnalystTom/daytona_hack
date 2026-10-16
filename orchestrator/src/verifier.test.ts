@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { inspectBackend } from "./inspect";
 import type { Env, Evidence, Spec, Task } from "./types";
 import { verifyFinal, verifyTask } from "./verifier";
@@ -103,7 +103,8 @@ describe("backend verification", () => {
 <a href="https://elsewhere.example/api/external?id=1&amp;lang=en">Elsewhere</a>`,
       );
       const { evidence } = await inspectBackend("https://site.example/", 1);
-      const inferred = evidence.find((e) => e.status === "inferred")!;
+      const inferred = evidence.find((e) => e.status === "inferred");
+      assert(inferred);
       expect(inferred.routes).toEqual([
         "/api/articles?id=1&lang=en",
         "/api/raw?id=1&amp;lang=en",

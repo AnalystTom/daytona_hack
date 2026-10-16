@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { Daytona } from "./daytona";
 import { inspectBackend } from "./inspect";
 import type { Env, Evidence, Task } from "./types";
@@ -203,13 +203,15 @@ describe("run scope", () => {
           /with mock data|mock data in the response shape/,
         );
       }
-      const review = calls.find((call) => call.name === "review")!;
+      const review = calls.find((call) => call.name === "review");
+      assert(review);
       expect(review.input.evidence).toEqual(
         (await run.getState()).evidence.filter((e) => e.id === "ev_002"),
       );
       expect(review.input.evidence).toHaveLength(1);
       if (scope !== "frontend") {
-        const plan = calls.find((call) => call.name === "plan")!;
+        const plan = calls.find((call) => call.name === "plan");
+        assert(plan);
         expect(plan.instructions).toContain(
           'HTTP 503 with {"error":"Data unavailable","status":"not_observed"}',
         );
