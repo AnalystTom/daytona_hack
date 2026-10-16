@@ -18,14 +18,29 @@ export interface Env {
   ARIZE_SPACE_ID?: string;
 }
 
-export type Phase = "brief" | "inspecting" | "planning" | "planned" | "building" | "done" | "stopped" | "failed";
+export type Phase =
+  | "brief"
+  | "inspecting"
+  | "planning"
+  | "planned"
+  | "building"
+  | "done"
+  | "stopped"
+  | "failed";
 
 export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 
 export interface Evidence {
   id: string; // ev_001
   page: string; // URL path
-  kind: "screenshot" | "html" | "markdown" | "styles" | "assets" | "links" | "network";
+  kind:
+    | "screenshot"
+    | "html"
+    | "markdown"
+    | "styles"
+    | "assets"
+    | "links"
+    | "network";
   tool: "anchor" | "fetch" | "llm";
   status: EvidenceStatus;
   capturedAt: string;
@@ -46,7 +61,13 @@ export interface Spec {
   revision: number;
 }
 
-export type TaskStatus = "queued" | "building" | "in_review" | "merged" | "failed" | "stopped";
+export type TaskStatus =
+  | "queued"
+  | "building"
+  | "in_review"
+  | "merged"
+  | "failed"
+  | "stopped";
 
 export interface Task {
   id: string; // t01
@@ -63,7 +84,11 @@ export interface Task {
   cmdId?: string;
   startedAt?: string;
   finishedAt?: string;
-  review?: { verdict: "approve" | "reject"; reason: string; findings: string[] };
+  review?: {
+    verdict: "approve" | "reject";
+    reason: string;
+    findings: string[];
+  };
   diffStat?: string;
   failure?: string;
   nextAction?: string;
@@ -72,7 +97,17 @@ export interface Task {
 export interface RunEvent {
   seq: number;
   ts: string;
-  type: "chat" | "spec" | "evidence" | "plan" | "task" | "review" | "preview" | "phase" | "verification" | "error";
+  type:
+    | "chat"
+    | "spec"
+    | "evidence"
+    | "plan"
+    | "task"
+    | "review"
+    | "preview"
+    | "phase"
+    | "verification"
+    | "error";
   data: unknown;
 }
 
