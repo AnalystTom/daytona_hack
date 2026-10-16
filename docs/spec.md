@@ -64,6 +64,13 @@ Two pieces of work run in parallel, each split into tasks on the kanban:
 The three alternatives are pods forked from the finished landing-page rebuild.
 Daytona VM fork is the target; until it is enabled on our account, pods are copies from a snapshot and labelled as copies.
 
+### Financial reports
+
+Reversy can reconstruct financial reports as well as websites.
+Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
+It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
+A figure Reversy could not read is marked "not observed", never filled in.
+
 ## 5. Mascot
 
 ![Chainsaw beaver mascot](screens/mascot-chainsaw-beaver.png)
@@ -91,7 +98,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
 | Arize | One trace per run across inspection, planning, building, review and verification |
-| GPT 6.1 high via API | Spec agent, inspector, orchestrator, workers and review |
+| GPT 6.1 high via API | Orchestrator (also the chat agent), inspector, workers and review |
 | Opus 5.5 high via API | Verifier that checks the orchestrator's outputs |
 
 Decided since Revision 2, which lists these as open or says otherwise:
