@@ -313,16 +313,31 @@ export class Run extends DurableObject<Env> {
   }
 
   private reportStopped() {
-    return this.s.phase === "stopped";
+    return this.inspection.signal.aborted || this.s.phase === "stopped";
   }
 
   private async reportAnalysis() {
+    const signal = this.inspection.signal;
+    let closeSession: (() => Promise<void>) | undefined;
     try {
-      const capture = await captureReport(this.env, this.s.spec.url);
+      const capture = await captureReport(this.env, this.s.spec.url, {
+        signal,
+        onSession: (close) => {
+          closeSession = close;
+          this.captureSessions.add(close);
+        },
+      }).finally(() => {
+        if (closeSession) this.captureSessions.delete(closeSession);
+      });
       if (this.reportStopped()) return;
-      await this.storeEvidence(capture.evidence, capture.blobs);
+      await this.storeEvidence(capture.evidence, capture.blobs, signal);
       if (this.reportStopped()) return;
-      const report = await dissect(this.env, this.s.id, capture.article);
+      const report = await dissect(
+        this.env,
+        this.s.id,
+        capture.article,
+        signal,
+      );
       if (this.reportStopped()) return;
       attachRegions(
         report.figures,
@@ -717,8 +732,10 @@ Set userApproved=true only if the user's last message clearly approves the spec.
   private async storeEvidence(
     evidence: Evidence[],
     blobs: Record<string, ArrayBuffer | string>,
+    signal: AbortSignal,
   ) {
     for (const e of evidence) {
+      signal.throwIfAborted();
       const b = blobs[e.id];
       if (b && (typeof b === "string" ? b.length : b.byteLength) < 1_900_000) {
         await this.ctx.storage.put(
@@ -728,8 +745,10 @@ Set userApproved=true only if the user's last message clearly approves the spec.
         if (e.kind === "screenshot")
           e.url = `/runs/${this.s.id}/evidence/${e.id}`;
       }
+      signal.throwIfAborted();
       this.s.evidence.push(e);
-      await this.emit("evidence", e);
+      await this.emit("evidence", e, signal);
+      signal.throwIfAborted();
       if (e.status !== "not_observed") {
         await remember(
           this.env,
@@ -738,7 +757,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
         );
       }
     }
-    await this.save();
+    await this.save(signal);
   }
 
   /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */

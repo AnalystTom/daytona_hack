@@ -5,7 +5,11 @@ import {
   ReportDissection,
 } from "../../src/shared/report";
 import { reportContractExample } from "../../src/shared/report.test-data";
-import { runView } from "../../src/web/workspace/orchestrator";
+import {
+  createSession,
+  endSession,
+  runSnippet,
+} from "../../src/worker/evidence/anchor";
 import { captureReport } from "./report-capture";
 import { dissect } from "./dissection";
 import { latestReport, saveEdit, saveReport } from "./report-store";
@@ -21,6 +25,11 @@ vi.mock("cloudflare:workers", () => ({
       public env: Env,
     ) {}
   },
+}));
+vi.mock("../../src/worker/evidence/anchor", () => ({
+  createSession: vi.fn(),
+  endSession: vi.fn(),
+  runSnippet: vi.fn(),
 }));
 vi.mock("./report-capture", () => ({
   captureReport: vi.fn(),
@@ -58,7 +67,10 @@ vi.mock("./tracing", () => ({
   },
 }));
 
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+});
 
 function createRun(env: Partial<Env> = {}) {
   const data = new Map<string, unknown>();
@@ -176,13 +188,21 @@ it.each([false, true])(
         ? { contentType: "image/png", content: new Uint8Array([1, 2, 3]) }
         : null,
     );
-    const view = runView("new-run", await current.run.events(0));
-    expect(view.evidence).toHaveLength(hasScreen ? 1 : 0);
+    const events = await current.run.events(0);
+    const reset = events.findIndex((event) => event.type === "evidence_reset");
+    expect(reset).toBeGreaterThan(-1);
     expect(
-      view.evidence.every(
-        (e) =>
-          e.src.startsWith("/api/v1/runs/test-run/evidence/") &&
-          e.contentHash === "prior capture",
+      events
+        .slice(reset + 1)
+        .filter((event) => event.type === "evidence")
+        .map((event) => event.data),
+    ).toEqual(state.evidence);
+    expect(
+      state.evidence.filter((e) => e.kind === "screenshot" && e.url),
+    ).toHaveLength(hasScreen ? 1 : 0);
+    expect(
+      state.evidence.every(
+        (e) => !e.url || e.url.startsWith("/runs/test-run/evidence/"),
       ),
     ).toBe(true);
     expect(runs.idFromName).toHaveBeenCalledWith("test-run");
@@ -315,6 +335,106 @@ describe("bounded Goldman Sachs demo", () => {
       run.editReport("f1", { label: "", value: "1" }),
     ).rejects.toThrow();
   });
+});
+
+it("closes the report Anchor session on stop before capture finishes", async () => {
+  const actual =
+    await vi.importActual<typeof import("./report-capture")>(
+      "./report-capture",
+    );
+  vi.mocked(captureReport).mockImplementationOnce(actual.captureReport);
+  vi.mocked(createSession).mockResolvedValueOnce({
+    id: "report-session",
+    liveViewUrl: "",
+  });
+  vi.mocked(endSession).mockResolvedValue(undefined);
+  let release!: (value: unknown) => void;
+  let started!: () => void;
+  const capturing = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  vi.mocked(runSnippet).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+        started();
+      }),
+  );
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  const { run, data } = createRun({ ANCHORBROWSER_API_KEY: "test" });
+  await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+  const alarm = run.alarm();
+  await capturing;
+  await run.stop();
+  expect(endSession).toHaveBeenCalledExactlyOnceWith("test", "report-session");
+  expect(vi.mocked(runSnippet).mock.calls.at(-1)?.[3]?.aborted).toBe(true);
+  release({});
+  await alarm;
+  expect((await run.getState()).phase).toBe("stopped");
+  expect((await run.getState()).evidence).toEqual([]);
+  expect([...data.keys()].some((key) => key.startsWith("blob:"))).toBe(false);
+  expect(endSession).toHaveBeenCalledTimes(1);
+  expect(dissect).not.toHaveBeenCalled();
+  expect(latestReport).not.toHaveBeenCalled();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+it("stops report research without starting source requests or replay", async () => {
+  const actual =
+    await vi.importActual<typeof import("./dissection")>("./dissection");
+  vi.mocked(dissect).mockImplementationOnce(actual.dissect);
+  vi.mocked(captureReport).mockResolvedValueOnce({
+    article: {
+      html: "<h1>Investment reaches $35 billion</h1>",
+      url: GOLDMAN_URL,
+      capturedAt: report().completedAt,
+      hash: "hash",
+    },
+    evidence: [],
+    blobs: {},
+    boxes: [],
+    pageWidth: 1440,
+    pageHeight: 900,
+  });
+  let release!: (value: unknown) => void;
+  let started!: () => void;
+  const researching = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  vi.mocked(llmJson).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        release = resolve;
+        started();
+      }),
+  );
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
+  const { run } = createRun();
+  await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+  const alarm = run.alarm();
+  await researching;
+  await run.stop();
+  expect(vi.mocked(llmJson).mock.calls.at(-1)?.[1].signal?.aborted).toBe(true);
+  release({
+    sources: [],
+    traces: [
+      {
+        figureId: "article_f1",
+        url: "https://research.example/source",
+        value: "$35 billion",
+        quote: "Investment reaches $35 billion",
+        status: "matches",
+      },
+    ],
+  });
+  await alarm;
+  expect(fetcher).not.toHaveBeenCalled();
+  expect(latestReport).not.toHaveBeenCalled();
+  expect(saveReport).not.toHaveBeenCalled();
+  expect((await run.getState()).phase).toBe("stopped");
+  expect((await run.getState()).report).toBeUndefined();
 });
 
 it("keeps a stopped report stopped when its in-flight capture later finishes", async () => {

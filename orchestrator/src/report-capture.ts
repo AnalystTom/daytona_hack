@@ -3,6 +3,7 @@ import {
   endSession,
   runSnippet,
 } from "../../src/worker/evidence/anchor";
+import type { CaptureDeps } from "../../src/worker/evidence/capture";
 import type { ReportFigure } from "../../src/shared/report";
 import { sourceFetch } from "./dissection";
 import { sha256 } from "./services";
@@ -15,7 +16,13 @@ type Box = Omit<Region, "evidenceId" | "pageWidth" | "pageHeight"> & {
 };
 
 /** The screenshot and locations come from the same isolated Anchor page. */
-export async function captureReport(env: Env, url: string) {
+export async function captureReport(
+  env: Env,
+  url: string,
+  control: Pick<CaptureDeps, "signal" | "onSession"> = {},
+) {
+  const { signal } = control;
+  signal?.throwIfAborted();
   let html: string;
   let screenshot: ArrayBuffer | undefined;
   let boxes: Box[] = [];
@@ -25,7 +32,15 @@ export async function captureReport(env: Env, url: string) {
   if (env.ANCHORBROWSER_API_KEY) {
     const key = env.ANCHORBROWSER_API_KEY;
     const session = await createSession(key, { recording: false });
+    let closing: Promise<void> | undefined;
+    const close = () => (closing ??= endSession(key, session.id));
+    control.onSession?.(close);
+    const abort = () => {
+      void close().catch(() => {});
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     try {
+      signal?.throwIfAborted();
       const capture = await runSnippet<{
         html: string;
         url: string;
@@ -55,7 +70,9 @@ const locations = await page.evaluate(() => {
 const png = Buffer.from(await page.screenshot({ fullPage: true, type: "png", scale: "css" })).toString("base64");
 return { html: await page.content(), url: page.url(), png, ...locations };
 `,
+        signal,
       );
+      signal?.throwIfAborted();
       html = capture.html;
       url = capture.url;
       const bytes = Uint8Array.from(atob(capture.png), (c) => c.charCodeAt(0));
@@ -70,13 +87,15 @@ return { html: await page.content(), url: page.url(), png, ...locations };
         limitation =
           "Screenshot exceeded the run's 1.9 MB blob limit; screenshot coordinates not observed";
     } finally {
-      await endSession(key, session.id);
+      signal?.removeEventListener("abort", abort);
+      await close();
     }
   } else {
-    const capture = await sourceFetch(url);
+    const capture = await sourceFetch(url, signal);
     html = capture.html;
     url = capture.url;
   }
+  signal?.throwIfAborted();
   const capturedAt = new Date().toISOString();
   const hash = await sha256(html);
   const evidence: Evidence[] = [
