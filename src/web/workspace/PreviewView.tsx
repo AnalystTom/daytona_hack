@@ -31,12 +31,14 @@ function VariantPreview({
   refused.current = onRefused;
   useEffect(() => {
     let live = true;
-    void fetchPreviewLink(runId, variant.id).then((result) => {
-      if (!live) return;
-      setLink(result);
-      if (!result.ok && result.error === "operator_token")
-        refused.current(result);
-    });
+    void fetchPreviewLink(runId, variant.id, undefined, attempt).then(
+      (result) => {
+        if (!live) return;
+        setLink(result);
+        if (!result.ok && result.error === "operator_token")
+          refused.current(result);
+      },
+    );
     return () => {
       live = false;
     };

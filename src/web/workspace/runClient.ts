@@ -199,10 +199,11 @@ export function fetchPreviewLink(
   runId: string,
   variantId?: string,
   fetchImpl: typeof fetch = fetch,
+  attempt = 0,
 ) {
   return call(
     "GET",
-    `${runPath(runId, "preview")}${variantId === undefined ? "" : `?variant=${encodeURIComponent(variantId)}`}`,
+    `${runPath(runId, "preview")}${variantId === undefined ? "" : `?variant=${encodeURIComponent(variantId)}&attempt=${attempt}`}`,
     undefined,
     async (r) => PreviewLink.parse(await r.json()).url,
     fetchImpl,
