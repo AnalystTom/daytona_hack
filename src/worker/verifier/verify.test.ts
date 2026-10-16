@@ -127,6 +127,52 @@ describe("POST /api/v1/runs/:id/verify", () => {
     expect((await callVerify(unknownShot)).status).toBe(400);
   });
 
+  it.each([
+    ["an unknown task plan item", { planItemIds: ["feat_missing"] }],
+    ["an unknown task evidence ID", { evidenceIds: ["ev_missing"] }],
+    [
+      "an unknown task rebuild evidence ID",
+      { rebuildEvidenceIds: ["ev_missing"] },
+    ],
+  ])("returns 400 for %s without calling the model", async (_, patch) => {
+    const fetchMock = mockModel(modelReply("{}"));
+    const body = { ...taskBody, task: { ...taskBody.task, ...patch } };
+    expect((await callVerify(body)).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an unknown final rebuild evidence ID without calling the model", async () => {
+    const fetchMock = mockModel(modelReply("{}"));
+    const body = {
+      ...planBody,
+      kind: "final",
+      rebuildEvidenceIds: ["ev_missing"],
+    };
+    expect((await callVerify(body)).status).toBe(400);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts a plan item citing unknown evidence so the model can report it", async () => {
+    const fetchMock = mockModel(
+      modelReply(
+        JSON.stringify({
+          verdict: "fail",
+          summary: "Missing evidence.",
+          findings: [
+            { planItemId: "feat_hero", evidenceIds: ["ev_gone"], message: "x" },
+          ],
+        }),
+      ),
+    );
+    const body = {
+      ...planBody,
+      plan: [{ ...planBody.plan[0], evidenceIds: ["ev_gone"] }],
+    };
+    const response = await callVerify(body);
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
   it("calls Opus 5.5 at high effort with structured output and returns a pass", async () => {
     const fetchMock = mockModel(
       modelReply(

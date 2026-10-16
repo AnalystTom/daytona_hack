@@ -111,10 +111,6 @@ function parseVerdict(
   const evidenceIds = new Set([
     ...request.evidence.map((item) => item.id),
     ...request.plan.flatMap((item) => item.evidenceIds),
-    ...(request.kind === "task"
-      ? [...request.task.evidenceIds, ...request.task.rebuildEvidenceIds]
-      : []),
-    ...(request.kind === "final" ? request.rebuildEvidenceIds : []),
   ]);
   for (const finding of verdict.findings) {
     if (finding.planItemId !== null && !planIds.has(finding.planItemId)) {

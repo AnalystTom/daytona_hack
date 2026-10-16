@@ -58,6 +58,22 @@ export const VerifyRequest = z
   ])
   .superRefine((request, ctx) => {
     const known = new Set(request.evidence.map((item) => item.id));
+    const planIds = new Set(request.plan.map((item) => item.id));
+    const check = (
+      ids: string[],
+      allowed: Set<string>,
+      path: (string | number)[],
+      what: string,
+    ) =>
+      ids.forEach((id, index) => {
+        if (!allowed.has(id)) {
+          ctx.addIssue({
+            code: "custom",
+            path: [...path, index],
+            message: `Unknown ${what} ${id}`,
+          });
+        }
+      });
     request.screenshots.forEach((shot, index) => {
       if (!known.has(shot.evidenceId)) {
         ctx.addIssue({
@@ -67,6 +83,35 @@ export const VerifyRequest = z
         });
       }
     });
+    // Plan items citing unknown evidence stay valid: that gap is for the verifier to report.
+    if (request.kind === "task") {
+      check(
+        request.task.planItemIds,
+        planIds,
+        ["task", "planItemIds"],
+        "plan item",
+      );
+      check(
+        request.task.evidenceIds,
+        known,
+        ["task", "evidenceIds"],
+        "evidence ID",
+      );
+      check(
+        request.task.rebuildEvidenceIds,
+        known,
+        ["task", "rebuildEvidenceIds"],
+        "evidence ID",
+      );
+    }
+    if (request.kind === "final") {
+      check(
+        request.rebuildEvidenceIds,
+        known,
+        ["rebuildEvidenceIds"],
+        "evidence ID",
+      );
+    }
   });
 export type VerifyRequest = z.infer<typeof VerifyRequest>;
 
