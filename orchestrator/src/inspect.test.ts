@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { backendFacts, maxRedirects, resolveRedirects } from "./inspect";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { backendFacts, inspectBackend, maxRedirects, resolveRedirects } from "./inspect";
+
+afterEach(() => vi.restoreAllMocks());
 
 describe("backend facts", () => {
   it.each(["&amp;", "&AMP;", "&#38;", "&#x26;"])(
@@ -55,6 +57,51 @@ describe("backend facts", () => {
       "https://site.example/api/articles?quote=%22&v=1",
       "https://site.example/api/once?id=1&amp;lang=en",
     ]);
+  });
+});
+
+describe("backend crawl routes", () => {
+  it("decodes sitemap XML references once and preserves literal robots routes", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url === "https://site.example/robots.txt")
+        return new Response(
+          "Allow: /api/articles?id=1&amp;lang=en\nDisallow: /api/raw?id=1&#38;lang=en",
+        );
+      if (url === "https://site.example/sitemap.xml")
+        return new Response(`<urlset>
+<url><loc>https://site.example/api/articles?id=1&amp;lang=en</loc></url>
+<url><loc>https://site.example/api/articles?id=1&#38;lang=en</loc></url>
+<url><loc>https://site.example/api/hex?id=1&#x26;lang=en</loc></url>
+<url><loc>https://site.example/api/once?id=1&amp;amp;lang=en</loc></url>
+<url><loc>https://site.example/api/named?q=&quot;x&quot;&amp;tag=&lt;x&gt;&amp;author=&apos;a&apos;</loc></url>
+</urlset>`);
+      return new Response("");
+    });
+    const { evidence, blobs } = await inspectBackend("https://site.example/", 1);
+    const crawlFiles = Object.fromEntries(
+      evidence
+        .filter((e) => e.kind === "links")
+        .map((e) => {
+          const blob = JSON.parse(String(blobs[e.id])) as {
+            file: string;
+            routes: string[];
+          };
+          return [blob.file, blob.routes];
+        }),
+    );
+    expect(crawlFiles).toEqual({
+      "/robots.txt": [
+        "/api/articles?id=1&amp;lang=en",
+        "/api/raw?id=1&#38;lang=en",
+      ],
+      "/sitemap.xml": [
+        "https://site.example/api/articles?id=1&lang=en",
+        "https://site.example/api/hex?id=1&lang=en",
+        "https://site.example/api/once?id=1&amp;lang=en",
+        "https://site.example/api/named?q=\"x\"&tag=<x>&author='a'",
+      ],
+    });
   });
 });
 

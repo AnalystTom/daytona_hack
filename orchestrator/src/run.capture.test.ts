@@ -33,7 +33,8 @@ vi.mock("./inspect", async (original) => ({
   endSavedSignIn: vi.fn(),
   evidenceStore: vi.fn(),
 }));
-vi.mock("./services", () => ({
+vi.mock("./services", async (original) => ({
+  ...(await original<typeof import("./services")>()),
   tracing: {},
   recall: async () => "",
   remember: async () => {},
@@ -198,6 +199,142 @@ function bindCapture(signIn: SignIn | null = null) {
 }
 
 describe("Run sign-in handoff", () => {
+  it.each(["skip", "resume", "expired"] as const)(
+    "retains public backend evidence across a combined run's %s handoff",
+    async (action) => {
+      const ctx = fakeCtx();
+      const run = new Run(ctx as never, {} as Env);
+      await ctx.loaded();
+      captureMock.mockResolvedValue({ status: "captured", items: [] });
+      vi.mocked(llmJson).mockResolvedValueOnce({
+        reply: "Both layers confirmed",
+        userApproved: false,
+        spec: {
+          scope: "both",
+          pages: [
+            { path: "/", confirmed: true },
+            { path: "/account", confirmed: true },
+          ],
+          flows: [],
+          openQuestions: [],
+        },
+      });
+      const requests: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+        const url = String(input);
+        requests.push(url);
+        if (url === "https://example.com/")
+          return new Response('<a href="/api/public?id=1&amp;lang=en">API</a>');
+        if (url === "https://example.com/account" && action === "resume")
+          return Response.json({ items: [] });
+        if (url.endsWith("/robots.txt") || url.endsWith("/sitemap.xml"))
+          return new Response("", { status: 404 });
+        throw new Error(`Unexpected request: ${url}`);
+      });
+      await run.start("run-1", "https://example.com/", "Rebuild both layers.");
+      await run.approveSpec();
+      captureMock.mockResolvedValueOnce({
+        status: "captured",
+        items: [redirected],
+      });
+      await run.alarm();
+      const state = await run.getState();
+      expect(state.phase).toBe("awaiting_sign_in");
+      expect(state.signInPaths).toEqual(["/account"]);
+      expect(state.evidence).toContainEqual(
+        expect.objectContaining({
+          page: "/",
+          kind: "network",
+          status: "observed",
+          response: expect.objectContaining({ status: 200 }),
+        }),
+      );
+      expect(state.evidence).toContainEqual(
+        expect.objectContaining({
+          page: "/",
+          status: "inferred",
+          routes: ["/api/public?id=1&lang=en"],
+        }),
+      );
+      expect(requests).not.toContain("https://example.com/account");
+      expect(verifyPlan).not.toHaveBeenCalled();
+      if (action === "skip") await run.skipSignIn();
+      else {
+        if (action === "expired")
+          captureMock.mockRejectedValueOnce(
+            new CaptureError("No sign-in session to resume for this run.", 409),
+          );
+        await run.resumeSignIn();
+      }
+      await run.alarm();
+      if (action === "expired") {
+        expect((await run.getState()).phase).toBe("awaiting_sign_in");
+        await run.skipSignIn();
+        await run.alarm();
+      }
+      expect((await run.getState()).phase).toBe("planned");
+      const planEvidence = vi.mocked(verifyPlan).mock.calls[0]?.[2];
+      expect(planEvidence).toContainEqual(
+        expect.objectContaining({
+          page: "/",
+          kind: "network",
+          status: "observed",
+        }),
+      );
+      expect(planEvidence).toContainEqual(
+        expect.objectContaining({ routes: ["/api/public?id=1&lang=en"] }),
+      );
+      expect(
+        requests.filter((url) => url === "https://example.com/"),
+      ).toHaveLength(1);
+      if (action === "resume") {
+        expect(captureMock.mock.lastCall?.[2]).toMatchObject({
+          signIn: "resume",
+          scope: { paths: ["/account"] },
+        });
+        expect(planEvidence).toContainEqual(
+          expect.objectContaining({
+            page: "/account",
+            kind: "network",
+            status: "observed",
+          }),
+        );
+      } else {
+        expect(requests).not.toContain("https://example.com/account");
+        expect(endSavedSignIn).toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("does not inspect a fallback root when every combined capture path is stopped", async () => {
+    const { run } = await persistedRun([], "brief");
+    const state = await run.getState();
+    state.spec.scope = "both";
+    state.spec.pages = [{ path: "/", confirmed: true }];
+    const requests = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("No stopped page may be inspected"));
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [
+        {
+          ...redirected,
+          url: "https://example.com/",
+          pageOrState: "/ @ desktop 1440",
+        },
+      ],
+    });
+    await run.approveSpec();
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("awaiting_sign_in");
+    expect((await run.getState()).signInPaths).toEqual(["/"]);
+    expect(requests).not.toHaveBeenCalled();
+    await run.skipSignIn();
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("planned");
+    expect(requests).not.toHaveBeenCalled();
+  });
+
   it("retains the target query through first look, gateway, approval, secure sign-in and resume", async () => {
     const ctx = fakeCtx();
     const run = new Run(ctx as never, {} as Env);
@@ -453,6 +590,49 @@ describe("Run sign-in handoff", () => {
 });
 
 describe("Run inspection cancellation and recovery", () => {
+  it("stays stopped when combined backend inspection settles before a sign-in handoff", async () => {
+    const { run, ctx } = await persistedRun([], "brief");
+    const state = await run.getState();
+    state.spec.scope = "both";
+    state.spec.pages = [
+      { path: "/", confirmed: true },
+      { path: "/pricing", confirmed: true },
+      { path: "/account", confirmed: true },
+    ];
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
+    });
+    const entered = deferred<void>();
+    const release = deferred<void>();
+    const requests: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      requests.push(url);
+      if (url === "https://example.com/") {
+        entered.resolve();
+        await release.promise;
+        return new Response("");
+      }
+      return new Response("", { status: 404 });
+    });
+    await run.approveSpec();
+    const inspection = run.alarm();
+    await entered.promise;
+    await run.stop();
+    const stopped = structuredClone(await run.getState());
+    const events = structuredClone(ctx.events());
+    release.resolve();
+    await inspection;
+    expect(await run.getState()).toEqual(stopped);
+    expect((await run.getState()).phase).toBe("stopped");
+    expect(ctx.events()).toEqual(events);
+    expect(requests).not.toContain("https://example.com/pricing");
+    expect(requests).not.toContain("https://example.com/account");
+    expect(llmJson).not.toHaveBeenCalled();
+    expect(verifyPlan).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["resume", "success"],
     ["resume", "redirect"],

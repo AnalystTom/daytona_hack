@@ -20,6 +20,7 @@ import {
 } from "../../src/worker/evidence/store";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { resolveStore } from "../../src/worker/store";
+import { decodeXML } from "entities";
 import { Parser } from "htmlparser2";
 import { sha256 } from "./services";
 import type { Env, Evidence } from "./types";
@@ -412,7 +413,7 @@ export async function inspectBackend(
         ...new Set(
           [
             ...body.matchAll(/<loc>([^<]+)<\/loc>|^(?:dis)?allow:\s*(\S+)/gim),
-          ].map((m) => (m[1] || m[2]).trim()),
+          ].map((m) => (m[1] ? decodeXML(m[1]) : m[2]).trim()),
         ),
       ].slice(0, 200);
       await add(
