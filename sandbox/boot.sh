@@ -80,10 +80,11 @@ wait_for curl -fs "$FORGEJO_URL/api/healthz"
 
 token_file="$REVERSY_STATE/forgejo-token"
 if [ ! -s "$token_file" ]; then
-  if ! forgejo admin user list --admin --config "$ini" --work-path "$forgejo_dir" | grep -qw reversy; then
+  # grep reads captured output: under pipefail an early-exiting grep -q fails the pipe.
+  if ! grep -qw reversy <<<"$(forgejo admin user list --admin --config "$ini" --work-path "$forgejo_dir")"; then
     forgejo admin user create --config "$ini" --work-path "$forgejo_dir" --admin \
       --username reversy --email reversy@localhost.invalid --random-password \
-      --must-change-password=false
+      --must-change-password=false >/dev/null # its output includes the generated password
   fi
   (
     umask 077
@@ -108,14 +109,17 @@ tea login add --name reversy --url "$FORGEJO_URL" --token "$token"
 
 # Codex: GPT 6.1 at high reasoning for Firstmate and every worker it launches.
 printenv OPENAI_API_KEY | codex login --with-api-key
+# Written once: Codex records its hook trust in this file, and rewriting it would drop that.
 mkdir -p "$HOME/.codex"
-cat >"$HOME/.codex/config.toml" <<EOF
+if [ ! -f "$HOME/.codex/config.toml" ]; then
+  cat >"$HOME/.codex/config.toml" <<EOF
 model = "gpt-6.1-sol"
 model_reasoning_effort = "high"
 
 [projects."$FM_HOME"]
 trust_level = "trusted"
 EOF
+fi
 
 # Firstmate home: one project (the rebuild repository on Forgejo), delivered through
 # no-mistakes with automatic merges, workers on Codex.
@@ -138,6 +142,16 @@ fi
 if ! tmux has-session -t firstmate 2>/dev/null; then
   tmux new-session -d -s firstmate -x 200 -y 50 -c "$FM_HOME" \
     "codex --sandbox danger-full-access --ask-for-approval never"
+  # On first launch Codex asks to trust Firstmate's own hooks (its supervision depends on
+  # them) before taking any input; choose "Trust all and continue", as a captain at the
+  # prompt would. Codex can drop an early key press, so retry until it records the trust.
+  for _ in $(seq 30); do
+    grep -q trusted_hash "$HOME/.codex/config.toml" && break
+    if grep -q 'Trust all and continue' <<<"$(tmux capture-pane -p -t firstmate)"; then
+      tmux send-keys -t firstmate 2 Enter
+    fi
+    sleep 2
+  done
 fi
 if ! tmux has-session -t preview 2>/dev/null; then
   tmux new-session -d -s preview "$SCRIPTS/preview.sh"
