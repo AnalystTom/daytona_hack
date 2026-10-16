@@ -18,7 +18,7 @@ import { runBridgeToken } from "../daytona/bridge-token";
 import { checkTargetUrl } from "./url";
 
 export interface RunsEnv extends StoreEnv {
-  // Shared secret the sandbox bridge sends as `Authorization: Bearer <token>`.
+  // Worker-wide secret; a bridge sends only its run's derived token (`runBridgeToken`).
   BRIDGE_TOKEN?: string;
   // Interim operator secret required to create runs, sent as `Authorization: Bearer <token>`.
   OPERATOR_TOKEN?: string;

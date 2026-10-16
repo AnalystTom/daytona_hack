@@ -1,6 +1,6 @@
 // A run sandbox holds only its own bridge token, derived from the Worker-wide BRIDGE_TOKEN,
-// so a leak from one sandbox cannot post events into any other run. The events endpoint
-// verifies a bridge post by deriving the same token for the run id in its URL.
+// so a leak from one sandbox cannot post events into any other run. The run API's bridge routes
+// verify a bridge request by deriving the same token for the run id in its URL.
 export async function runBridgeToken(secret: string, runId: string) {
   const key = await crypto.subtle.importKey(
     "raw",
