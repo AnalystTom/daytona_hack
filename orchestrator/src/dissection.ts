@@ -1,28 +1,24 @@
 import {
   exactQuoteEvidence,
   ReportDissection,
+  reportQuantities,
   type ReportFigure,
 } from "../../src/shared/report";
 import { checkTargetUrl } from "../../src/worker/runs/url";
+import { decodeHTML } from "entities";
 import { articleText } from "./report";
 import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
 
 export const cleanText = (text: string) =>
-  text
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&nbsp;|&#160;/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&quot;|&#34;/g, '"')
-    .replace(/&#39;|&rsquo;|&#8217;/g, "'")
-    .replace(/&ndash;|&#8211;/g, "–")
-    .replace(/&mdash;|&#8212;/g, "—")
-    .replace(/&minus;/g, "−")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Number(n)))
+  decodeHTML(
+    text
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "")
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, "")
+      .replace(/<[^>]+>/g, " "),
+  )
     .replace(/\s+/g, " ")
-    .replace(/\s+([,.;:!?%])/g, "$1")
+    .replace(/\s+([;:!?%]|[.,](?!\d))/g, "$1")
     .trim();
 
 /** Offsets always address the captured HTML, never model-generated text. */
@@ -46,19 +42,10 @@ export function extractFigures(
     const quote = cleanText(block[2]);
     if (!quote) continue;
     const offset = Math.max(0, start) + block.index;
-    for (const n of quote.matchAll(
-      /(?:[+−–-]\s*)?(?:[$€£]\s*(?:[+−–-]\s*)?)?\b\d+(?:,\d{3})*(?:\.\d+)?(?:\s*[-–]\s*\d+(?:\.\d+)?)?\s*(?:%|trillion|billion|million|bn|bps)?/gi,
-    )) {
-      const value = n[0].trim();
-      const unit =
-        value.match(/trillion|billion|million|bn|bps|%/i)?.[0] ??
-        (/^(19|20)\d\d$/.test(value) ? "year" : "number");
+    for (const quantity of reportQuantities(quote)) {
       figures.push({
         id: `${sourceId}_f${figures.length + 1}`,
-        value,
-        unit: /[$€£]/.test(value)
-          ? `${value.match(/[$€£]/)?.[0]} ${unit}`
-          : unit,
+        ...quantity,
         label: quote,
         quote,
         sourceId,
@@ -68,10 +55,11 @@ export function extractFigures(
           end: offset + block[0].length,
           path: `HTML characters ${offset}–${offset + block[0].length}`,
         },
-        status: "observed",
         reason:
-          "Read directly from captured article text; a forecast remains a forecast.",
-        group: "key_figures",
+          quantity.status === "observed"
+            ? "Read directly from captured article text; a forecast remains a forecast."
+            : "Quantity notation is unsupported; no partial value is published.",
+        group: quantity.status === "observed" ? "key_figures" : "not_observed",
       });
     }
   }
@@ -136,16 +124,13 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
   }
   // The chart headline can contain greater precision than the article headline.
   for (const m of html.matchAll(
-    /"layout\.(?:title|subtitle)"\s*:\s*("(?:[^"\\]|\\.)*")/g,
+    /"layout\.(title|subtitle)"\s*:\s*("(?:[^"\\]|\\.)*")/g,
   )) {
-    const text: string = JSON.parse(m[1]);
-    for (const n of text.matchAll(
-      /(?:[+−–-]\s*)?\$\s*(?:[+−–-]\s*)?\d+(?:\.\d+)?\s*(?:trillion|billion|million)?/g,
-    )) {
+    const text: string = JSON.parse(m[2]);
+    for (const quantity of reportQuantities(text)) {
       figures.push({
         id: `${sourceId}_headline${figures.length}`,
-        value: n[0].trim(),
-        unit: n[0].match(/trillion|billion|million/)?.[0] ?? "$",
+        ...quantity,
         label: text,
         quote: text,
         sourceId,
@@ -153,11 +138,13 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
           kind: "chart_data",
           start: m.index,
           end: m.index + m[0].length,
-          path: "layout.title",
+          path: `layout.${m[1]}`,
         },
-        status: "observed",
-        reason: "Published chart headline.",
-        group: "key_figures",
+        reason:
+          quantity.status === "observed"
+            ? "Published chart headline."
+            : "Quantity notation is unsupported; no partial value is published.",
+        group: quantity.status === "observed" ? "key_figures" : "not_observed",
       });
     }
   }

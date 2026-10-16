@@ -130,7 +130,7 @@ export function SpecView({
 }) {
   const screenshots = canvas.evidence.filter((e) => e.kind === "screenshot");
   const recordings = canvas.evidence.filter((e) => e.kind === "recording");
-  if (!canvas.draftSpec && canvas.evidence.length === 0) {
+  if (!canvas.draftSpec && !canvas.report && canvas.evidence.length === 0) {
     return (
       <div className="empty-state">
         <EmptyIcon />

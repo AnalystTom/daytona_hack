@@ -110,18 +110,18 @@ describe("report canvas data", () => {
       expect(html).toContain(quote);
     },
   );
-  it.each(["$", "£", "€"])(
+  it.each(["$", "£", "€", ""])(
     "rechecks saved currency evidence for %s before displaying a match",
     (currency) => {
       const value = `${currency}35 billion`;
-      const quote = `Investment reaches ${value}.`;
+      const quote = `Investment reaches ${value}${currency ? "" : " dollars"}.`;
       const report = ReportDissection.parse({
         ...reportContractExample,
         figures: [
           {
             ...reportContractExample.figures[0],
             value,
-            unit: `${currency} billion`,
+            unit: `${currency} billion`.trim(),
             quote,
           },
         ],

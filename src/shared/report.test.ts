@@ -64,6 +64,23 @@ it.each([
   ["€35 billion", "€ billion", "Investment reaches €35 billion.", true],
   ["-2.5%", "%", "Growth was -2.5%.", true],
   ["2.5%", "%", "Growth was -2.5%.", false],
+  ["35 billion", "billion", "Investment reaches 35 billion dollars.", false],
+  ["35 billion", "billion", "Investment reaches USD 35 billion.", true],
+  ["35 billion", "billion", "Investment reaches 35 billion CAD.", true],
+  ["$35 billion", "$ billion", "Investment reaches USD $35 billion.", true],
+  ["£35 billion", "£ billion", "Investment reaches GBP £35 billion.", true],
+  ["$35 billion", "$ billion", "Investment reaches EUR $35 billion.", false],
+  ["35 billion", "billion", "Investment reaches USD 35 billion CAD.", false],
+  ["35 billion", "billion", "USD 35 billion and CAD 35 billion.", false],
+  ["5%", "%", "Growth was .5%.", false],
+  [".5%", "%", "Growth was .5%.", true],
+  ["$1", "$ number", "Investment reaches USD $1,019 billion.", false],
+  [
+    "-$1,019.5 billion",
+    "$ billion",
+    "Investment reaches USD -$1,019.5 billion.",
+    true,
+  ],
 ])(
   "requires complete values and explicit units in exact quote evidence",
   (value, unit, quote, expected) => {

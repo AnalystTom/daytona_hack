@@ -37,6 +37,11 @@ describe("observed report figures", () => {
     "$-35 billion",
     "− €35 million",
     "£−35 million",
+    ".5%",
+    "-.5%",
+    "$1,019 billion",
+    "-$1,019.25 billion",
+    "$-.5 billion",
   ])("preserves the complete signed article quantity %s", (value) => {
     const [figure] = extractFigures(`<p>Growth was ${value}.</p>`);
     expect(figure).toMatchObject({ value, status: "observed" });
@@ -48,17 +53,78 @@ describe("observed report figures", () => {
       status: "observed",
     });
   });
-  it.each(["-$35 billion", "−$35 billion", "+$35 billion", "$-35 billion"])(
-    "preserves the complete signed chart headline %s",
+  it.each([
+    ["&#x2212;2.5%", "−2.5%"],
+    ["&pound;-35 million", "£-35 million"],
+    ["-&euro;.5 billion", "-€.5 billion"],
+  ])("decodes quantity notation %s before extracting it", (encoded, value) => {
+    expect(extractFigures(`<p>Growth was ${encoded}.</p>`)[0]).toMatchObject({
+      value,
+      status: "observed",
+    });
+  });
+  it.each([
+    "-$35 billion",
+    "−$35 billion",
+    "+$35 billion",
+    "$-35 billion",
+    "$1,019 billion",
+    "-$1,019.25 billion",
+    "$-.5 billion",
+    ".5%",
+  ])("preserves the complete signed chart headline %s", (value) => {
+    const figures = extractChart(
+      chart.replace("$1.019 trillion", value).replace("[530,", "[-530,"),
+      "chart1",
+    );
+    expect(figures.at(-1)).toMatchObject({ value, status: "observed" });
+    expect(figures[0]).toMatchObject({ value: "-530", status: "observed" });
+  });
+  it.each([
+    "1,01 billion",
+    "$1.019,5 billion",
+    "1e3",
+    "1/2",
+    "2.5%-3.5%",
+    "--2.5%",
+    "(2.5%)",
+    "1 019 billion",
+    "¥35 billion",
+    "—$35 billion",
+  ])(
+    "marks unsupported %s notation without publishing a partial value in either text path",
     (value) => {
-      const figures = extractChart(
-        chart.replace("$1.019 trillion", value).replace("[530,", "[-530,"),
+      const article = extractFigures(`<p>Growth was ${value}.</p>`);
+      const headlines = extractChart(
+        chart.replace("$1.019 trillion", value),
         "chart1",
-      );
-      expect(figures.at(-1)).toMatchObject({ value, status: "observed" });
-      expect(figures[0]).toMatchObject({ value: "-530", status: "observed" });
+      ).filter((f) => f.group !== "investment_breakdown");
+      for (const figures of [article, headlines]) {
+        expect(figures.length).toBeGreaterThan(0);
+        expect(
+          figures.every(
+            (figure) => figure.status === "not_observed" && figure.value === "",
+          ),
+        ).toBe(true);
+        expect(figures.every((figure) => figure.quote.includes(value))).toBe(
+          true,
+        );
+      }
     },
   );
+  it("uses the same complete quantity boundary for chart subtitles", () => {
+    const figures = extractChart(
+      chart
+        .replace("layout.title", "layout.subtitle")
+        .replace("$1.019 trillion", "-$1,019.5 billion"),
+      "chart1",
+    );
+    expect(figures.at(-1)).toMatchObject({
+      value: "-$1,019.5 billion",
+      status: "observed",
+      location: { path: "layout.subtitle" },
+    });
+  });
   it("extracts every occurrence, including periods and percentages, without the old eight-figure cap", () => {
     const figures = extractFigures(html);
     expect(figures.length).toBeGreaterThan(8);
@@ -432,10 +498,10 @@ it.each([
   },
 );
 
-it.each(["$", "£"])(
+it.each(["$", "£", ""])(
   "keeps identical %s passages unverified across different page currencies",
   async (currency) => {
-    const quote = `Investment reaches ${currency}35 billion.`;
+    const quote = `Investment reaches ${currency}35 billion${currency ? "" : " dollars"}.`;
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(new Response(`<h1>CAD</h1><p>${quote}</p>`)),
