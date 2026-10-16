@@ -99,3 +99,9 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
 
   return { tasks: [...tasks.values()], runStopped };
 }
+
+// A reviewed or failed task can be overruled until it is merged or the build is stopped.
+export const canOverride = (task: BoardTask) =>
+  (task.review?.verdict !== undefined || task.state === "failed") &&
+  task.state !== "merged" &&
+  task.state !== "stopped";

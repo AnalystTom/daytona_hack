@@ -471,16 +471,14 @@
 
 .notice-not_connected,
 .notice-failed,
-.notice-run_error,
-.notice-sign_in_needed {
+.notice-run_error {
   border-left-color: var(--error);
   background: var(--error-soft);
 }
 
 .notice-not_connected .notice-icon,
 .notice-failed .notice-icon,
-.notice-run_error .notice-icon,
-.notice-sign_in_needed .notice-icon {
+.notice-run_error .notice-icon {
   color: var(--error);
 }
 

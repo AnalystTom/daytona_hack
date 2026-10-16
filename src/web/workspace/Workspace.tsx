@@ -47,6 +47,9 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
   const [runId, setRunId] = useState<string>();
   const [events, setEvents] = useState<OrchestratorEvent[]>([]);
   const [offline, setOffline] = useState(false);
+  // Set from the Start build click until the next event, so a second click cannot race the phase change.
+  const [starting, setStarting] = useState(false);
+  const pollSoon = useRef<() => void>(undefined);
   // Messages sent before the brief had a URL; they are sent with it.
   const briefParts = useRef<string[]>([]);
   const run = useMemo(() => runView(runId ?? "", events), [runId, events]);
@@ -56,7 +59,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     draftSpec: run.draftSpec,
     evidence: run.evidence,
   };
-  const canBuild = runId !== undefined && run.phase === "planned";
+  const canBuild = runId !== undefined && run.phase === "planned" && !starting;
 
   // Follows the run's events from the orchestrator.
   useEffect(() => {
@@ -64,8 +67,11 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     let since = 0;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let busy = false;
     const poll = async () => {
+      busy = true;
       const result = await fetchEvents(runId, since);
+      busy = false;
       if (!live) return;
       setOffline(!result.ok);
       if (result.ok) {
@@ -73,10 +79,17 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
         if (fresh.length > 0) {
           since = Math.max(...fresh.map((event) => event.seq));
           setEvents((list) => [...list, ...fresh]);
+          setStarting(false);
           setEntries((list) => [...list, ...chatEntries(fresh)]);
         }
       }
       timer = setTimeout(poll, idle(phase.current) ? IDLE_POLL_MS : POLL_MS);
+    };
+    // An action can restart a finished run, so it skips the idle wait.
+    pollSoon.current = () => {
+      if (busy) return;
+      clearTimeout(timer);
+      void poll();
     };
     void poll();
     return () => {
@@ -93,7 +106,11 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
 
   const act = async (call: Promise<RunCallResult<unknown>>) => {
     const result = await call;
-    if (!result.ok) addNotice(result);
+    if (result.ok) pollSoon.current?.();
+    else {
+      setStarting(false);
+      addNotice(result);
+    }
   };
 
   const setDelivery = (id: string, delivery: "sent" | "failed") =>
@@ -220,6 +237,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
               title={canBuild ? undefined : "Available once the plan is ready"}
               onClick={() => {
                 setView("build");
+                setStarting(true);
                 if (runId) void act(runAction(runId, "build"));
               }}
             >

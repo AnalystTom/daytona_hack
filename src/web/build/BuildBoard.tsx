@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { EventEnvelope, TaskState } from "../../shared/contracts";
-import { type BoardTask, columns, deriveBoard } from "./board";
+import { type BoardTask, canOverride, columns, deriveBoard } from "./board";
 import "./BuildBoard.css";
 
 export type Override = {
@@ -345,16 +345,13 @@ function TaskPanel({
         </div>
       )}
 
-      {onOverride &&
-        (review?.verdict || state === "failed") &&
-        state !== "merged" &&
-        state !== "stopped" && (
-          <OverrideForm
-            onOverride={(verdict, reason) =>
-              onOverride({ taskId: task.id, verdict, reason })
-            }
-          />
-        )}
+      {onOverride && canOverride(task) && (
+        <OverrideForm
+          onOverride={(verdict, reason) =>
+            onOverride({ taskId: task.id, verdict, reason })
+          }
+        />
+      )}
 
       {task.log.length > 0 && (
         <div className="bb-log-wrap">
