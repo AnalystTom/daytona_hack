@@ -167,3 +167,31 @@ Until VM fork is enabled on the account, pods are snapshot copies: the parent is
 To use fork, push the image built from `sandbox/Dockerfile` to a registry and create the snapshot from it with `--image <image> --sandbox-class linux-vm`.
 
 Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo (both open questions in the agent system spec).
+
+## Evidence capture
+
+`src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
+It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
+Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
+Interaction recordings are not captured yet; a full pack keeps the session's page-load recording, and none in a signed-in session.
+
+| Endpoint | What it does |
+|---|---|
+| `POST /api/v1/runs/:id/capture` | Body `{ mode: "first_look" \| "full_pack", scope: { origin, paths }, signIn?: "start" \| "resume" }`. `first_look` takes a desktop screenshot of each path; `full_pack` adds a mobile screenshot, DOM, styles, assets, network and the recording. `signIn: "start"` returns an Anchor live-view URL where the user signs in themselves; `"resume"` captures in that session. |
+| `GET /api/v1/evidence/:id` | The evidence record (shared `EvidenceRecord` in `src/shared/evidence.ts`). |
+| `GET /api/v1/evidence/:id/content` | The stored file. |
+
+Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason.
+Until the run API's event function is on `main`, capture events are returned in the capture response, and `captureRun` takes an `emit` function.
+
+Worker bindings (secrets, set with `wrangler secret put`):
+
+- `ANCHOR_API_KEY`
+- `SURREALDB_URL` (the SurrealDB HTTP base URL; requests go to its `/rpc` endpoint)
+- `SURREALDB_NAMESPACE`
+- `SURREALDB_DATABASE`
+- `SURREALDB_USERNAME`
+- `SURREALDB_PASSWORD`
+
+Without them the endpoints answer `503` and list the missing names.
+Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's and SurrealDB's documented shapes rather than recorded from live calls.

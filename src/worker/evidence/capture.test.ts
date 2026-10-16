@@ -1,0 +1,227 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { CaptureEvent, EvidenceRecord } from "../../shared/evidence";
+import { CaptureError, captureRun } from "./capture";
+import {
+  executeCodeResponse,
+  fixturePageFacts,
+  fixturePngBase64,
+  fixtureSession,
+  recordingList,
+} from "./fixtures";
+import type { EvidenceStore } from "./store";
+
+const scope = { origin: "https://example.com", paths: ["/", "/pricing"] };
+
+// Fixture Anchor API: answers each endpoint with the documented response shape.
+function fakeAnchor(finalUrls: Record<string, string> = {}) {
+  const calls: { method: string; path: string; body?: unknown }[] = [];
+  let current = "";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string, init: RequestInit = {}) => {
+      const url = new URL(input);
+      const method = init.method ?? "GET";
+      const body = init.body ? JSON.parse(String(init.body)) : undefined;
+      calls.push({ method, path: url.pathname, body });
+      if (url.pathname === "/v1/sessions") return Response.json(fixtureSession);
+      if (url.pathname === "/v1/tools/execute-code") {
+        const code: string = body.code;
+        if (code.includes("page.goto")) {
+          const target = JSON.parse(
+            code.match(/const params = (.*);/)?.[1] ?? "{}",
+          ).url;
+          current = finalUrls[target] ?? target;
+          return Response.json(executeCodeResponse(fixturePageFacts(current)));
+        }
+        return Response.json(
+          executeCodeResponse({ finalUrl: current, png: fixturePngBase64 }),
+        );
+      }
+      if (url.pathname.endsWith("/recordings"))
+        return Response.json(recordingList);
+      if (url.pathname.endsWith("/recordings/primary/fetch")) {
+        return new Response(new Uint8Array([0, 0, 0, 24]));
+      }
+      if (method === "DELETE") return Response.json({ data: { status: "ok" } });
+      return new Response("unexpected", { status: 500 });
+    }),
+  );
+  return calls;
+}
+
+function memoryStore() {
+  const records = new Map<string, EvidenceRecord>();
+  const content = new Map<string, Uint8Array>();
+  const signIns = new Map<string, string>();
+  const store: EvidenceStore = {
+    async putEvidence(record, bytes) {
+      records.set(record.id, record);
+      content.set(record.id, bytes);
+    },
+    getEvidence: async (id) => records.get(id) ?? null,
+    getContent: async (id) => content.get(id) ?? null,
+    async saveSignIn(runId, sessionId) {
+      signIns.set(runId, sessionId);
+    },
+    async takeSignIn(runId) {
+      const id = signIns.get(runId) ?? null;
+      signIns.delete(runId);
+      return id;
+    },
+  };
+  return { store, records, content, signIns };
+}
+
+function deps(store: EvidenceStore) {
+  const events: CaptureEvent[] = [];
+  return {
+    events,
+    deps: {
+      anchorApiKey: "test-key",
+      store,
+      emit: (e: CaptureEvent) => void events.push(e),
+    },
+  };
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("captureRun (fixture Anchor responses)", () => {
+  it("captures a full pack per page with hashes and a recording", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+
+    const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+    expect(result.status).toBe("captured");
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => `${i.kind} ${i.pageOrState}`)).toEqual([
+      "dom /",
+      "styles /",
+      "assets /",
+      "network /",
+      "screenshot / @ desktop 1440",
+      "screenshot / @ mobile 390",
+      "dom /pricing",
+      "styles /pricing",
+      "assets /pricing",
+      "network /pricing",
+      "screenshot /pricing @ desktop 1440",
+      "screenshot /pricing @ mobile 390",
+      "recording session: /, /pricing",
+    ]);
+    expect(
+      items.every((i) => i.label === "observed" && i.tool === "anchor"),
+    ).toBe(true);
+    const shot = items.find((i) => i.kind === "screenshot") as EvidenceRecord;
+    expect(shot.contentType).toBe("image/png");
+    expect(memory.content.get(shot.id)?.[1]).toBe(0x50); // "P" of the PNG signature
+    expect(shot.contentHash).toMatch(/^sha256:[0-9a-f]{64}$/);
+
+    const session = calls.find((c) => c.path === "/v1/sessions")?.body as {
+      session: { recording: { active: boolean } };
+      browser: {
+        viewport: { width: number };
+        sensitive_data_mask: { active: boolean };
+      };
+    };
+    expect(session.session.recording.active).toBe(true);
+    expect(session.browser.viewport.width).toBe(1440);
+    expect(session.browser.sensitive_data_mask.active).toBe(true);
+    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_captured",
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+  });
+
+  it("takes only a desktop screenshot per page on first look, without recording", async () => {
+    const calls = fakeAnchor();
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.pageOrState)).toEqual([
+      "/ @ desktop 1440",
+      "/pricing @ desktop 1440",
+    ]);
+    expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
+  });
+
+  it("stops a page that redirects off-origin and stores nothing from it", async () => {
+    fakeAnchor({ "https://example.com/pricing": "https://evil.test/pricing" });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+
+    const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    const pricing = items.filter((i) => i.pageOrState.startsWith("/pricing"));
+    expect(pricing).toHaveLength(6);
+    for (const item of pricing) {
+      expect(item.label).toBe("not_observed");
+      expect(item.byteLength).toBe(0);
+      expect(item.limitations[0]).toContain(
+        "Redirected to https://evil.test/pricing",
+      );
+    }
+    expect(events[1]?.type).toBe("evidence.page_stopped");
+  });
+
+  it("stops a page that redirects to an unapproved path on the same origin", async () => {
+    fakeAnchor({ "https://example.com/pricing": "https://example.com/login" });
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["observed", "not_observed"]);
+  });
+
+  it("hands sign-in to the user, then resumes capture in that session once", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    const { deps: d } = deps(memory.store);
+
+    const started = await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope,
+      signIn: "start",
+    });
+    expect(started).toEqual({
+      status: "awaiting_sign_in",
+      liveViewUrl: fixtureSession.data.live_view_url,
+    });
+    const body = calls[0]?.body as {
+      session: {
+        initial_url: string;
+        recording: { active: boolean };
+        live_view: { read_only: boolean };
+      };
+    };
+    expect(body.session.initial_url).toBe("https://example.com/");
+    expect(body.session.recording.active).toBe(false);
+    expect(body.session.live_view.read_only).toBe(false);
+    expect(memory.signIns.get("run_1")).toBe(fixtureSession.data.id);
+
+    const resumed = await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope,
+      signIn: "resume",
+    });
+    const items = resumed.status === "captured" ? resumed.items : [];
+    expect(calls.filter((c) => c.path === "/v1/sessions")).toHaveLength(1);
+    expect(items.at(-1)).toMatchObject({
+      kind: "recording",
+      label: "not_observed",
+    });
+    expect(items[0]?.limitations.at(-1)).toContain("signed-in session");
+
+    await expect(
+      captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
+    ).rejects.toThrow(CaptureError);
+  });
+});
