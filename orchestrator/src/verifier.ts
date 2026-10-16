@@ -1,7 +1,7 @@
 // Verifier: independent checks from Cloudflare, never from inside the sandbox.
 // Spec asks for Opus 5.5; we have no Anthropic key, so it runs on VERIFIER_MODEL (OpenAI)
 // with its own instructions and sees only the spec, evidence and the output being checked.
-import { outline } from "./inspect";
+import { outline, shapeOf } from "./inspect";
 import { llmJson } from "./services";
 import type { Env, Evidence, Spec, Task } from "./types";
 
@@ -49,6 +49,67 @@ const evidenceList = (evidence: Evidence[]) =>
     summary: e.summary,
     limits: e.limits,
   }));
+
+const MAX_ROUTES = 10;
+const PROBE_BYTES = 100_000;
+const PROBE_MS = 5000;
+
+/** Observed routes behind the given evidence: the back-end pages a rebuild must answer. */
+function routesOf(evidence: Evidence[]) {
+  return [
+    ...new Set(
+      evidence
+        .filter((e) => e.kind === "network" && e.status === "observed")
+        .map((e) => e.page),
+    ),
+  ].slice(0, MAX_ROUTES);
+}
+
+/** One bounded GET per route on the preview: status, content type and JSON shape, never more. */
+async function probeRoutes(previewUrl: string | undefined, routes: string[]) {
+  if (!previewUrl) return [];
+  return Promise.all(
+    routes.map(async (path) => {
+      try {
+        const res = await fetch(new URL(path, previewUrl), {
+          redirect: "manual",
+          signal: AbortSignal.timeout(PROBE_MS),
+        });
+        const decoder = new TextDecoder();
+        let text = "";
+        let size = 0;
+        const reader = res.body?.getReader();
+        while (reader && size < PROBE_BYTES) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          text += decoder.decode(value, { stream: true });
+          size += value.length;
+        }
+        await reader?.cancel();
+        const contentType = res.headers.get("content-type") || "";
+        let shape: unknown;
+        if (contentType.includes("json")) {
+          try {
+            shape = shapeOf(JSON.parse(text));
+          } catch {
+            shape = "invalid or truncated JSON";
+          }
+        }
+        return {
+          path,
+          status: res.status,
+          contentType,
+          location: res.headers.get("location") || undefined,
+          ...(shape === undefined
+            ? { outline: outline(text, 1000) }
+            : { shape }),
+        };
+      } catch (e) {
+        return { path, error: String(e).slice(0, 200) };
+      }
+    }),
+  );
+}
 
 async function check(
   env: Env,
@@ -101,16 +162,21 @@ export async function verifyTask(
   task: Task,
   previewUrl?: string,
 ): Promise<Verdict> {
+  const cited = evidence.filter((e) => task.evidence.includes(e.id));
   let preview = "";
-  if (previewUrl) {
+  if (previewUrl && spec.scope !== "backend") {
     try {
       preview = outline(await (await fetch(previewUrl)).text(), 8000);
     } catch {}
   }
+  const routes =
+    spec.scope === "frontend"
+      ? []
+      : await probeRoutes(previewUrl, routesOf(cited));
   const v = await check(
     env,
     "verify_task",
-    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview is the root response of the live integration branch after the merge.`,
+    `Check one merged task: does the merged rebuild meet the task's acceptance criteria and match its evidence? The preview is the root response of the live integration branch after the merge; routes are GETs of the task's observed routes on it, to compare status codes, content types and JSON shapes with the evidence.`,
     {
       spec: { url: spec.url, goal: spec.goal, scope: spec.scope },
       task: {
@@ -121,10 +187,9 @@ export async function verifyTask(
         diffStat: task.diffStat,
         review: task.review,
       },
-      evidence: evidenceList(
-        evidence.filter((e) => task.evidence.includes(e.id)),
-      ),
+      evidence: evidenceList(cited),
       previewHtml: preview,
+      routes,
     },
   );
   return { target: "task", taskId: task.id, ...v };
@@ -139,23 +204,28 @@ export async function verifyFinal(
   originalHtml = "",
 ): Promise<Verdict> {
   let preview = "";
-  if (previewUrl) {
+  if (previewUrl && spec.scope !== "backend") {
     try {
       preview = outline(await (await fetch(previewUrl)).text(), 10000);
     } catch {}
   }
+  const routes =
+    spec.scope === "frontend"
+      ? []
+      : await probeRoutes(previewUrl, routesOf(evidence));
   const v = await check(
     env,
     "verify_final",
     spec.scope === "backend"
-      ? `Check the final back-end rebuild against the agreed spec: every route, status, response shape and delivery header the evidence observed is reproduced with mock data, and nothing inferred is presented as observed. Call out what is missing or wrong.`
-      : `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section${spec.scope === "both" ? ", then the observed routes and response shapes against the rebuilt service" : ""}. Call out what is missing or wrong.`,
+      ? `Check the final back-end rebuild against the agreed spec: every route, status, response shape and delivery header the evidence observed is reproduced with mock data (routes are GETs of the observed routes on the rebuilt service), and nothing inferred is presented as observed. Call out what is missing or wrong.`
+      : `Check the final rebuild against the agreed spec: compare the original page outline with the rebuilt one section by section${spec.scope === "both" ? ", then the observed routes and response shapes against the routes probed on the rebuilt service" : ""}. Call out what is missing or wrong.`,
     {
       spec,
       evidence: evidenceList(evidence),
       tasks: tasks.map((t) => ({ id: t.id, title: t.title, status: t.status })),
       originalOutline: outline(originalHtml, 10000),
       rebuiltOutline: preview,
+      routes,
     },
   );
   return { target: "final", ...v };
