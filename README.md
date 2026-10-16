@@ -78,12 +78,13 @@ The SDK itself is not bundled because it depends on Node-only packages that the 
 | `SANDBOX_API_TOKEN` | Every sandbox route: callers send it as `Authorization: Bearer`, because these routes spend money and instruct agents that hold secrets |
 | `DAYTONA_API_KEY` | Every sandbox route |
 | `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox |
-| `BRIDGE_TOKEN` | Starting a run sandbox or a pod: the bridge sends it as `Authorization: Bearer` when posting events |
+| `BRIDGE_TOKEN` | Starting a run sandbox or a pod: never sent to a sandbox; each run's bridge gets only `HMAC-SHA256(BRIDGE_TOKEN, runId)` (hex, `runBridgeToken` in `src/worker/daytona/bridge-token.ts`) and sends that as `Authorization: Bearer` |
 | `DAYTONA_SNAPSHOT` (optional) | Snapshot name; defaults to `reversy-run` |
 | `DAYTONA_API_URL` (optional) | Daytona API base; defaults to `https://app.daytona.io/api` |
 
 A route whose bindings are missing answers 503 and lists them by name; a caller without the right token gets 401.
 Other Worker code can call the lifecycle functions in `lifecycle.ts` directly instead of going through these routes.
+Bridge posting needs the run API's events endpoint to verify that per-run token (derive it with `runBridgeToken` for the run id in the URL); until that integration change lands, the endpoint rejects bridge posts.
 Secrets reach the sandbox through the toolbox at boot (`sandbox/save-env.sh`, owner-only files), never through Daytona's sandbox metadata or the snapshot.
 
 ### Routes

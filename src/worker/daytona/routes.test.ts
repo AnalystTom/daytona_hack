@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { runBridgeToken } from "./bridge-token";
 import { fakeDaytona } from "./fake-daytona";
 import { type DaytonaEnv, handleSandboxRoute } from "./routes";
 
@@ -71,8 +72,12 @@ describe("run sandbox routes", () => {
       status: 200,
       body: { runId: "r1", sandboxId: "sb1", boot: "ready" },
     });
-    // The bridge posts back to the Worker that started the run.
+    // The bridge posts back to the Worker that started the run, with a token for this run only.
     expect(fake.execs[0]?.envs?.REVERSY_API_URL).toBe("https://reversy.test");
+    expect(fake.execs[0]?.envs?.BRIDGE_TOKEN).toBe(
+      await runBridgeToken("bt", "r1"),
+    );
+    expect(JSON.stringify(fake.execs)).not.toContain('"bt"');
 
     expect(await call("GET", "/api/v1/runs/r1/sandbox")).toMatchObject({
       status: 200,

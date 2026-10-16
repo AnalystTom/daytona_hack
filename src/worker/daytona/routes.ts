@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { CaptainInput, CreatePodRequest } from "../../shared/sandbox";
+import { runBridgeToken } from "./bridge-token";
 import { createDaytonaClient, DaytonaError } from "./client";
 import {
   cleanupRun,
@@ -110,7 +111,8 @@ export async function handleSandboxRoute(
     runId,
     apiUrl: url.origin,
     openaiApiKey: env.OPENAI_API_KEY ?? "",
-    bridgeToken: env.BRIDGE_TOKEN ?? "",
+    // Never the Worker-wide BRIDGE_TOKEN: the sandbox gets a token valid for this run only.
+    bridgeToken: await runBridgeToken(env.BRIDGE_TOKEN ?? "", runId),
   };
 
   try {
