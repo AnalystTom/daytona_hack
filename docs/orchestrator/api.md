@@ -19,6 +19,9 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | `POST /runs/:id/build` | | Start build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." |
 | `POST /runs/:id/stop` | | Stop build: kills workers, marks open tasks `stopped` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
+| `POST /gateway/capture` | `{url, kind: "screenshot"\|"html", width?, height?}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): screenshot through Anchor or page HTML |
+| `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
+| `POST /sandboxes/:id/captain`, `GET /sandboxes/:id/screen` | `{text}` | Types a captain message into the first mate's tmux pane, or reads that pane (Bearer `OPERATOR_TOKEN`) |
 
 If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq, ts, type, data}`.
 
@@ -66,6 +69,8 @@ A failure is also posted to chat as steering.
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
 the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*` with `Authorization: Bearer <OPERATOR_TOKEN>`.
 `orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
+Run sandboxes reach the gateway at `https://<reversy host>/api/v1/gateway/*`; the `reversy` Worker forwards those POSTs to the binding unchanged,
+and the orchestrator checks `GATEWAY_TOKEN` itself.
 
 ## Not built yet
 

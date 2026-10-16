@@ -24,9 +24,11 @@ const OverrideRequest = z.object({
 const RUNS = /^\/api\/v1\/runs(?:\/([\w-]{1,100})(?:\/(.+))?)?$/;
 const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
+const GATEWAY_PREFIX = "/api/v1/gateway";
 
-// Handles /api/v1/runs/* (the workspace's run API) and /api/v1/orchestrator/* (operator testing).
-// Every POST starts, steers or stops paid work, so each one needs the operator token.
+// Handles /api/v1/runs/* (the workspace's run API), /api/v1/orchestrator/* (operator testing)
+// and /api/v1/gateway/* (the run sandbox's network gateway).
+// Every run POST starts, steers or stops paid work, so each one needs the operator token.
 export async function handleOrchestrator(
   request: Request,
   env: OrchestratorEnv,
@@ -36,14 +38,26 @@ export async function handleOrchestrator(
     url.pathname === OPERATOR_PREFIX ||
     url.pathname.startsWith(`${OPERATOR_PREFIX}/`);
   const run = url.pathname.match(RUNS);
-  if (!operator && !run) return null;
+  const gateway = url.pathname.startsWith(`${GATEWAY_PREFIX}/`);
+  if (!operator && !run && !gateway) return null;
   try {
-    if (operator || request.method === "POST") {
+    if (operator || (run && request.method === "POST")) {
       await checkToken(request, env, "OPERATOR_TOKEN");
     }
     if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
+    if (gateway) {
+      // The orchestrator checks the sandbox's own GATEWAY_TOKEN, so the header goes through as sent.
+      if (request.method !== "POST") throw notFound();
+      const path = `/gateway${url.pathname.slice(GATEWAY_PREFIX.length)}`;
+      return await passThrough(request, env.ORCHESTRATOR, path);
+    }
     if (operator) {
-      return await passThrough(request, env.ORCHESTRATOR, url);
+      const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
+      return await passThrough(
+        request,
+        env.ORCHESTRATOR,
+        `${path}${url.search}`,
+      );
     }
     return await runRoute(request, env.ORCHESTRATOR, url, run?.[1], run?.[2]);
   } catch (error) {
@@ -51,21 +65,20 @@ export async function handleOrchestrator(
   }
 }
 
-// Operator-only: forwards the request as is, minus the operator token.
-async function passThrough(request: Request, orchestrator: Fetcher, url: URL) {
-  const path = url.pathname.slice(OPERATOR_PREFIX.length) || "/";
-  const headers = new Headers(request.headers);
-  headers.delete("authorization");
-  const response = await orchestrator.fetch(
-    `https://orchestrator${path}${url.search}`,
-    {
-      method: request.method,
-      headers,
-      body: ["GET", "HEAD"].includes(request.method)
-        ? undefined
-        : await request.arrayBuffer(),
-    },
-  );
+// Forwards the request as is, bearer token included: the orchestrator's /sandboxes and
+// /gateway routes check it themselves.
+async function passThrough(
+  request: Request,
+  orchestrator: Fetcher,
+  path: string,
+) {
+  const response = await orchestrator.fetch(`https://orchestrator${path}`, {
+    method: request.method,
+    headers: request.headers,
+    body: ["GET", "HEAD"].includes(request.method)
+      ? undefined
+      : await request.arrayBuffer(),
+  });
   return withoutCors(response);
 }
 

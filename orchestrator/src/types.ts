@@ -16,6 +16,8 @@ export interface Env {
   EVENTS_WEBHOOK_URL?: string;
   ARIZE_API_KEY?: string;
   ARIZE_SPACE_ID?: string;
+  GATEWAY_TOKEN?: string; // the run sandbox's token for /gateway/*
+  OPERATOR_TOKEN?: string; // the backend's token for /sandboxes/*
 }
 
 export type Phase =

@@ -80,7 +80,7 @@ describe("operator pass-through", () => {
     });
   });
 
-  it("forwards method, path, query and body without the token or CORS", async () => {
+  it("forwards method, path, query, body and token, without CORS", async () => {
     const { env, seen } = setup(
       () =>
         new Response('{"ok":true}', {
@@ -102,7 +102,48 @@ describe("operator pass-through", () => {
     expect(seen[0]?.method).toBe("POST");
     expect(seen[0]?.url).toBe("https://orchestrator/runs/r1/events?since=4");
     expect(seen[0]?.body).toBe('{"text":"hi"}');
-    expect(seen[0]?.headers.get("authorization")).toBeNull();
+    // Forwarded: the orchestrator's /sandboxes routes check the operator token themselves.
+    expect(seen[0]?.headers.get("authorization")).toBe(
+      "Bearer operator-secret",
+    );
+  });
+});
+
+describe("sandbox gateway", () => {
+  it("forwards POSTs with the sandbox's own token for the orchestrator to check", async () => {
+    const { env, seen } = setup(
+      () => new Response("png", { headers: { "content-type": "image/png" } }),
+    );
+    const response = await call(
+      "/api/v1/gateway/capture",
+      {
+        method: "POST",
+        headers: { authorization: "Bearer gateway-secret" },
+        json: { url: "https://example.com", kind: "screenshot" },
+      },
+      env,
+    );
+    expect(response?.headers.get("content-type")).toBe("image/png");
+    expect(seen[0]?.url).toBe("https://orchestrator/gateway/capture");
+    expect(seen[0]?.headers.get("authorization")).toBe("Bearer gateway-secret");
+    expect(JSON.parse(seen[0]?.body ?? "")).toEqual({
+      url: "https://example.com",
+      kind: "screenshot",
+    });
+  });
+
+  it("passes the orchestrator's refusal through and accepts only POST", async () => {
+    const { env, seen } = setup(() =>
+      Response.json({ error: "unauthorized" }, { status: 401 }),
+    );
+    const refused = await call(
+      "/api/v1/gateway/recall",
+      { method: "POST", json: { query: "x" } },
+      env,
+    );
+    expect(refused?.status).toBe(401);
+    expect((await call("/api/v1/gateway/recall", {}, env))?.status).toBe(404);
+    expect(seen).toHaveLength(1);
   });
 });
 

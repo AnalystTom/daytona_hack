@@ -1,4 +1,5 @@
 // HTTP surface for the backend (or a service binding). One Durable Object per run.
+import { firstMateScreen, handleGateway, sendToFirstMate } from "./gateway";
 import type { Env } from "./types";
 export { Run } from "./run";
 
@@ -23,6 +24,33 @@ export default {
           "Access-Control-Allow-Methods": "*",
         },
       });
+    if (parts[0] === "gateway" && req.method === "POST") {
+      try {
+        return await handleGateway(req, env, parts.slice(1));
+      } catch (e: any) {
+        return json({ error: String(e?.message || e) }, 502);
+      }
+    }
+    if (parts[0] === "sandboxes" && parts[1]) {
+      // captain relay: operator-only (the backend holds OPERATOR_TOKEN)
+      if (
+        !env.OPERATOR_TOKEN ||
+        req.headers.get("Authorization") !== `Bearer ${env.OPERATOR_TOKEN}`
+      )
+        return json({ error: "unauthorized" }, 401);
+      try {
+        if (req.method === "POST" && parts[2] === "captain") {
+          const { text } = (await req.json()) as { text: string };
+          await sendToFirstMate(env, parts[1], text);
+          return json({ ok: true });
+        }
+        if (req.method === "GET" && parts[2] === "screen")
+          return new Response(await firstMateScreen(env, parts[1]));
+      } catch (e: any) {
+        return json({ error: String(e?.message || e) }, 502);
+      }
+      return json({ error: "not found" }, 404);
+    }
     if (parts[0] !== "runs")
       return json({ service: "reversy-orchestrator", routes: ROUTES });
 
@@ -69,6 +97,9 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 const ROUTES = [
+  "POST /gateway/capture {url, kind: screenshot|html, width?, height?} (Bearer GATEWAY_TOKEN, from the sandbox)",
+  "POST /gateway/remember {runId, text, observedAt?} / POST /gateway/recall {runId, query} (Bearer GATEWAY_TOKEN)",
+  "POST /sandboxes/:id/captain {text} / GET /sandboxes/:id/screen (Bearer OPERATOR_TOKEN, from the backend)",
   "POST /runs {url, goal} -> run state (first look + first chat reply)",
   "GET  /runs/:id -> state {phase, spec, chat, evidence, tasks, previewUrl}",
   "GET  /runs/:id/events?since=N -> [{seq, ts, type, data}]",
