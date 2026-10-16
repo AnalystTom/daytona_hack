@@ -262,6 +262,34 @@ describe("run routes", () => {
     ]);
   });
 
+  it("drops the sandbox id from events and action replies", async () => {
+    const preview = {
+      seq: 9,
+      ts: "2026-10-16T12:00:00Z",
+      type: "preview",
+      data: { url: "https://4173-sb.daytona.app", sandboxId: "sb_1" },
+    };
+    const { env } = setup((s) =>
+      s.url.includes("events")
+        ? Response.json([preview])
+        : Response.json({ id: "r1", phase: "building", sandboxId: "sb_1" }),
+    );
+    const events = await call(
+      "/api/v1/runs/r1/events?since=8",
+      { headers: operator },
+      env,
+    );
+    expect(await events?.json()).toEqual([
+      { ...preview, data: { url: "https://4173-sb.daytona.app" } },
+    ]);
+    const built = await call(
+      "/api/v1/runs/r1/build",
+      { method: "POST", headers: operator },
+      env,
+    );
+    expect(await built?.json()).toEqual({ id: "r1", phase: "building" });
+  });
+
   it("answers 404 for a run the orchestrator does not know", async () => {
     const { env } = setup(() => new Response(undefined, { status: 200 }));
     const response = await call(

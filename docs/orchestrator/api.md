@@ -68,7 +68,7 @@ A failure is also posted to chat as steering.
 
 No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
 the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
-(reads included; `GET /api/v1/runs/:id` drops `sandboxId`).
+(reads included; `sandboxId` is dropped from run state and events).
 `orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
 
 ## Not built yet

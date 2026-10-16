@@ -99,12 +99,7 @@ async function runRoute(
       if ((await response.clone().text()) === "") {
         throw new Failure(404, "run_not_found", `Run ${runId} not found.`);
       }
-      // The browser has no use for the sandbox id.
-      const { sandboxId: _, ...state } = (await response.json()) as Record<
-        string,
-        unknown
-      >;
-      return Response.json(state);
+      return response;
     }
     if (action === "events") {
       const since = url.searchParams.get("since") ?? "0";
@@ -150,7 +145,23 @@ async function forward(
       body === undefined ? undefined : { "content-type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (response.ok) return withoutCors(response);
+  if (response.ok) {
+    const type = response.headers.get("content-type") ?? "";
+    if (!type.includes("json")) return withoutCors(response);
+    // The browser has no use for the Daytona sandbox id, in state or in events.
+    const text = await response.text();
+    const body =
+      text &&
+      JSON.stringify(
+        JSON.parse(text, (key, value) =>
+          key === "sandboxId" ? undefined : value,
+        ),
+      );
+    return new Response(body, {
+      status: response.status,
+      headers: { "content-type": type },
+    });
+  }
   const reply = (await response.json().catch(() => null)) as {
     error?: unknown;
   } | null;
