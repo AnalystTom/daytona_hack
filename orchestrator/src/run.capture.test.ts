@@ -848,3 +848,112 @@ describe("Run persisted evidence", () => {
     expect(store.getEvidence).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("Run entered-URL redirects", () => {
+  // wikipedia.com answers 301 to wikipedia.org; the browser lands wherever `landing` says.
+  function wikipedia(landing: (call: number) => string) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string | URL | Request) =>
+        String(url) === "https://www.wikipedia.com/"
+          ? new Response(null, {
+              status: 301,
+              headers: { location: "https://www.wikipedia.org/" },
+            })
+          : new Response("ok"),
+      ),
+    );
+    bindCapture();
+    vi.spyOn(anchor, "createSession").mockResolvedValue({
+      id: "session",
+      liveViewUrl: "https://live.example.test/session",
+    });
+    vi.spyOn(anchor, "endSession").mockResolvedValue();
+    let calls = 0;
+    vi.spyOn(anchor, "runSnippet").mockImplementation(async () => ({
+      ...fixturePageFacts(landing(++calls)),
+      png: fixturePngBase64,
+    }));
+  }
+
+  it("scopes the run to the final origin and shows the redirect in the spec", async () => {
+    wikipedia(() => "https://www.wikipedia.org/");
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    const state = await run.start(
+      "run-1",
+      "https://www.wikipedia.com/",
+      "copy it",
+    );
+    expect(captureMock.mock.calls[0]?.[2].scope).toEqual({
+      origin: "https://www.wikipedia.org",
+      paths: ["/"],
+    });
+    expect(state.spec.url).toBe("https://www.wikipedia.org/");
+    expect(state.spec.redirects).toEqual([
+      "https://www.wikipedia.com/",
+      "https://www.wikipedia.org/",
+    ]);
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "screenshot",
+        status: "observed",
+        page: "/ @ desktop 1440",
+      }),
+    );
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "redirects",
+        status: "observed",
+        summary:
+          "You entered https://www.wikipedia.com/; it redirects to https://www.wikipedia.org/.",
+      }),
+    );
+    const turn = vi.mocked(llmJson).mock.calls[0]?.[1] as {
+      instructions: string;
+      input: string;
+    };
+    expect(turn.input).toContain("it redirects to https://www.wikipedia.org/");
+    expect(turn.input).not.toContain("No screenshot");
+  });
+
+  it("still stops a page that redirects off the final origin during capture", async () => {
+    wikipedia((call) =>
+      call === 1
+        ? "https://www.wikipedia.org/"
+        : "https://login.wikimedia.org/?returnto=x",
+    );
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    await run.start("run-1", "https://www.wikipedia.com/", "copy it");
+    // The mocked chat turn confirms /account on the approved origin.
+    await run.approveSpec();
+    await run.alarm();
+    expect(captureMock.mock.lastCall?.[2].scope.origin).toBe(
+      "https://www.wikipedia.org",
+    );
+    const state = await run.getState();
+    expect(state.phase).toBe("awaiting_sign_in");
+    expect(state.signInPaths).toEqual(["/account"]);
+  });
+
+  it("tells the user in plain words why there is no screenshot, in a prompt without captain", async () => {
+    wikipedia(() => "https://login.wikimedia.org/");
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    await run.start("run-1", "https://www.wikipedia.com/", "copy it");
+    const turn = vi.mocked(llmJson).mock.calls[0]?.[1] as {
+      instructions: string;
+      input: string;
+    };
+    expect(turn.input).toContain(
+      "No screenshot: The site redirected to https://login.wikimedia.org/, outside the pages approved for this run",
+    );
+    // Every product prompt this run sent, not just the chat turn.
+    for (const [, opts] of vi.mocked(llmJson).mock.calls)
+      expect(JSON.stringify(opts)).not.toMatch(/captain/i);
+  });
+});

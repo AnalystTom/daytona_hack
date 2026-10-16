@@ -673,18 +673,20 @@ export class Run extends DurableObject<Env> {
     evidence: Evidence[],
     blobs: Record<string, ArrayBuffer | string>,
   ) {
+    const signal = this.inspection.signal;
     for (const e of evidence) {
+      signal.throwIfAborted();
       const b = blobs[e.id];
       if (b && (typeof b === "string" ? b.length : b.byteLength) < 1_900_000) {
         await this.ctx.storage.put(
           `blob:${e.id}`,
           typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
         );
-        if (e.kind === "screenshot")
-          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
+        signal.throwIfAborted();
       }
       this.s.evidence.push(e);
-      await this.emit("evidence", e);
+      await this.emit("evidence", e, signal);
+      signal.throwIfAborted();
       if (e.status !== "not_observed") {
         await remember(
           this.env,
@@ -693,7 +695,7 @@ export class Run extends DurableObject<Env> {
         );
       }
     }
-    await this.save();
+    await this.save(signal);
   }
 
   private approvedPaths() {
@@ -715,8 +717,8 @@ export class Run extends DurableObject<Env> {
   private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
     const signal = this.inspection.signal;
     signal.throwIfAborted();
-    const { scope: runScope } = this.s.spec;
-    if (step !== "plan" && runScope !== "backend") {
+    const { scope } = this.s.spec;
+    if (step !== "plan" && scope !== "backend") {
       const signedIn = step === "resume_sign_in";
       const { scope, dropped } = captureScope(
         this.s.spec.url,
@@ -754,10 +756,13 @@ export class Run extends DurableObject<Env> {
         return;
       }
     }
-    if (step !== "plan" && (runScope === "backend" || runScope === "both")) {
+    if (step !== "plan" && (scope === "backend" || scope === "both")) {
       const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
       for (const path of scope.paths) {
-        const cap = await inspectBackend(scope.origin + path, this.s.evidence.length + 1);
+        const cap = await inspectBackend(
+          scope.origin + path,
+          this.s.evidence.length + 1,
+        );
         signal.throwIfAborted();
         await this.storeEvidence(cap.evidence, cap.blobs);
       }
@@ -767,7 +772,6 @@ export class Run extends DurableObject<Env> {
     this.s.phase = "planning";
     await this.emit("phase", { phase: "planning" }, signal);
 
-    const scope = runScope;
     const html = await this.originalHtml();
     signal.throwIfAborted();
     const plan = await llmJson<{

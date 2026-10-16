@@ -12,6 +12,25 @@ vi.mock("cloudflare:workers", () => ({
   },
 }));
 
+// Scope tests isolate the Anchor boundary; capture behavior has its own suite.
+vi.mock("./inspect", async (original) => ({
+  ...(await original<typeof import("./inspect")>()),
+  capture: vi.fn(async (_env, _runId, request, landed) => {
+    await landed({
+      id: request.mode === "first_look" ? "ev_001" : "ev_002",
+      page: "/insights/article",
+      kind: "screenshot",
+      tool: "anchor",
+      status: "not_observed",
+      capturedAt: "2026-10-16T10:00:00.000Z",
+      hash: "",
+      limits: "Anchor is isolated in scope tests",
+      summary: "No screenshot observed",
+    });
+    return { status: "captured", items: [] };
+  }),
+}));
+
 const { Run } = await import("./run");
 
 const SITE = "https://site.example/insights/article";
@@ -275,7 +294,7 @@ describe("run scope", () => {
     expect(state.evidence.some((e: Evidence) => e.page === "/x")).toBe(false);
 
     // evidence: network observations, with honest labels; REA stays not observed
-    const after = state.evidence.slice(2) as Evidence[];
+    const after = state.evidence.slice(1) as Evidence[];
     expect(after.some((e) => e.kind === "screenshot")).toBe(false);
     expect(after).toContainEqual(
       expect.objectContaining({ kind: "network", status: "observed" }),
