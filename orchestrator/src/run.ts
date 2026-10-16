@@ -183,6 +183,7 @@ export class Run extends DurableObject<Env> {
       this.s.error = String(e?.message || e);
       await this.emit("error", { message: this.s.error });
       if (this.s.phase === "inspecting" || this.s.phase === "planning") this.s.phase = "failed";
+      if (this.s.phase === "building") await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }
     await this.save();
   }
@@ -387,7 +388,7 @@ Do not invent content that the evidence does not show; if something was not obse
   private async dispatch(t: Task) {
     const id = this.s.sandboxId!;
     const dir = `${WT}/${t.id}`;
-    await this.daytona.must(id, `cd ${APP} && rm -rf ${dir} && (git branch -D ${t.branch} 2>/dev/null; true) && git worktree prune && git worktree add -q ${dir} -b ${t.branch} main && rm -f ${LOGS}/${t.id}.exit`);
+    await this.daytona.must(id, `cd ${APP} && (git worktree remove --force ${dir} 2>/dev/null; rm -rf ${dir}; git worktree prune; git branch -D ${t.branch} 2>/dev/null; true) && git worktree add -q ${dir} -b ${t.branch} main && rm -f ${LOGS}/${t.id}.exit`);
     await this.daytona.writeFile(id, `${LOGS}/${t.id}.prompt.md`, this.instructions(t));
     const cmd = `cd ${dir} && codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
     t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
