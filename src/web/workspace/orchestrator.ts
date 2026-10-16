@@ -160,8 +160,10 @@ export function runView(
         const e = item.data;
         // Only screenshots and recordings have a card; other evidence feeds the plan.
         const kind = e.kind === "recording" ? "recording" : "screenshot";
-        if (e.kind !== kind || !e.url || !EVIDENCE_PATH.test(e.url)) break;
+        if (e.kind !== kind) break;
         view.evidence = view.evidence.filter((x) => x.id !== e.id);
+        if (e.status === "not_observed" || !e.url || !EVIDENCE_PATH.test(e.url))
+          break;
         view.evidence.push({
           id: e.id,
           kind,
@@ -173,6 +175,10 @@ export function runView(
           limitations: e.limits ? [e.limits] : [],
           src: `/api/v1${e.url}`,
         });
+        break;
+      }
+      case "evidence_reset": {
+        view.evidence = [];
         break;
       }
       case "plan": {

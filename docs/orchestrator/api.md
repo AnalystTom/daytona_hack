@@ -47,6 +47,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 | `spec` | Spec (`pages[]`, `flows[]` with `confirmed`, `openQuestions[]`, `approved`, `revision`) | Draft spec card. Unconfirmed items show "Not confirmed yet" |
 | `report` | [`ReportDissection`](../../src/shared/report.ts), including the latest edits and replay metadata when present | Report dissection card in the Spec canvas |
 | `evidence` | Evidence (`id, page, kind, tool, status, capturedAt, hash, limits, summary, path?, url?`), one event per item as it is stored | Screenshot and video cards (`url` is set on observed screenshots and recordings). `status` is `observed`, `inferred` or `not_observed` |
+| `evidence_reset` | `{}` | Clears previous capture cards before replay evidence is emitted; replay files resolve through the originating successful run |
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
