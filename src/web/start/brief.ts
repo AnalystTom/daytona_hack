@@ -77,7 +77,7 @@ export function initialBrief(historyState: unknown, search: string): Brief {
 }
 
 export function canSend(brief: Brief) {
-  return brief.text.trim() !== "" || brief.files.length > 0;
+  return brief.text.trim() !== "";
 }
 
 /** Adds files, skipping ones already attached so nothing is uploaded twice. */

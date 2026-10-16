@@ -63,14 +63,15 @@ describe("readBrief", () => {
 });
 
 describe("canSend", () => {
-  it("is false while the brief is empty or blank", () => {
+  it("is false while the text is empty or blank, even with attachments", () => {
     expect(canSend({ text: "", files: [] })).toBe(false);
     expect(canSend({ text: "  \n", files: [] })).toBe(false);
+    expect(canSend({ text: "", files: [shot] })).toBe(false);
   });
 
-  it("is true with text or an attachment", () => {
+  it("is true with text", () => {
     expect(canSend({ text: "copy this", files: [] })).toBe(true);
-    expect(canSend({ text: "", files: [shot] })).toBe(true);
+    expect(canSend({ text: "copy this", files: [shot] })).toBe(true);
   });
 });
 

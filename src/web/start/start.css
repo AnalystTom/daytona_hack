@@ -113,6 +113,13 @@
   background: rgb(57 37 63 / 0.08);
 }
 
+.attachments-note {
+  margin: 0;
+  padding: 0 1rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 .composer-actions {
   display: flex;
   justify-content: space-between;

@@ -118,6 +118,12 @@ export function Start() {
               ))}
             </ul>
           )}
+          {brief.files.length > 0 && (
+            <p className="attachments-note">
+              Attachments are not sent to the workspace yet. Describe what you
+              want in the brief; they stay here in your draft.
+            </p>
+          )}
           <div className="composer-actions">
             <input
               ref={fileRef}
