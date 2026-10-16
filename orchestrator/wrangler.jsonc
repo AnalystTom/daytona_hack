@@ -13,6 +13,7 @@
     "DAYTONA_SNAPSHOT": "daytona-medium",
     "ORCHESTRATOR_MODEL": "gpt-6.1-sol",
     "WORKER_MODEL": "gpt-6.1-sol",
+    "VERIFIER_MODEL": "gpt-6.1-sol",
     "MAX_WORKERS": "6"
   }
   // secrets (wrangler secret put / .dev.vars): OPENAI_API_KEY, DAYTONA_API_KEY,

@@ -40,6 +40,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
 | `preview` | `{url, sandboxId?, mergedTask?}` | Live preview of the integration branch (Daytona port 3000, public) |
 | `phase` | `{phase, ...}` | Header state; enable Start build on `planned` |
+| `verification` | `{target, taskId?, pass, summary, findings}` | Verifier verdict on the plan, a merged task, or the final rebuild |
 | `error` | `{message}` | Inline error state |
 
 ## How a build runs
@@ -53,9 +54,19 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
   Approve → `git merge --no-ff` into `main`, and the preview (`npx serve` on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
 
+## Verifier
+
+The spec asks for Opus 5.5; we have no Anthropic key, so the verifier runs on `VERIFIER_MODEL` (OpenAI) from Cloudflare,
+outside the sandbox, with its own instructions. It checks the plan before build, each merged task (against the live preview)
+and the final rebuild, and emits `verification` events `{target: "plan"|"task"|"final", taskId?, pass, summary, findings[]}`.
+A failure is also posted to chat as steering.
+
+## Deployed
+
+`https://reversy-orchestrator.thomasmann2001.workers.dev`. `orchestrator/scripts/demo-run.sh` drives one full run.
+
 ## Not built yet
 
-- Verifier (Opus 5.5 through the Anthropic API): needs an Anthropic key.
 - Anchor screenshots and recordings: the code calls `POST /v1/tools/screenshot` once `ANCHORBROWSER_API_KEY` is set. Until then, screenshot evidence is `not_observed` and HTML comes from a plain fetch.
 - Variant pods (fork), Arize tracing, secure sign-in.
 

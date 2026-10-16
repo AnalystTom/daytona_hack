@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { Daytona, shq } from "./daytona";
 import { inspectPage, outline, routesFrom } from "./inspect";
 import { llmJson, recall, remember } from "./services";
+import { verifyFinal, verifyPlan, verifyTask, type Verdict } from "./verifier";
 import type { ChatMessage, Env, Evidence, Phase, RunEvent, Spec, Task } from "./types";
 
 const APP = "/home/daytona/app";
@@ -301,7 +302,9 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     await this.emit("plan", { tasks: this.s.tasks });
     await this.emit("phase", { phase: "planned" });
     await remember(this.env, this.memScope(), `Plan for ${this.s.spec.url}: ${this.s.tasks.map((t) => `${t.id} ${t.title} (evidence ${t.evidence.join(",")})`).join("; ")}`);
-    await this.addChat("assistant", `Plan ready: ${this.s.tasks.length} tasks. Review it on the canvas, then press Start build.`);
+    const pv = await verifyPlan(this.env, this.s.spec, this.s.evidence, this.s.tasks);
+    await this.verified(pv);
+    await this.addChat("assistant", `Plan ready: ${this.s.tasks.length} tasks. Verifier: ${pv.pass ? "pass" : "fail"}. Review it on the canvas, then press Start build.`);
   }
 
   // ---------- phase 4: build ----------
@@ -314,7 +317,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     this.s.sandboxId = sb.id;
     await this.save();
     const id = sb.id;
-    await this.daytona.must(id, `mkdir -p ${APP} ${WT} ${EV} ${LOGS} && cd ${APP} && git init -q -b main && git config --global user.email reversy@local && git config --global user.name Reversy && echo '# Reversy rebuild of ${this.s.spec.url}' > README.md && git add -A && git commit -qm init`);
+    await this.daytona.must(id, `mkdir -p ${APP} ${WT} ${EV} ${LOGS} && cd ${APP} && git init -q -b main && git config --global user.email reversy@local && git config --global user.name Reversy && echo '# Reversy rebuild of ${this.s.spec.url}' > README.md && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init`);
     await this.daytona.must(id, `printenv OPENAI_API_KEY | codex login --with-api-key >/dev/null 2>&1`);
     for (const e of this.s.evidence) {
       if (!e.path) continue;
@@ -329,6 +332,15 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     await this.save();
     await this.emit("preview", { url: this.s.previewUrl, sandboxId: id });
     await remember(this.env, this.memScope(), `Build started in Daytona sandbox ${id}; preview ${this.s.previewUrl}`);
+  }
+
+  private async verified(v: Verdict) {
+    await this.emit("verification", v);
+    await remember(this.env, this.memScope(), `Verifier on ${v.taskId || v.target}: ${v.pass ? "pass" : "fail"} — ${v.summary}`);
+    if (!v.pass) {
+      // a failure goes back to the orchestrator as steering and shows on the canvas
+      await this.addChat("assistant", `Verifier flagged ${v.taskId || v.target}: ${v.summary}`);
+    }
   }
 
   private task(id: string) {
@@ -361,7 +373,11 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     if (open.length === 0 || open.length === blocked.length) {
       this.s.phase = "done";
       await this.emit("phase", { phase: "done", merged: this.s.tasks.filter((t) => t.status === "merged").length, failed: this.s.tasks.filter((t) => t.status === "failed").length });
-      await this.addChat("assistant", `Build finished. Preview: ${this.s.previewUrl}`);
+      const htmlEv = this.s.evidence.find((e) => e.kind === "html");
+      const original = htmlEv ? new TextDecoder().decode((await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!) : "";
+      const fv = await verifyFinal(this.env, this.s.spec, this.s.evidence, this.s.tasks, this.s.previewUrl, original);
+      await this.verified(fv);
+      await this.addChat("assistant", `Build finished. Verifier: ${fv.pass ? "pass" : "fail"}. Preview: ${this.s.previewUrl}`);
       return;
     }
     await this.ctx.storage.setAlarm(Date.now() + TICK_MS);
@@ -382,7 +398,10 @@ ${ev.map((e) => `- ${e.id} ${e.kind} ${e.status}: ${e.summary}${e.path ? ` -> /h
 Full evidence index: ${EV}/index.json. Agreed spec: ${EV}/spec.json.
 ${t.review?.verdict === "reject" ? `\nYour previous attempt was rejected: ${t.review.reason}\n${t.review.findings.join("\n")}` : ""}
 Work in the current directory (a git worktree of the rebuild). Do not commit; the orchestrator commits and reviews your work.
-Do not invent content that the evidence does not show; if something was not observed, leave a clear TODO comment.`;
+Do not invent content that the evidence does not show; if something was not observed, leave a clear TODO comment.
+The original site is NOT reachable from this sandbox: build only from the evidence files. Do not try to fetch or screenshot it.
+Never start servers, watchers or other long-running processes (the orchestrator already serves a preview on port 3000).
+Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the task explicitly needs them. Finish within 10 minutes.`;
   }
 
   private async dispatch(t: Task) {
@@ -390,10 +409,11 @@ Do not invent content that the evidence does not show; if something was not obse
     const dir = `${WT}/${t.id}`;
     await this.daytona.must(id, `cd ${APP} && (git worktree remove --force ${dir} 2>/dev/null; rm -rf ${dir}; git worktree prune; git branch -D ${t.branch} 2>/dev/null; true) && git worktree add -q ${dir} -b ${t.branch} main && rm -f ${LOGS}/${t.id}.exit`);
     await this.daytona.writeFile(id, `${LOGS}/${t.id}.prompt.md`, this.instructions(t));
-    const cmd = `cd ${dir} && codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
+    const cmd = `cd ${dir} && timeout 900 codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
     t.cmdId = await this.daytona.startAsync(id, `w-${t.id}-${t.attempts}`, cmd);
     t.status = "building";
     t.attempts += 1;
+    this.s.error = undefined;
     t.startedAt = now();
     await this.save();
     await this.emit("task", t);
@@ -460,5 +480,6 @@ Do not invent content that the evidence does not show; if something was not obse
     t.nextAction = undefined;
     await this.emit("task", t);
     await this.emit("preview", { url: this.s.previewUrl, mergedTask: t.id });
+    await this.verified(await verifyTask(this.env, this.s.spec, this.s.evidence, t, this.s.previewUrl));
   }
 }

@@ -1,12 +1,12 @@
 // OpenAI (structured outputs), SurrealDB Agent Memory, Anchor Browser — all over plain fetch.
 import type { Env } from "./types";
 
-export async function llmJson<T>(env: Env, opts: { instructions: string; input: string; schema: object; name: string; effort?: string }): Promise<T> {
+export async function llmJson<T>(env: Env, opts: { instructions: string; input: string; schema: object; name: string; effort?: string; model?: string }): Promise<T> {
   const res = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: { Authorization: `Bearer ${env.OPENAI_API_KEY}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: env.ORCHESTRATOR_MODEL,
+      model: opts.model || env.ORCHESTRATOR_MODEL,
       reasoning: { effort: opts.effort || "high" },
       instructions: opts.instructions,
       input: opts.input,

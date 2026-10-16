@@ -6,6 +6,7 @@ export interface Env {
   DAYTONA_SNAPSHOT?: string;
   OPENAI_API_KEY: string;
   ORCHESTRATOR_MODEL: string;
+  VERIFIER_MODEL?: string;
   WORKER_MODEL: string;
   MAX_WORKERS: string;
   SPECTRON_URL?: string;
@@ -69,7 +70,7 @@ export interface Task {
 export interface RunEvent {
   seq: number;
   ts: string;
-  type: "chat" | "spec" | "evidence" | "plan" | "task" | "review" | "preview" | "phase" | "error";
+  type: "chat" | "spec" | "evidence" | "plan" | "task" | "review" | "preview" | "phase" | "verification" | "error";
   data: unknown;
 }
 
