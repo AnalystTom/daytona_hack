@@ -87,7 +87,8 @@ async function call<T>(
       return {
         ok: false,
         error: "access_required",
-        detail: "Reload this page to sign in again.",
+        detail:
+          "Sign in in a new tab, then return to this workspace and try again. Keep this tab open.",
       };
     }
     return {

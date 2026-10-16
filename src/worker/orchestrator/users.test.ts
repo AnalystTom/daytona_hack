@@ -19,14 +19,12 @@ function memoryOwners(): Owners {
         .reverse();
     },
     async reserve(run, maxActive, perDay, ended) {
-      const active = runs.filter(
-        (r) => r.owner === run.owner && r.active && !ended.includes(r.runId),
-      );
+      for (const r of runs)
+        if (r.owner === run.owner && ended.includes(r.runId)) r.active = false;
+      const active = runs.filter((r) => r.owner === run.owner && r.active);
       if (active.length >= maxActive) return "active_run_limit";
       const key = `${run.owner} ${new Date(run.createdAt).toISOString().slice(0, 10)}`;
       if ((counts.get(key) ?? 0) >= perDay) return "daily_run_limit";
-      for (const r of runs)
-        if (r.owner === run.owner && ended.includes(r.runId)) r.active = false;
       counts.set(key, (counts.get(key) ?? 0) + 1);
       runs.push({ ...run, active: true });
       return undefined;
@@ -120,6 +118,35 @@ function setup(
     },
   };
 }
+
+describe("in-memory admission contract", () => {
+  it("commits ended runs on daily refusal and retains active runs across days", async () => {
+    const owners = memoryOwners();
+    const first = {
+      runId: "first",
+      owner: "ada@example.com",
+      createdAt: Date.UTC(2026, 9, 16),
+    };
+    expect(await owners.reserve(first, 1, 1, [])).toBeUndefined();
+    expect(
+      await owners.reserve({ ...first, runId: "refused" }, 1, 1, [first.runId]),
+    ).toBe("daily_run_limit");
+    const next = {
+      ...first,
+      runId: "next",
+      createdAt: first.createdAt + 86_400_000,
+    };
+    expect(await owners.reserve(next, 1, 1, [])).toBeUndefined();
+    expect(
+      await owners.reserve(
+        { ...next, runId: "blocked", createdAt: next.createdAt + 86_400_000 },
+        1,
+        1,
+        [],
+      ),
+    ).toBe("active_run_limit");
+  });
+});
 
 describe("Cloudflare Access users", () => {
   it("need a valid sign-in: no token box, no JWT means 401", async () => {

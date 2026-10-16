@@ -45,7 +45,7 @@ export async function handleSession(
       throw new Failure(
         401,
         "access_required",
-        "Reload the page to sign in through Cloudflare Access.",
+        "Sign in through Cloudflare Access in a new tab, then return to your workspace and try again.",
       );
     }
     if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
@@ -85,7 +85,7 @@ export async function checkCaller(
       throw new Failure(
         401,
         "access_required",
-        "Reload the page to sign in through Cloudflare Access.",
+        "Sign in through Cloudflare Access in a new tab, then return to your workspace and try again.",
       );
     }
     email = await verifyAccessJwt(jwt, access, fetcher);

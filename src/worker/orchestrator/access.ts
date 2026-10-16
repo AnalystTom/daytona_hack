@@ -22,7 +22,7 @@ const refused = (why: string) =>
   new Failure(
     401,
     "access_required",
-    `Your Cloudflare Access sign-in ${why}. Reload the page to sign in again.`,
+    `Your Cloudflare Access sign-in ${why}. Sign in in a new tab, then return to your workspace and try again.`,
   );
 
 // Returns the configured team domain and audience, or null when Access is not set up.
@@ -71,7 +71,7 @@ export async function verifyAccessJwt(
   }
   const now = Date.now() / 1000;
   if (typeof claims.exp !== "number" || claims.exp <= now) {
-    throw refused("has expired; reload the page to sign in again");
+    throw refused("has expired");
   }
   if (typeof claims.nbf === "number" && claims.nbf > now + 60) {
     throw refused("is not valid yet");

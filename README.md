@@ -122,7 +122,7 @@ To turn it on (in the Cloudflare dashboard; nothing here configures Cloudflare):
 6. Set both on `reversy` (`npx wrangler secret put ACCESS_TEAM_DOMAIN`, the same for `ACCESS_AUD`, or as variables in its dashboard **Settings**), plus `RUNS_PER_DAY` / `ACTIVE_RUNS` / `RUN_MAX_MINUTES` if the defaults are wrong.
 
 Run API scripts need an Access identity with a verified email once Access is configured; the operator token and service-only identities cannot bypass ownership or limits.
-Landing entry links navigate to the protected `/start` document so Access can present interactive login. On expiry, reload the workspace to sign in again; Access failures never prompt for the operator token.
+Landing entry links navigate to the protected `/start` document so Access can present interactive login. On expiry, choose **Sign in in a new tab**, complete sign-in there, then return to the original workspace and retry the failed message or action. Keep the original tab open: it retains the current run, chat and failed brief. The sign-in link uses a separate tab with opener protection and never automatically starts or resends a run. Access failures never prompt for the operator token.
 
 Admission reserves an active slot, a daily allowance and ownership before any paid start. Invalid input consumes no allowance; failures after admission remain charged and recoverable through run history. Reservations count as active while startup is pending, including across UTC midnight. Expired runs are stopped before their slots are reused.
 

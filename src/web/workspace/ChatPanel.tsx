@@ -69,8 +69,13 @@ function Entry({
               <strong>{NOTICE_TITLE[entry.error]}.</strong> {entry.detail}
             </p>
             {entry.error === "access_required" && (
-              <a className="link-button" href="/workspace">
-                Sign in again
+              <a
+                className="link-button"
+                href="/start"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Sign in in a new tab
               </a>
             )}
             {entry.error === "operator_token" && (

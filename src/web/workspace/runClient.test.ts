@@ -69,7 +69,12 @@ describe("run client", () => {
         ),
         await signIn("old-token", reply(401, body)),
       ])
-        expect(result).toMatchObject({ ok: false, error: "access_required" });
+        expect(result).toMatchObject({
+          ok: false,
+          error: "access_required",
+          detail:
+            "Sign in in a new tab, then return to this workspace and try again. Keep this tab open.",
+        });
     }
   });
 

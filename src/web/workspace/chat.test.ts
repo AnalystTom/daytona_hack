@@ -191,6 +191,50 @@ describe("deliver", () => {
     expect(client.sendMessage).toHaveBeenCalledWith("run_1", "more");
   });
 
+  it("retains the run on Access refusal and only resends on an explicit retry", async () => {
+    const refused = {
+      ok: false,
+      error: "access_required",
+      detail: "Sign in in a new tab, then return here and try again.",
+    } as const;
+    const sendMessage = vi
+      .fn<RunClient["sendMessage"]>()
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValue({ ok: true, value: undefined });
+    const client: RunClient = { createRun: vi.fn(), sendMessage };
+    const result = await deliver("run_1", "keep the hero", client);
+    expect(result).toEqual({ runId: "run_1", error: refused });
+    expect(sendMessage).toHaveBeenCalledOnce();
+    expect(client.createRun).not.toHaveBeenCalled();
+    expect(await deliver(result.runId, "keep the hero", client)).toEqual({
+      runId: "run_1",
+    });
+    expect(sendMessage).toHaveBeenNthCalledWith(2, "run_1", "keep the hero");
+    expect(client.createRun).not.toHaveBeenCalled();
+  });
+
+  it("keeps a refused brief available for explicit retry without automatically starting another run", async () => {
+    const refused = {
+      ok: false,
+      error: "access_required",
+      detail: "Sign in in a new tab, then return here and try again.",
+    } as const;
+    const createRun = vi
+      .fn<RunClient["createRun"]>()
+      .mockResolvedValueOnce(refused)
+      .mockResolvedValue({ ok: true, value: { runId: "run_1" } });
+    const client: RunClient = { createRun, sendMessage: vi.fn() };
+    const brief = "https://example.com keep the hero";
+    expect(await deliver(undefined, brief, client)).toEqual({ error: refused });
+    expect(createRun).toHaveBeenCalledOnce();
+    expect(await deliver(undefined, brief, client)).toEqual({ runId: "run_1" });
+    expect(createRun).toHaveBeenCalledTimes(2);
+    expect(createRun).toHaveBeenNthCalledWith(2, {
+      url: "https://example.com",
+      goal: "keep the hero",
+    });
+  });
+
   it("keeps no run and returns the error when creation fails", async () => {
     const client: RunClient = {
       createRun: vi.fn(async () => notConnected),

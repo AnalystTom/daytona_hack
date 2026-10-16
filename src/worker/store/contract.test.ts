@@ -253,6 +253,18 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     const second = { ...a, runId: crypto.randomUUID() };
     expect(await owners.reserve(second, 1, 2, [first.runId])).toBeUndefined();
     expect(
+      await owners.reserve(
+        {
+          ...a,
+          runId: crypto.randomUUID(),
+          createdAt: a.createdAt + 86_400_000,
+        },
+        1,
+        2,
+        [],
+      ),
+    ).toBe("active_run_limit");
+    expect(
       await owners.reserve({ ...a, runId: crypto.randomUUID() }, 1, 2, [
         second.runId,
       ]),
@@ -269,7 +281,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
         2,
         [],
       ),
-    ).toBe("active_run_limit");
+    ).toBeUndefined();
     expect(
       await owners.reserve(
         { ...a, runId: crypto.randomUUID(), owner: "other@example.com" },
