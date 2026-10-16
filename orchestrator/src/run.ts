@@ -311,6 +311,8 @@ export class Run extends DurableObject<Env> {
       await this.daytona
         .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
         .catch(() => {});
+    if (this.s.signInPaths?.length)
+      await endSavedSignIn(this.env, this.s.id).catch(() => {});
     this.s.phase = "stopped";
     await this.save();
     await this.emit("phase", { phase: "stopped" });

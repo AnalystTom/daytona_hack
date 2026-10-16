@@ -155,4 +155,26 @@ describe("Run sign-in handoff", () => {
     await expect(run.resumeSignIn()).rejects.toThrow("no sign-in is pending");
     await expect(run.skipSignIn()).rejects.toThrow("no sign-in is pending");
   });
+
+  it("ends the saved sign-in session when stopped while awaiting sign-in", async () => {
+    const ctx = fakeCtx();
+    const run = new Run(ctx as never, {} as Env);
+    await ctx.loaded();
+    captureMock.mockResolvedValue({ status: "captured", items: [] });
+    await run.start("run-1", "https://example.com/", "copy it");
+    await run.approveSpec();
+    captureMock.mockResolvedValueOnce({
+      status: "captured",
+      items: [redirected],
+    });
+    await run.alarm();
+    vi.mocked(endSavedSignIn).mockRejectedValueOnce(
+      new Error("Evidence storage is not configured"),
+    );
+
+    const state = await run.stop();
+
+    expect(endSavedSignIn).toHaveBeenCalledWith(expect.anything(), "run-1");
+    expect(state.phase).toBe("stopped");
+  });
 });
