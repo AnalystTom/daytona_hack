@@ -124,7 +124,7 @@ export function stoppedPages(records: EvidenceRecord[]): string[] {
   ];
 }
 
-/** Ends the run's saved sign-in session so a skipped sign-in does not stay open. */
+/** Ends the run's saved sign-in session on skip or stop. */
 export async function endSavedSignIn(env: Env, runId: string) {
   if (!env.ANCHORBROWSER_API_KEY) return;
   await endSignIn(

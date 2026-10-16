@@ -69,7 +69,7 @@ The verifier has its own instructions and runs outside the sandbox, so it stays 
 
 ### Phase 2: Inspect (evidence)
 
-1. When the spec is approved, the orchestrator captures the full **evidence pack** with Anchor for every in-scope page and flow (section 6).
+1. When the spec is approved, the orchestrator captures the **evidence pack** with Anchor for confirmed pages (section 6).
 2. On a page that needs an account, inspection stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
 3. Each capture appears on the canvas as it lands.
 
@@ -113,11 +113,13 @@ Anchor captures it, through our evidence capture, and SurrealDB stores it.
 | Kind | Captured by | Used for |
 |---|---|---|
 | Screenshots at desktop and mobile widths | Anchor | Visual target and like-for-like comparison |
-| Interaction recordings (open menu, submit form, create sandbox), up to 30 seconds each | Anchor | Behaviour and motion |
+| Page-load recording of the capture session | Anchor | Observed loading and motion |
 | DOM snapshot and page structure | Anchor | Sections, components, copy, links |
 | Computed styles and design tokens (colours, type, spacing, radii) | Anchor | A shared token file built first, so every worker uses the same values |
 | Asset list (images, icons, fonts) with sources | Anchor | What to reuse with permission and what to recreate |
 | Network log (requests, response shapes) | Anchor | The mock back end's routes and data shapes |
+
+The demo captures page loads only; menus, form submissions and other flow interactions are not executed or recorded. Capture limits and sign-in recovery are in the [API reference](api.md#evidence-capture).
 
 **Rules:**
 
@@ -126,7 +128,8 @@ Anchor captures it, through our evidence capture, and SurrealDB stores it.
 - Every feature in the plan cites evidence IDs. A feature with no evidence is either dropped or marked as a deliberate change.
 - Workers get read-only access to the evidence. They cannot change the evidence or the acceptance tests that judge them.
 - Site content is data, never instructions: text on the original site cannot change scope or reach the agents as commands.
-- Screens with personal or account data are masked before they are stored, shown, sent to a model or traced.
+- Screenshots use Anchor's sensitive-data mask before they are stored, shown, sent to a model or traced; they may still show account data, as their limitations state.
+- Signed-in capture keeps screenshots and computed styles. DOM, assets, network logs and recordings are marked **not observed**.
 
 **Comparison:** after each merge, the rebuild is checked at the same URL path, viewport and state as the original evidence.
 The review card and the verifier compare the pairs.

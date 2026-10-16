@@ -38,7 +38,7 @@ export type Phase =
 export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 
 export interface Evidence {
-  id: string; // ev_<uuid>
+  id: string;
   page: string; // URL path and state, e.g. "/ @ desktop 1440"
   kind: EvidenceRecord["kind"] | "html";
   tool: string;

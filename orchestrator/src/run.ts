@@ -155,7 +155,7 @@ export class Run extends DurableObject<Env> {
     return [...m.values()];
   }
 
-  /** One of this run's evidence files, read from SurrealDB. */
+  /** Reads only this run's evidence, from SurrealDB or legacy Durable Object blobs. */
   async evidenceFile(id: string) {
     const evidence = this.s?.evidence.find((e) => e.id === id);
     if (!evidence) return null;

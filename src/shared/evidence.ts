@@ -25,7 +25,7 @@ export const CaptureScope = z.object({
 export type CaptureScope = z.infer<typeof CaptureScope>;
 
 export const CaptureRequest = z.object({
-  // first_look: one desktop screenshot per path. full_pack: every kind Anchor can capture.
+  // Capture modes follow docs/orchestrator/api.md#evidence-capture.
   mode: z.enum(["first_look", "full_pack"]),
   scope: CaptureScope,
   // start: open an Anchor live session for the user to sign in themselves.
@@ -58,7 +58,7 @@ const normalisePath = (path: string) =>
 export const redactQuery = (value: string) =>
   value.replace(/[?#][^\s"']*/g, "");
 
-// Only the approved origin and paths are in scope; a trailing slash is not a different page.
+// A scoped query must match exactly; queryless paths allow any query. Trailing slashes are equivalent.
 export function inScope(url: string, scope: CaptureScope): boolean {
   let parsed: URL;
   try {
