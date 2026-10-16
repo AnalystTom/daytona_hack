@@ -6,6 +6,7 @@ import { Daytona, shq } from "./daytona";
 import {
   capture,
   captureScope,
+  endSavedSignIn,
   evidenceStore,
   isStoredEvidenceId,
   maxPaths,
@@ -265,6 +266,7 @@ export class Run extends DurableObject<Env> {
   /** Plan without the stopped pages. */
   async skipSignIn() {
     this.awaitingSignIn();
+    await endSavedSignIn(this.env, this.s.id);
     return this.continueInspection("plan");
   }
 

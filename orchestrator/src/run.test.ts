@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { EvidenceRecord } from "../../src/shared/evidence";
 import { CaptureError, leftScope } from "../../src/worker/evidence/capture";
-import { capture } from "./inspect";
+import { capture, endSavedSignIn } from "./inspect";
 import { Run } from "./run";
 import type { Env } from "./types";
 
@@ -16,6 +16,7 @@ vi.mock("cloudflare:workers", () => ({
 vi.mock("./inspect", async (original) => ({
   ...(await original<typeof import("./inspect")>()),
   capture: vi.fn(),
+  endSavedSignIn: vi.fn(),
 }));
 vi.mock("./services", () => ({
   tracing: {},
@@ -86,7 +87,10 @@ const redirected: EvidenceRecord = {
   byteLength: 0,
 };
 
-beforeEach(() => captureMock.mockReset());
+beforeEach(() => {
+  captureMock.mockReset();
+  vi.mocked(endSavedSignIn).mockReset();
+});
 
 describe("Run sign-in handoff", () => {
   it("pauses for sign-in, survives a resume with no session, then plans on skip", async () => {
@@ -131,7 +135,9 @@ describe("Run sign-in handoff", () => {
     expect(state.phase).toBe("awaiting_sign_in");
     expect(state.chat.at(-1)?.text).toContain("No sign-in session");
 
+    expect(endSavedSignIn).not.toHaveBeenCalled();
     await run.skipSignIn();
+    expect(endSavedSignIn).toHaveBeenCalledWith(expect.anything(), "run-1");
     await run.alarm();
     state = await run.getState();
     expect(state.phase).toBe("planned");

@@ -5,7 +5,11 @@ import {
   CaptureScope,
   type EvidenceRecord,
 } from "../../src/shared/evidence";
-import { captureRun, leftScope } from "../../src/worker/evidence/capture";
+import {
+  captureRun,
+  endSignIn,
+  leftScope,
+} from "../../src/worker/evidence/capture";
 import {
   type EvidenceStore,
   evidenceIdPattern,
@@ -98,6 +102,15 @@ export function stoppedPages(records: EvidenceRecord[]): string[] {
       r.limitations.some((l) => l.includes(leftScope)),
   );
   return [...new Set(left.map((r) => new URL(r.url).pathname))];
+}
+
+/** Ends the run's saved sign-in session so a skipped sign-in does not stay open. */
+export async function endSavedSignIn(env: Env, runId: string) {
+  if (!env.ANCHORBROWSER_API_KEY) return;
+  await endSignIn(
+    { anchorApiKey: env.ANCHORBROWSER_API_KEY, store: evidenceStore(env) },
+    runId,
+  );
 }
 
 /** Runs one capture; every stored record also goes to `landed` as it is written. */
