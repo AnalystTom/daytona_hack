@@ -75,7 +75,7 @@ function EvidenceCaption({ item }: { item: CanvasEvidence }) {
 }
 
 function ScreenshotCard({ item }: { item: CanvasEvidence }) {
-  const { src, error } = useEvidenceSrc(item.src);
+  const { src, error } = useEvidenceSrc(item.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">

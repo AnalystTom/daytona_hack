@@ -70,7 +70,13 @@ interface State {
   tasks: Task[];
   sandboxId?: string;
   previewUrl?: string;
-  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup" | "stop" | "report";
+  pending?:
+    | "inspect"
+    | "resume_sign_in"
+    | "plan"
+    | "build_setup"
+    | "stop"
+    | "report";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   report?: ReportDissection;
   demo?: boolean;
@@ -275,6 +281,26 @@ export class Run extends DurableObject<Env> {
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
     await this.beforeWork();
+    if (isGoldmanDemo(url, goal)) {
+      this.s.demo = true;
+      this.s.spec.approved = true;
+      this.s.spec.pages[0].confirmed = true;
+      this.s.spec.pages[0].notes =
+        "Report figures, editable investment breakdown, source locations and bounded online source research";
+      this.s.spec.flows = [];
+      this.s.phase = "inspecting";
+      this.s.pending = "report";
+      await this.emit("spec", this.s.spec, signal);
+      await this.emit("phase", { phase: this.s.phase }, signal);
+      await this.addChat(
+        "assistant",
+        "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed.",
+        signal,
+      );
+      await this.save(signal);
+      await this.ctx.storage.setAlarm(Date.now() + 100);
+      return this.s;
+    }
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
     if (signal.aborted) return this.s;
@@ -306,26 +332,6 @@ export class Run extends DurableObject<Env> {
       await this.save(signal);
       await this.emit("evidence", evidence, signal);
       await this.emit("spec", this.s.spec, signal);
-    }
-    if (isGoldmanDemo(url, goal)) {
-      this.s.demo = true;
-      this.s.spec.approved = true;
-      this.s.spec.pages[0].confirmed = true;
-      this.s.spec.pages[0].notes =
-        "Report figures, editable investment breakdown, source locations and bounded online source research";
-      this.s.spec.flows = [];
-      this.s.phase = "inspecting";
-      this.s.pending = "report";
-      await this.emit("spec", this.s.spec, signal);
-      await this.emit("phase", { phase: this.s.phase }, signal);
-      await this.addChat(
-        "assistant",
-        "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed.",
-        signal,
-      );
-      await this.save(signal);
-      await this.ctx.storage.setAlarm(Date.now() + 100);
-      return this.s;
     }
     try {
       const result = await this.traced(
@@ -411,6 +417,7 @@ export class Run extends DurableObject<Env> {
         this.s.id,
         capture.article,
         signal,
+        this.beforeWork,
       );
       if (this.reportStopped()) return;
       attachRegions(
@@ -752,11 +759,10 @@ export class Run extends DurableObject<Env> {
       if (
         this.s.pending !== "stop" &&
         (this.s.phase === "inspecting" || this.s.phase === "planning")
-      )
-        {
-          this.s.phase = "failed";
-          await this.emit("phase", { phase: "failed" });
-        }
+      ) {
+        this.s.phase = "failed";
+        await this.emit("phase", { phase: "failed" });
+      }
       if (this.s.pending !== "stop" && this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }

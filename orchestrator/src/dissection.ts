@@ -293,6 +293,7 @@ export async function dissect(
   runId: string,
   article: { html: string; url: string; capturedAt: string; hash: string },
   signal?: AbortSignal,
+  beforeWork?: () => Promise<void>,
 ) {
   signal?.throwIfAborted();
   const figures = extractFigures(article.html);
@@ -407,6 +408,7 @@ export async function dissect(
     }[];
   }>(env, {
     name: "trace_report_sources",
+    beforeCall: beforeWork,
     signal,
     effort: "medium",
     webSearch: searchBudget,
