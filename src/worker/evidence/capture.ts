@@ -54,7 +54,7 @@ export { leftScope } from "../../shared/evidence";
 
 const noCodeExecution = "Anchor code execution is not enabled on this account";
 
-// The screenshot tool follows redirects unseen, so the scope guard checks where the URL lands first.
+// HTTP preflight rejects known off-scope landings; it cannot verify the screenshot tool's final URL.
 // Every hop must pass the run URL checks (https, public host) before it is fetched.
 const maxHops = 5;
 async function landingUrl(start: string) {
@@ -207,7 +207,7 @@ export async function captureRun(
     items.push(record);
     return record.id;
   };
-  // Set on the first refusal and kept for the run, so execute-code is not retried per page.
+  // Set on the first refusal and kept for this capture pass, so execute-code is not retried per page.
   let fallback = false;
   // Final URLs of pages that left the scope; the session recording shows them too.
   const outOfScope: string[] = [];

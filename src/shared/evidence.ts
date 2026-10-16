@@ -36,7 +36,7 @@ export type CaptureRequest = z.infer<typeof CaptureRequest>;
 
 export const EvidenceRecord = EvidenceItem.extend({
   runId: z.string().min(1),
-  // The page URL the item was captured from (or attempted, when not observed).
+  // Requested page URL, not necessarily the final browser URL.
   url: z.string().min(1),
   contentType: z.string().min(1),
   byteLength: z.int().nonnegative(),
