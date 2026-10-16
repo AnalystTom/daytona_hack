@@ -5,6 +5,7 @@ import {
   ReportDissection,
 } from "../../src/shared/report";
 import { reportContractExample } from "../../src/shared/report.test-data";
+import { runView } from "../../src/web/workspace/orchestrator";
 import { captureReport } from "./report-capture";
 import { dissect } from "./dissection";
 import { latestReport, saveEdit, saveReport } from "./report-store";
@@ -59,7 +60,7 @@ vi.mock("./tracing", () => ({
 
 afterEach(() => vi.clearAllMocks());
 
-function createRun() {
+function createRun(env: Partial<Env> = {}) {
   const data = new Map<string, unknown>();
   const ctx = {
     blockConcurrencyWhile: vi.fn(),
@@ -69,17 +70,136 @@ function createRun() {
       put: async (key: string, value: unknown) => {
         data.set(key, structuredClone(value));
       },
+      delete: async (key: string) => data.delete(key),
+      list: async ({ prefix, start }: { prefix: string; start: string }) =>
+        new Map(
+          [...data].filter(([key]) => key.startsWith(prefix) && key >= start),
+        ),
       setAlarm: vi.fn(),
       deleteAlarm: vi.fn(),
     },
   };
   const run = new Run(
     ctx as unknown as DurableObjectState,
-    { MAX_WORKERS: "12" } as Env,
+    { MAX_WORKERS: "12", ...env } as Env,
   );
   return { run, ctx, data };
 }
 const report = () => ReportDissection.parse(reportContractExample);
+
+it.each([false, true])(
+  "replays only originating capture evidence after research fails, prior screenshot=%s",
+  async (hasScreen) => {
+    const previous = createRun();
+    const priorReport = report();
+    priorReport.edits.f1 = { label: "Prior edit", value: "Prior value" };
+    const makeCapture = (html: string, screenshot: boolean) => ({
+      article: {
+        html,
+        url: GOLDMAN_URL,
+        capturedAt: priorReport.completedAt,
+        hash: html,
+      },
+      evidence: [
+        {
+          id: "ev_report_html",
+          kind: "html" as const,
+          page: "/",
+          tool: "fetch",
+          status: "observed" as const,
+          capturedAt: priorReport.completedAt,
+          hash: html,
+          summary: html,
+          limits: "Captured HTML",
+        },
+        {
+          id: "ev_report_screen",
+          kind: "screenshot" as const,
+          page: "/",
+          tool: "anchor",
+          status: screenshot
+            ? ("observed" as const)
+            : ("not_observed" as const),
+          capturedAt: priorReport.completedAt,
+          hash: screenshot ? html : "",
+          summary: "Screenshot",
+          limits: screenshot ? "Captured screenshot" : "Not observed",
+        },
+      ],
+      blobs: {
+        ev_report_html: html,
+        ...(screenshot
+          ? { ev_report_screen: new Uint8Array([1, 2, 3]).buffer }
+          : {}),
+      },
+      boxes: [],
+      pageWidth: 1440,
+      pageHeight: 900,
+    });
+    vi.mocked(captureReport).mockResolvedValueOnce(
+      makeCapture("prior capture", hasScreen),
+    );
+    vi.mocked(dissect).mockResolvedValueOnce(priorReport);
+    await previous.run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await previous.run.alarm();
+    const priorState = await previous.run.getState();
+    const runs = {
+      idFromName: vi.fn((id: string) => id),
+      get: vi.fn(() => previous.run),
+    };
+    const current = createRun({
+      RUNS: runs as unknown as DurableObjectNamespace,
+    });
+    vi.mocked(captureReport).mockResolvedValueOnce(
+      makeCapture("failed live capture", true),
+    );
+    vi.mocked(dissect).mockRejectedValueOnce(new Error("Research failed"));
+    vi.mocked(latestReport).mockResolvedValueOnce({
+      report: priorReport,
+      evidence: priorState.evidence,
+    });
+    await current.run.start("new-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await current.run.alarm();
+    const state = await current.run.getState();
+    expect(state.report).toMatchObject({
+      edits: {},
+      replay: { runId: "test-run", completedAt: priorReport.completedAt },
+    });
+    expect(state.report?.figures).toEqual(priorReport.figures);
+    expect(state.evidence).toEqual(priorState.evidence);
+    expect(current.data.has("blob:ev_report_html")).toBe(false);
+    expect(current.data.has("blob:ev_report_screen")).toBe(false);
+    const html = await current.run.evidenceFile("ev_report_html");
+    expect(new TextDecoder().decode(html?.content)).toBe("prior capture");
+    expect(await current.run.evidenceFile("ev_report_screen")).toEqual(
+      hasScreen
+        ? { contentType: "image/png", content: new Uint8Array([1, 2, 3]) }
+        : null,
+    );
+    const view = runView("new-run", await current.run.events(0));
+    expect(view.evidence).toHaveLength(hasScreen ? 1 : 0);
+    expect(
+      view.evidence.every(
+        (e) =>
+          e.src.startsWith("/api/v1/runs/test-run/evidence/") &&
+          e.contentHash === "prior capture",
+      ),
+    ).toBe(true);
+    expect(runs.idFromName).toHaveBeenCalledWith("test-run");
+    expect(priorReport.edits.f1.value).toBe("Prior value");
+    await current.run.editReport("f1", {
+      label: "New edit",
+      value: "New value",
+    });
+    expect(saveEdit).toHaveBeenLastCalledWith(
+      expect.anything(),
+      "new-run",
+      "f1",
+      { label: "New edit", value: "New value" },
+    );
+    expect(priorReport.edits.f1.value).toBe("Prior value");
+  },
+);
 
 describe("bounded Goldman Sachs demo", () => {
   it("approves the fixed scope and research plan then persists a dashboard without a build worker", async () => {

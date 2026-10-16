@@ -22,7 +22,7 @@ const STEP = 1.25;
 const KEY_MOVE = 20;
 // A press that moves less than this is a click, not a drag.
 const DRAG_SLOP = 4;
-const INTERACTIVE = "a, button, input, textarea, select, video, label";
+const INTERACTIVE = "a, button, input, textarea, select, video, label, summary";
 
 const clampZoom = (zoom: number) =>
   Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));

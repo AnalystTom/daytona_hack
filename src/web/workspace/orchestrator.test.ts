@@ -286,4 +286,22 @@ describe("runView", () => {
     ]);
     expect(odd).toEqual({ hasPreview: false, evidence: [], board: [] });
   });
+  it("clears capture cards on reset and removes unavailable replacements", () => {
+    const screenshot = events.find((e) => e.type === "evidence");
+    expect(screenshot).toBeDefined();
+    if (!screenshot) throw new Error("Missing screenshot event");
+    expect(
+      runView("r1", [screenshot, ev("evidence_reset", {})]).evidence,
+    ).toEqual([]);
+    expect(
+      runView("r1", [
+        screenshot,
+        ev("evidence", {
+          ...(screenshot.data as Record<string, unknown>),
+          status: "not_observed",
+          url: undefined,
+        }),
+      ]).evidence,
+    ).toEqual([]);
+  });
 });

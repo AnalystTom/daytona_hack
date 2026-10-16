@@ -164,8 +164,8 @@ export function runView(
         // A screenshot that was not observed still gets a card saying why.
         const missing = e.status === "not_observed" && kind === "screenshot";
         if (e.kind !== kind) break;
-        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
         view.evidence = view.evidence.filter((x) => x.id !== e.id);
+        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
         view.evidence.push({
           id: e.id,
           kind,
@@ -177,6 +177,10 @@ export function runView(
           limitations: e.limits ? [e.limits] : [],
           src: missing ? undefined : `/api/v1${e.url}`,
         });
+        break;
+      }
+      case "evidence_reset": {
+        view.evidence = [];
         break;
       }
       case "plan": {

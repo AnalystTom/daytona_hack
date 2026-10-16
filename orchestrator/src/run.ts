@@ -178,10 +178,17 @@ export class Run extends DurableObject<Env> {
     return [...m.values()];
   }
 
-  /** Reads only this run's evidence, from SurrealDB or legacy Durable Object blobs. */
-  async evidenceFile(id: string) {
+  async evidenceFile(
+    id: string,
+  ): Promise<{ contentType: string; content: Uint8Array } | null> {
     const evidence = this.s?.evidence.find((e) => e.id === id);
     if (!evidence) return null;
+    if (this.s.report?.replay) {
+      const origin = this.env.RUNS.get(
+        this.env.RUNS.idFromName(this.s.report.replay.runId),
+      ) as DurableObjectStub<Run>;
+      return origin.evidenceFile(id);
+    }
     if (!isStoredEvidenceId(id)) {
       const content = await this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
       return content
@@ -408,10 +415,13 @@ export class Run extends DurableObject<Env> {
       if (!this.s.demo) throw error;
       const previous = await latestReport(this.env);
       if (this.reportStopped()) return;
-      if (!previous)
+      if (!previous || previous.report.runId === this.s.id)
         throw new Error(
           `Live dissection failed; no successful replay is available. ${String(error)}`,
         );
+      for (const evidence of this.s.evidence)
+        await this.ctx.storage.delete(`blob:${evidence.id}`);
+      if (this.reportStopped()) return;
       this.s.report = {
         ...previous.report,
         runId: this.s.id,
@@ -423,8 +433,15 @@ export class Run extends DurableObject<Env> {
           reason: String(error),
         },
       };
-      this.s.evidence = previous.evidence;
-      for (const evidence of previous.evidence)
+      this.s.evidence = previous.evidence.map((evidence) => ({
+        ...evidence,
+        url:
+          evidence.url && evidence.status !== "not_observed"
+            ? `/runs/${previous.report.runId}/evidence/${evidence.id}`
+            : undefined,
+      }));
+      await this.emit("evidence_reset", {});
+      for (const evidence of this.s.evidence)
         await this.emit("evidence", evidence);
       await saveReport(
         this.env,
