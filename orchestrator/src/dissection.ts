@@ -336,24 +336,27 @@ function quantity(value: string, unit = "") {
   };
 }
 
-function observedQuantity(quote: string, value: string) {
+function observedQuantity(quote: string, value: string, unit: string) {
   const claimed = quantity(value);
   if (!claimed) return null;
   const text = cleanText(quote);
   for (const match of text.matchAll(
-    /(?<![\p{L}\p{N}_.,+−–$€£-])(?:[$€£]\s*)?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*[a-z]+|\s*%)?(?![\p{L}\p{N}_+−–-]|[.,]\d)/giu,
+    /(?<![\p{L}\p{N}_.,+−–$€£-])(?:[$€£]\s*)?\d+(?:,\d{3})*(?:\.\d+)?(?:\s*(?:trillions?|billions?|millions?|bn|bps)\b|\s*%)?(?![\p{L}\p{N}_+−–-]|[.,]\d)/giu,
   )) {
+    const before = text.slice(0, match.index);
+    const after = text.slice(match.index + match[0].length);
+    const parsed = quantity(match[0]);
+    if (!parsed) continue;
     if (
-      /\b[A-Z]{3}\s*$/.test(text.slice(0, match.index)) ||
-      /^\s+(?:in\s+)?[A-Z]{3}\b/.test(text.slice(match.index + match[0].length))
+      /\b[A-Z]{3}\s*$/.test(before) ||
+      /^[\s,:;]+(?:in\s+)?[A-Z]{3}\b/.test(after) ||
+      (/[$€£]/.test(parsed.unit) &&
+        (/[()[\]{}]\s*$/.test(before) ||
+          /^[\s,:;]*(?:in\s+)?[()[\]{}]/.test(after))) ||
+      (unit !== "year" && /\d$/.test(match[0]) && /^\s*[a-z]/i.test(after))
     )
       continue;
-    const parsed = quantity(match[0]);
-    if (
-      parsed &&
-      claimed.unit === parsed.unit &&
-      claimed.amount === parsed.amount
-    )
+    if (claimed.unit === parsed.unit && claimed.amount === parsed.amount)
       return { ...parsed, value: match[0] };
   }
   return null;
@@ -577,7 +580,7 @@ For each figure return a trace: matches only if original source states the SAME 
   for (const f of figures) {
     const t = researched.traces.find((t) => t.figureId === f.id);
     const figure = quantity(f.value, f.unit);
-    const observed = t && observedQuantity(t.quote, t.value);
+    const observed = t && observedQuantity(t.quote, t.value, f.unit);
     const cap =
       t &&
       t.status !== "not_found" &&

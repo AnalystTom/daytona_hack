@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { SurrealRunStore } from "../../src/worker/store/surreal";
-import { ReportDissection } from "../../src/shared/report";
+import { GOLDMAN_URL, ReportDissection } from "../../src/shared/report";
 import { reportContractExample } from "../../src/shared/report.test-data";
 import { latestReport, saveEdit, saveReport } from "./report-store";
 import type { Env } from "./types";
@@ -72,3 +72,31 @@ it("stores user edits separately from immutable captured originals", async () =>
     "UPDATE type::record('report_figure'",
   );
 });
+
+it.each([true, false])(
+  "keeps resolved provenance separate from replay identity for demo=%s",
+  async (demo) => {
+    const current = snapshot();
+    const resolved = `${GOLDMAN_URL}/`;
+    current.report.sources[0].url = resolved;
+    current.report.sources[0].quoteUrl = resolved;
+    let saved: Record<string, unknown> = {};
+    vi.spyOn(SurrealRunStore.prototype, "query")
+      .mockImplementationOnce(async (_sql, vars) => {
+        saved = vars ?? {};
+        return [];
+      })
+      .mockImplementationOnce(async () => [{ snapshot: saved.snapshot }])
+      .mockImplementationOnce(async (_sql, vars) => [
+        saved.demo && saved.successful && saved.target === vars?.target
+          ? [{ snapshot: saved.snapshot }]
+          : [],
+      ]);
+    await saveReport(env, current, demo);
+    expect(saved.target).toBe(demo ? GOLDMAN_URL : resolved);
+    expect(
+      JSON.parse(saved.snapshot as string).report.sources[0],
+    ).toMatchObject({ url: resolved, quoteUrl: resolved });
+    expect(await latestReport(env)).toEqual(demo ? current : undefined);
+  },
+);

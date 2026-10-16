@@ -39,8 +39,9 @@ export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
     COMMIT TRANSACTION;`,
     {
       id: report.runId,
-      target:
-        report.sources.find((source) => source.id === "article")?.url ?? "",
+      target: demo
+        ? GOLDMAN_URL
+        : (report.sources.find((source) => source.id === "article")?.url ?? ""),
       demo,
       successful: !report.replay,
       completedAt: report.completedAt,
