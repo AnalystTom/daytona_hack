@@ -28,7 +28,7 @@ const foreignOrigin = () =>
 const sign = (secret: string, expires: number) =>
   runBridgeToken(secret, `session:${expires}`);
 
-// POST /api/v1/session swaps the operator token for a signed HttpOnly cookie; DELETE signs out.
+// Before Access setup, POST swaps the operator token for a signed HttpOnly cookie; DELETE clears it.
 export async function handleSession(
   request: Request,
   env: { OPERATOR_TOKEN?: string } & AccessEnv,

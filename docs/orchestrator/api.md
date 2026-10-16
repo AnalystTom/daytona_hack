@@ -23,7 +23,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 | `POST /runs/:id/sign-in/resume` | | After sign-in: captures the stopped pages in that session, then plans (async; watch events) |
 | `POST /runs/:id/sign-in/skip` | | Plans without the stopped pages (async) |
 | `POST /runs/:id/build` | | Start build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." |
-| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, kills workers and marks queued/building tasks `stopped` |
+| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active inspection and planning writes, closes active Anchor sessions and saved sign-in sessions, and confirms worker cancellation or an already stopped, archived or deleted sandbox, then marks open tasks `stopped`; provider-read or cancellation failures keep `pending: "stop"` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -35,7 +35,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done`, or `stopped` / `failed`.
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
-A run still working `RUN_MAX_MINUTES` (default 120) after it started is stopped with an `error` event saying so, and from then on refuses chat messages.
+Before paid work and on each alarm, the orchestrator enforces the original start deadline from the [README's lifetime limit](../../README.md#sign-in-with-cloudflare-access). Expiry uses the same confirmed-cancellation path as explicit stop; cancellation failures leave the run stopping and block further work. Stopped and failed runs refuse chat messages. Final verification completes before the phase becomes `done`; a final verification error marks the run `failed` unless cancellation is underway.
 
 ## Events
 
@@ -71,11 +71,9 @@ The [agent spec's verifier contract](spec.md#9-verifier) defines plan, task and 
 
 ## Deployed
 
-No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
-the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*`, both with `Authorization: Bearer <OPERATOR_TOKEN>`
-(reads included; `sandboxId` is dropped from `/api/v1/runs` state and event JSON replies; evidence files retain their stored bytes unchanged).
-`/api/v1/runs/*` also accepts the signed session cookie that `POST /api/v1/session` sets on this site, or a Cloudflare Access sign-in, which limits the user to their own runs (see the README's Run API).
-`orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
+No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding.
+The public `/api/v1/runs/*` front door and operator proxy follow the [README's access policy](../../README.md#sign-in-with-cloudflare-access); `sandboxId` is dropped from front-door state and event JSON replies; captured evidence files retain their stored bytes unchanged.
+`orchestrator/scripts/demo-run.sh` drives one full run with `REVERSY_URL` and `OPERATOR_TOKEN` only before Access setup.
 
 ## Evidence capture
 

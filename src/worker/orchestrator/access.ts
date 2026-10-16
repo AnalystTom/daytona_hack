@@ -1,7 +1,8 @@
 import { Failure, notConfigured } from "../runs/api";
 
 // Cloudflare Access sits in front of the workspace and its API and signs each request it lets
-// through with a JWT naming the user. Without both bindings, runs stay operator-only.
+// through with a JWT naming the user. With neither binding, runs stay operator-only;
+// configuring only one binding fails closed.
 export interface AccessEnv {
   // The Zero Trust team domain, for example `myteam.cloudflareaccess.com`.
   ACCESS_TEAM_DOMAIN?: string;

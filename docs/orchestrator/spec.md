@@ -177,13 +177,12 @@ A failed or stopped task stays on the board with its reason and next action.
 ## 8. Access and network
 
 - The orchestrator has no public access.
-  Only our site calls it, through a Cloudflare service binding, and only we can test it, with our own operator token.
+  Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
 - The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
   The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
 - Knowing a run ID is not enough to view or use a run.
-  Every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- There are no user accounts, sign-ups or login system in the demo; the existing token gates stay.
+  Run authentication and workspace ownership follow the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
 
 ## 9. Verifier
 
@@ -201,7 +200,7 @@ A failed or stopped task stays on the board with its reason and next action.
 - The user's chat messages reach the orchestrator at any stage.
 - The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
-- Each run is limited to 2 hours.
+- Run admission and lifetime limits are defined in the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
 - If the sandbox dies, the run is marked failed; the records in SurrealDB keep everything captured so far.
 - Every steer, override, approval and failure is recorded with the run.
 
@@ -224,7 +223,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 
 - Demo engine: the Reversy orchestrator (Cloudflare Durable Object), enhanced with full Anchor capture. Firstmate in Daytona with no-mistakes is the second engine for later.
 - All models are OpenAI, including the verifier.
-- Each run is limited to 2 hours.
+- Run limits: see section 10.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - End of run: a live preview inside the app, with an optional deploy-live action.
 - Variants: the user promotes a variant and building continues from its snapshot.
@@ -232,8 +231,8 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 - Recordings are capped at 30 seconds.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
-- Runs are secure: every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: financial reports and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low). Backend inspection and REA limits are in section 6.
+- Run access: see section 8.
+- Out of the demo for now: financial reports. Backend inspection and REA limits are in section 6.
 
 ## 14. Open questions
 

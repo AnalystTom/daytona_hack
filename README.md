@@ -92,8 +92,8 @@ A model error, refusal, truncated reply or malformed verdict returns 502, never 
 ## Run API
 
 `/api/v1/runs` is the front door to the private `reversy-orchestrator` Worker (`orchestrator/`), reached through the `ORCHESTRATOR` service binding.
-Every route under it needs a Cloudflare Access sign-in, `Authorization: Bearer <OPERATOR_TOKEN>` or the operator session cookie, reads included; the routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
-`POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it.
+Every route under it requires authentication, reads included; [the access policy below](#sign-in-with-cloudflare-access) determines whether Cloudflare Access or the operator fallback applies. The routes and events are in [`docs/orchestrator/api.md`](docs/orchestrator/api.md).
+Before Access setup, `POST /api/v1/session` with `{ token }` swaps the operator token for a signed, HttpOnly `__Host-reversy_session` cookie valid for 12 hours (rotating `OPERATOR_TOKEN` signs every session out); `DELETE` clears it in either mode.
 Both need an `Origin` header naming this site. A run request whose `Origin` names another site gets 403, and so does a cookie-authenticated (or Access-authenticated) write without our `Origin`.
 `/api/v1/orchestrator/*` is bearer-only before Access setup and disabled when Access is configured.
 
@@ -105,12 +105,12 @@ A signed-in user never sees the operator-token box. They see and act on only the
 | Variable | Default | Limit |
 |---|---|---|
 | `RUNS_PER_DAY` | `3` | Runs one user may start per UTC day (`daily_run_limit`) |
-| `ACTIVE_RUNS` | `1` | Runs one user may have going at once, anything not `done`, `stopped` or `failed` (`active_run_limit`) |
-| `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: the orchestrator stops a run this long after it started, and the front door stops counting it as active |
+| `ACTIVE_RUNS` | `1` | Active reservations per user, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
+| `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: paid work is refused at the original admission deadline; expired slots require confirmed cancellation (or no stored run state) and successful storage cleanup |
 
 Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so Access users also need the `SURREALDB_*` bindings; without them their run routes answer 503.
 With both Access bindings configured, run routes require Access identity even if an operator bearer or old session cookie is supplied. Operator session creation and the `/api/v1/orchestrator/*` proxy are disabled. The operator fallback works only before Access setup.
-Without both Access bindings, everything behaves as before: the operator token is the only way in. Setting only one of them answers 503 naming the other.
+With neither Access binding, run routes accept `Authorization: Bearer <OPERATOR_TOKEN>` or the operator session cookie. Setting only one of them answers 503 naming the other.
 
 To turn it on (in the Cloudflare dashboard; nothing here configures Cloudflare):
 
@@ -124,7 +124,7 @@ To turn it on (in the Cloudflare dashboard; nothing here configures Cloudflare):
 Run API scripts need an Access identity with a verified email once Access is configured; the operator token and service-only identities cannot bypass ownership or limits.
 Landing entry links navigate to the protected `/start` document so Access can present interactive login. Run-client requests send `X-Requested-With: XMLHttpRequest` so Access expiry answers 401 instead of redirecting an API fetch. On expiry, choose **Sign in in a new tab**, complete sign-in there, then return to the original workspace and retry the failed message or action. Keep the original tab open: it retains the current run, chat and failed brief. The sign-in link uses a separate tab with opener protection and never automatically starts or resends a run. Access failures never prompt for the operator token.
 
-Admission reserves an active slot, a daily allowance and ownership before any paid start. Invalid input consumes no allowance; failures after admission remain charged and recoverable through run history. Reservations count as active while startup is pending, including across UTC midnight. User-requested chat, build and review continuations reacquire active admission for the same run before paid work; they preserve its original deadline and daily-run charge. A continuation is refused while another run occupies the limit. Expired runs are stopped before their slots are reused. If continuation cleanup fails, admission stays blocked until the original deadline (or a successful explicit stop). At that deadline, a later admission attempt retries the existing stop and cleanup path; failed cancellation or storage cleanup keeps the slot held. Admission skips retired reservations; history still includes them.
+Admission reserves an active slot, a daily allowance and ownership before any paid start. Invalid input consumes no allowance; failures after admission remain charged and recoverable through run history. Reservations count as active while startup is pending, including across UTC midnight. User-requested chat, build and review continuations reacquire active admission for the same run before paid work; they preserve its original deadline and daily-run charge. A continuation is refused while another run occupies the limit. Expired runs with stored state are stopped before their slots are reused; a missing-state reservation can retire because a delayed start retains the original deadline. If continuation cleanup fails, admission stays blocked until the original deadline (or a successful explicit stop). At that deadline, a later admission attempt retries the existing stop and cleanup path; failed cancellation or storage cleanup keeps the slot held. Admission skips retired reservations; history still includes them.
 
 The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
@@ -146,13 +146,13 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
 | `OPERATOR_TOKEN` | Operator fallback for run routes, session creation and `/api/v1/orchestrator/*` only before Access setup; the separate [evidence routes](#evidence-capture) still require it |
 | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | [Cloudflare Access](#sign-in-with-cloudflare-access) team domain and application audience tag; with both set, signed-in users reach their own runs without the operator token |
-| `RUNS_PER_DAY`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | Optional limits for Access users (defaults 3, 1 and 120) |
+| `RUNS_PER_DAY`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | [Limits and defaults](#sign-in-with-cloudflare-access); `RUN_MAX_MINUTES` also applies to operator runs in the orchestrator |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
 Without the SurrealDB bindings the store answers 503 naming the missing ones; without `ORCHESTRATOR` every run route does the same. Before Access setup, run routes also require `OPERATOR_TOKEN`.
 A missing or wrong token answers 401.
 
-Access policy: until Cloudflare Access is set up, the operator token is the only access control. With Access, run routes have per-user ownership and limits; the separate evidence routes stay operator-only and the operator proxy is disabled.
+See [the access policy](#sign-in-with-cloudflare-access) for run authentication and ownership; the separate evidence routes stay operator-only.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 
@@ -250,7 +250,7 @@ The orchestrator (`orchestrator/`) runs the same capture for its runs, with its 
 
 Artifact availability, fallback labels and redirect checks follow the [capture limits](docs/orchestrator/api.md#evidence-capture).
 Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
-Every route needs `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. There is no per-run ownership check (see the [run API's](#run-api) interim access policy).
+These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. They have no per-run ownership check; the [run access policy](#sign-in-with-cloudflare-access) does not authenticate these separate endpoints.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 

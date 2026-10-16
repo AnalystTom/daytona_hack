@@ -20,7 +20,7 @@ export interface OrchestratorEnv extends AccessEnv, StoreEnv {
   // Limits for Cloudflare Access users (the operator has none); unset or invalid means the default.
   RUNS_PER_DAY?: string;
   ACTIVE_RUNS?: string;
-  // Must match the orchestrator's RUN_MAX_MINUTES: an older run is stopped, so it is not counted.
+  // Must match the orchestrator's RUN_MAX_MINUTES; expired slots need confirmed cancellation.
   RUN_MAX_MINUTES?: string;
 }
 

@@ -27,6 +27,7 @@ export interface Owners {
 const fields =
   "record::id(id) AS runId, owner, createdAt, (revision ?? 0) AS revision, (busy ?? false) AS busy, (active ?? true) AS active";
 
+// Character arrays prevent SurrealDB JSON RPC from coercing UUID-prefixed owner emails.
 export function surrealOwners(db: SurrealRunStore): Owners {
   return {
     async get(runId) {
