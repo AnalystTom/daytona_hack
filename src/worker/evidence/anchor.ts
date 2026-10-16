@@ -84,6 +84,8 @@ export async function runSnippet<T>(
   return JSON.parse(result.output) as T;
 }
 
+const maxRecordingBytes = 25_000_000;
+
 // The session's primary recording as MP4 bytes, or null when Anchor has none ready.
 export async function primaryRecording(
   apiKey: string,
@@ -99,8 +101,18 @@ export async function primaryRecording(
       `Anchor recordings lookup failed with ${list.status}`,
     );
   }
-  const { data } = (await list.json()) as { data?: { items?: unknown[] } };
-  if (!data?.items?.length) return null;
+  const { data } = (await list.json()) as {
+    data?: { items?: { is_primary?: boolean; size?: number }[] };
+  };
+  const primary =
+    data?.items?.find((item) => item.is_primary) ?? data?.items?.[0];
+  if (!primary) return null;
+  // The file is held in memory and base64-encoded for SurrealDB, within a 128 MB Worker.
+  if ((primary.size ?? 0) > maxRecordingBytes) {
+    throw new AnchorError(
+      `Recording is ${Math.round((primary.size ?? 0) / 1e6)} MB, over the ${maxRecordingBytes / 1e6} MB storage limit`,
+    );
+  }
   const file = await call(
     apiKey,
     `/v1/sessions/${id}/recordings/primary/fetch`,

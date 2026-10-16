@@ -63,7 +63,10 @@ export async function captureRun(
       recording: false,
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
-    await deps.store.saveSignIn(runId, session.id);
+    await deps.store.saveSignIn(runId, {
+      sessionId: session.id,
+      origin: scope.origin,
+    });
     await deps.emit({
       type: "evidence.sign_in_requested",
       state: "awaiting_sign_in",
@@ -74,14 +77,26 @@ export async function captureRun(
   }
 
   const signedIn = request.signIn === "resume";
-  const sessionId = signedIn
-    ? await deps.store.takeSignIn(runId)
-    : (await anchor.createSession(key, { recording: full })).id;
-  if (!sessionId) {
-    throw new CaptureError(
-      "No sign-in session to resume for this run; start sign-in first.",
-      409,
-    );
+  let sessionId: string;
+  if (signedIn) {
+    const signIn = await deps.store.takeSignIn(runId);
+    if (!signIn) {
+      throw new CaptureError(
+        "No sign-in session to resume for this run; start sign-in first.",
+        409,
+      );
+    }
+    // A signed-in session only ever captures the origin the user signed in to.
+    if (signIn.origin !== scope.origin) {
+      await anchor.endSession(key, signIn.sessionId).catch(() => {});
+      throw new CaptureError(
+        "The sign-in session belongs to a different origin; start sign-in again.",
+        409,
+      );
+    }
+    sessionId = signIn.sessionId;
+  } else {
+    sessionId = (await anchor.createSession(key, { recording: full })).id;
   }
 
   const items: EvidenceRecord[] = [];
@@ -177,7 +192,9 @@ export async function captureRun(
         }
       }
     } catch (error) {
-      stopped = `Capture failed: ${error instanceof Error ? error.message : String(error)}`;
+      // Only browser failures become not_observed; storage failures must fail the capture.
+      if (!(error instanceof anchor.AnchorError)) throw error;
+      stopped = `Capture failed: ${error.message}`;
     }
 
     for (const expected of pending)

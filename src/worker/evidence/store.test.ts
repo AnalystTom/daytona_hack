@@ -99,11 +99,14 @@ describe("surrealStore (fixture SurrealDB responses)", () => {
 
   it("takes a sign-in session once", async () => {
     const requests = fakeSurreal([
-      surrealOk([{ sessionId: "s1" }]),
+      surrealOk([{ sessionId: "s1", origin: "https://example.com" }]),
       surrealOk([]),
     ]);
     const store = surrealStore(env);
-    expect(await store.takeSignIn("run_1")).toBe("s1");
+    expect(await store.takeSignIn("run_1")).toEqual({
+      sessionId: "s1",
+      origin: "https://example.com",
+    });
     expect(await store.takeSignIn("run_1")).toBeNull();
     expect(requests[0]?.sql).toBe("DELETE sign_in:`run_1` RETURN BEFORE");
   });

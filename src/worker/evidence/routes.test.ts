@@ -82,6 +82,9 @@ describe("evidence routes", () => {
     expect(await json.json()).toEqual(record);
     const content = await call(`/api/v1/evidence/${id}/content`, surreal);
     expect(content.headers.get("content-type")).toBe("text/html");
+    expect(content.headers.get("content-security-policy")).toBe(
+      "sandbox; default-src 'none'",
+    );
     expect(await content.text()).toBe("<h>");
   });
 

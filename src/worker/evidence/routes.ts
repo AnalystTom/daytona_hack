@@ -101,6 +101,9 @@ export async function handleEvidence(
       headers: {
         "content-type": record.contentType,
         "x-content-hash": record.contentHash,
+        // Captured pages are site content: never let them run on Reversy's origin.
+        "content-security-policy": "sandbox; default-src 'none'",
+        "x-content-type-options": "nosniff",
       },
     });
   }

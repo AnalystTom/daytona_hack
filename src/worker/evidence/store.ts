@@ -12,13 +12,19 @@ export const surrealBindings = [
 ] as const;
 type SurrealEnv = Record<(typeof surrealBindings)[number], string>;
 
+// A signed-in Anchor session, bound to the origin the user signed in to.
+export interface SignIn {
+  sessionId: string;
+  origin: string;
+}
+
 export interface EvidenceStore {
   putEvidence(record: EvidenceRecord, content: Uint8Array): Promise<void>;
   getEvidence(id: string): Promise<EvidenceRecord | null>;
   getContent(id: string): Promise<Uint8Array | null>;
-  saveSignIn(runId: string, sessionId: string): Promise<void>;
+  saveSignIn(runId: string, signIn: SignIn): Promise<void>;
   // Returns and forgets the run's sign-in session, so it is resumed once.
-  takeSignIn(runId: string): Promise<string | null>;
+  takeSignIn(runId: string): Promise<SignIn | null>;
 }
 
 // RPC bodies are capped at 4 MiB by default; 2 MiB of bytes is under 3 MiB as base64.
@@ -128,20 +134,22 @@ export function surrealStore(env: SurrealEnv): EvidenceStore {
       return out;
     },
 
-    async saveSignIn(runId, sessionId) {
+    async saveSignIn(runId, signIn) {
       await query(
         `UPSERT ${key("sign_in", runId, runIdPattern)} CONTENT $row`,
         {
-          row: { sessionId, createdAt: new Date().toISOString() },
+          row: { ...signIn, createdAt: new Date().toISOString() },
         },
       );
     },
 
     async takeSignIn(runId) {
-      const [before] = await query<{ sessionId: string }>(
+      const [before] = await query<SignIn>(
         `DELETE ${key("sign_in", runId, runIdPattern)} RETURN BEFORE`,
       );
-      return before?.sessionId ?? null;
+      return before
+        ? { sessionId: before.sessionId, origin: before.origin }
+        : null;
     },
   };
 }

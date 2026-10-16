@@ -183,6 +183,8 @@ Interaction recordings are not captured yet; a full pack keeps the session's pag
 
 Only the approved origin and paths are captured; a page that redirects anywhere else is stopped and its items are stored as `not_observed` with the reason.
 Until the run API's event function is on `main`, capture events are returned in the capture response, and `captureRun` takes an `emit` function.
+These routes do not check who is calling yet: run ownership and authentication come with the run API.
+Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 
 Worker bindings (secrets, set with `wrangler secret put`):
 
