@@ -127,6 +127,16 @@ The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (wit
 
 ## Deploy
 
+The public landing page opens with a click-to-play intro once per browser tab
+session. It uses the approved ten-second cut: three seconds of Daytona, five
+seconds of the beaver animation, and two seconds of Reversy. The web copy is
+compressed and silent. Finishing, skipping, pressing Escape, or a media error
+reveals the existing landing page. Reduced-motion visitors and direct section
+links go straight to the page. The intro is only on `/`; app routes open normally.
+
+The video and its first-frame poster are served from `public/intro/`. The original
+edit is `reversy-intro-v5-daytona-lead-10s.mp4` in the approved generated video pack.
+
 GitHub Actions (`.github/workflows/ci.yml`) runs format, lint, typecheck, test and build on every pull request and push.
 On a push to `main`, once CI passes, the Cloudflare wrangler action deploys `reversy-orchestrator` (`orchestrator/`) and then this Worker, which binds to it.
 
