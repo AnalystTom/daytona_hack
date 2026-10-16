@@ -245,10 +245,10 @@ export class Run extends DurableObject<Env> {
     this.tracer.root(`${url}\n${goal}`);
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
-    if (isReportGoal(goal)) {
-      this.s.demo = isGoldmanDemo(url, goal);
-      this.s.spec.approved = this.s.demo;
-      this.s.spec.pages[0].confirmed = this.s.demo;
+    if (isGoldmanDemo(url, goal)) {
+      this.s.demo = true;
+      this.s.spec.approved = true;
+      this.s.spec.pages[0].confirmed = true;
       this.s.spec.pages[0].notes =
         "Report figures, editable investment breakdown, source locations and bounded online source research";
       this.s.spec.flows = [];
@@ -258,9 +258,7 @@ export class Run extends DurableObject<Env> {
       await this.emit("phase", { phase: this.s.phase }, signal);
       await this.addChat(
         "assistant",
-        this.s.demo
-          ? "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed."
-          : "Capturing the report and researching its original sources. Unavailable figures and datasets will be marked not observed.",
+        "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed.",
         signal,
       );
       await this.save(signal);
@@ -397,64 +395,13 @@ export class Run extends DurableObject<Env> {
   async approveSpec() {
     const signal = this.inspection.signal;
     signal.throwIfAborted();
-    if (isReportGoal(this.s.spec.goal))
-      throw new Error(
-        "Report dissection runs automatically; no build plan required",
-      );
     if (this.s.phase !== "brief")
       throw new Error(`cannot approve in phase ${this.s.phase}`);
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
-    this.s.pending = "inspect";
-    await this.save(signal);
-    await this.emit("spec", this.s.spec, signal);
-    await this.emit("phase", { phase: "inspecting" }, signal);
+    const signal = this.inspection.signal;
     signal.throwIfAborted();
-    await this.ctx.storage.setAlarm(Date.now() + 100);
-    return this.s;
-  }
-
-  /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
-  startSignIn() {
-    return this.serializeSignIn(async () => {
-      const result = await this.capture({
-        mode: "full_pack",
-        scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
-        signIn: "start",
-      });
-      if (result.status !== "awaiting_sign_in")
-        throw new Error("secure sign-in did not start");
-      return { liveViewUrl: result.liveViewUrl };
-    });
-  }
-
-  /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
-  resumeSignIn() {
-    return this.serializeSignIn(async () => {
-      this.awaitingSignIn();
-      return this.continueInspection("resume_sign_in");
-    });
-  }
-
-  /** Plan without the stopped pages. */
-  skipSignIn() {
-    return this.serializeSignIn(async () => {
-      this.awaitingSignIn();
-      await endSavedSignIn(this.env, this.s.id);
-      return this.continueInspection("plan");
-    });
-  }
-
-  private awaitingSignIn() {
-    if (this.s.phase !== "awaiting_sign_in" || !this.s.signInPaths?.length)
-      throw new Error(`no sign-in is pending in phase ${this.s.phase}`);
-    return this.s.signInPaths;
-  }
-
-  private async continueInspection(pending: "resume_sign_in" | "plan") {
-    this.s.phase = "inspecting";
-    this.s.pending = pending;
     await this.save();
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);

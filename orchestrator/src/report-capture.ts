@@ -28,6 +28,7 @@ export async function captureReport(env: Env, url: string) {
     try {
       const capture = await runSnippet<{
         html: string;
+        url: string;
         png: string;
         boxes: Box[];
         pageWidth: number;
@@ -52,10 +53,11 @@ const locations = await page.evaluate(() => {
   return { boxes, pageWidth: document.documentElement.scrollWidth, pageHeight: document.documentElement.scrollHeight };
 });
 const png = Buffer.from(await page.screenshot({ fullPage: true, type: "png", scale: "css" })).toString("base64");
-return { html: await page.content(), png, ...locations };
+return { html: await page.content(), url: page.url(), png, ...locations };
 `,
       );
       html = capture.html;
+      url = capture.url;
       const bytes = Uint8Array.from(atob(capture.png), (c) => c.charCodeAt(0));
       if (bytes.byteLength < 1_900_000) {
         screenshot = bytes.buffer;
@@ -70,7 +72,11 @@ return { html: await page.content(), png, ...locations };
     } finally {
       await endSession(key, session.id);
     }
-  } else html = (await sourceFetch(url)).html;
+  } else {
+    const capture = await sourceFetch(url);
+    html = capture.html;
+    url = capture.url;
+  }
   const capturedAt = new Date().toISOString();
   const hash = await sha256(html);
   const evidence: Evidence[] = [
