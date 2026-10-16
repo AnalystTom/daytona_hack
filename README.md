@@ -100,7 +100,7 @@ A run request whose `Origin` names another site gets 403, and so does a cookie-a
 
 Visitors need no token or sign-in. The first run a browser starts is answered with a signed `__Host-reversy_visitor` cookie (HttpOnly, Secure, SameSite=Strict, 30 days). Its HMAC is keyed by `OPERATOR_TOKEN` on the Worker, which never reaches the browser; rotating the token signs every visitor out. That anonymous session owns the runs it starts: only it can read, stream, message, approve, build, stop or override them, and every other session gets 404 for the run ID. A visitor who clears cookies loses their run history, and such a visitor still counts toward the network and global limits below.
 Operators can still send `Authorization: Bearer <OPERATOR_TOKEN>` to act on any run and to use `/api/v1/orchestrator/*`.
-The saved example is public and read-only (`/api/v1/example`); the Goldman Sachs demo starter runs as an ordinary visitor run under the same limits.
+The saved example is public and read-only (`/api/v1/example`). Any visitor run, including future report-dissection runs, falls under the same limits.
 
 ### Sign-in with Cloudflare Access
 
