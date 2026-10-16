@@ -1,7 +1,7 @@
 # Reversy: product spec
 
 Reversy ("Take it apart. Make it yours.") is a reverse-engineering assistant.
-The user gives a site and a goal in chat, refines the scope in conversation, and watches agents on Daytona inspect the site and rebuild it on a shared canvas.
+The user gives a site and a goal in chat, refines the scope in conversation, and watches agents inspect the site and rebuild it on a shared canvas.
 Daytona HackSprint, New York, 16 October 2026.
 
 This file and [`orchestrator/spec.md`](orchestrator/spec.md) sit alongside *Reversy implementation specification, Revision 2* (the detailed handoff: routes, schemas, limits, security and acceptance tests).
@@ -103,10 +103,14 @@ Two pieces of work run in parallel, each split into tasks on the kanban:
 
 The three alternatives are pods forked from the finished landing-page rebuild.
 Daytona VM fork is the target; until it is enabled on our account, pods are copies from a snapshot and labelled as copies.
+The user can promote an alternative; building then continues from that alternative's snapshot.
 
-### Financial reports
+At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
 
-Reversy can reconstruct financial reports as well as websites.
+### Financial reports (not in the demo)
+
+Financial reports are left out of the demo for now.
+Later, Reversy can reconstruct financial reports as well as websites.
 Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
 It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
 A figure Reversy could not read is marked "not observed", never filled in.
@@ -133,24 +137,29 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 
 | Piece | Use |
 |---|---|
-| Cloudflare Workers | Hosts the web app and its API |
-| Daytona | Runs every agent; preview URLs; VM fork for variants once enabled |
+| Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
+| Daytona | Runs the Codex workers in one sandbox per run (Tier 3, full internet access); preview URLs; VM fork for variants once enabled |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
-| Arize | One trace per run across inspection, planning, building, review and verification |
-| GPT 6.1 high via API | Orchestrator (also the chat agent), inspector, workers and review |
-| Opus 5.5 high via API | Verifier that checks the orchestrator's outputs |
+| Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
+| GPT 6.1 via the OpenAI API | Orchestrator (also the chat agent), Codex workers, review and the verifier; all models are OpenAI |
 
 Decided since Revision 2, which lists these as open or says otherwise:
 
 - First site: daytona.io, with Daytona's permission.
 - Repository: new, `AnalystTom/daytona_hack`.
-- Runtime models: GPT 6.1 high for the agents, Opus 5.5 high for the verifier.
+- Runtime models: all OpenAI, GPT 6.1 for the agents and the verifier.
 - Hosting: Cloudflare Workers.
-- Build engine: Firstmate orchestrating workers in a Daytona sandbox, with no-mistakes review. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop.
+- Build engine: the Reversy orchestrator, a Cloudflare Durable Object per run, enhanced with full Anchor capture, running Codex workers in one Daytona sandbox. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop. Firstmate in Daytona with no-mistakes review is a second engine for later.
+- The orchestrator is private: only our site calls it, and only we can test it.
+- Daytona Tier 3: the sandbox has full internet access.
+- Each run is limited to 2 hours.
+- A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
+- Recordings are capped at 30 seconds.
+- Out of the demo for now: REA, financial reports, and an operator login (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the minimal canvas workspace (chat on the right; Spec and Build views; kanban) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.
 
-Still open: the hard spend cap, and which sponsor accounts actually work.
+Still open: the hard spend cap, which sponsor accounts actually work, and who may read a run by its ID.

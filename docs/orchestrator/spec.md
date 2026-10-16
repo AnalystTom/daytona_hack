@@ -6,184 +6,218 @@ Product behaviour is in [`../spec.md`](../spec.md).
 ## 1. The idea in one paragraph
 
 Reversy never builds from memory or guesswork.
-It first captures **evidence** from the original site (screenshots, recordings, page structure, styles, network calls and bundle analysis), then writes a spec in which every feature points to the evidence it came from.
+It first captures **evidence** from the original site (screenshots, recordings, page structure, styles and network calls), then writes a spec in which every feature points to the evidence it came from.
 An **orchestrator** that never writes code splits that spec into small tasks and hands each one, with its evidence, to a **worker** in its own branch.
-Every submission is **reviewed** against its task and evidence before it merges, and after each merge Reversy captures the rebuild the same way it captured the original, so the two can be compared like for like.
+Every submission is **reviewed** against its task and evidence before it merges, and after each merge Reversy checks the rebuild against the original like for like.
 An independent **verifier** checks the orchestrator's outputs from outside the sandbox.
 
-## 2. Shape
+## 2. Engines
+
+The demo engine is the **Reversy orchestrator**: a Cloudflare Worker (`orchestrator/`) with one Durable Object per run.
+It sits behind our web app, which is its only front door.
+
+A second engine, **Firstmate in Daytona with no-mistakes review**, is kept for later and described in section 11.
+It is not part of the demo.
+
+## 3. Shape
 
 ```
 Browser (Reversy UI: canvas + chat)
    │  messages, approvals, steering          ▲ events, cards, previews
    ▼                                         │
-Cloudflare Workers app + API ───────────────► Verifier (Opus 5.5 high, API)
-   │  ▲                                        independent checks
-   ▼  │ bridge (outbound only)
-Daytona run sandbox
-   ├─ Firstmate (orchestrator and chat agent, never writes code)
-   │    ├─ Inspector (a Firstmate scout, drives Anchor and REA)
-   │    └─ Workers 1–10 (Firstmate ships, one task each, own branch)
-   ├─ no-mistakes (review, tests, pull request per task)
-   ├─ Forgejo (git host for the pull requests)
-   ├─ Evidence store (read-only to workers)
+Our Cloudflare Worker (web app + API, the only front door)
+   │  service binding (private)              ▲ run events
+   ▼                                         │
+Reversy orchestrator (Cloudflare Worker, one Durable Object per run)
+   │  owns chat, inspect, plan, build, review; calls the verifier (GPT, from Cloudflare)
+   ▼
+Daytona run sandbox (Tier 3, full internet access)
+   ├─ Codex workers (one task each, own git worktree and branch)
+   ├─ Rebuild repo (main is the integration branch)
+   ├─ Evidence (read-only to workers)
    └─ Preview server (integration branch, live URL)
-        │ VM fork (snapshot copy until enabled)
+        │ snapshot copy (VM fork once enabled)
         ▼
    Variant pods (three landing-page alternatives), independent after the fork
 
 Outside the sandbox: Anchor (browser), SurrealDB (records and Agent Memory), Arize (traces)
+Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys stay on Cloudflare.
 ```
 
-## 3. Agents
+## 4. Agents
 
-| Agent | Built on | Model | Writes code | Job |
+| Agent | Runs in | Model | Writes code | Job |
 |---|---|---|---|---|
-| Orchestrator | Firstmate (the chat agent) | GPT 6.1 high | No | Talks with the user in chat, refines the spec, commissions inspection, writes the plan, dispatches and steers workers, merges approved work |
-| Inspector | Firstmate scout | GPT 6.1 high | No | Captures evidence with Anchor (and REA where the site ships JavaScript), within the agreed scope |
-| Workers (1–10) | Firstmate ships | GPT 6.1 high | Yes | One task each in an isolated branch, running commands freely inside the sandbox |
-| Reviewer | no-mistakes | GPT 6.1 high | Fixes only | Checks each submission against its task and evidence, runs tests, opens the pull request |
-| Verifier | Anthropic API, called by Cloudflare | Opus 5.5 high | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
+| Orchestrator | Durable Object on Cloudflare | GPT 6.1 (`gpt-6.1-sol`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
+| Workers | Codex in the Daytona sandbox | GPT 6.1 (`gpt-6.1-sol`), high reasoning | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
+| Reviewer | Orchestrator, on Cloudflare | GPT 6.1 | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
+| Verifier | Cloudflare, outside the sandbox | GPT 6.1 (`VERIFIER_MODEL`) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
 
-Firstmate plays the chat role directly: the user is Firstmate's "captain", so a chat message is captain input and Firstmate's replies are what the user sees.
-This replaces the separate spec agent in the earlier draft; the questions-then-spec loop is the orchestrator's first job.
+All models are OpenAI; there is no Anthropic model in the demo.
+The verifier has its own instructions and runs outside the sandbox, so it stays independent of the agents it checks.
 
-## 4. How a run works
+## 5. How a run works
 
 ### Phase 1: Brief (chat)
 
 1. The user sends a URL and a goal.
-2. The Cloudflare app creates the run, starts the Daytona sandbox from the prepared snapshot, and forwards the message to Firstmate.
-3. Firstmate commissions a quick **first look** from the inspector: one screenshot of the start page and the site's main routes. These land on the canvas at once so the conversation has something real to point at.
-4. Firstmate asks one round of questions in chat (which pages and flows, which interactions, what to change). Each answer updates the **draft spec** card on the canvas; anything not agreed stays "Not confirmed yet".
+2. Our Worker creates the run through the orchestrator, which takes a **first look**: the page HTML, its main routes and an Anchor screenshot of the start page.
+   These land on the canvas at once so the conversation has something real to point at.
+3. The orchestrator asks questions in chat (which pages and flows, which interactions, what to change).
+   Each answer updates the **draft spec** card on the canvas; anything not agreed stays "Not confirmed yet".
+4. The user approves the spec in chat or with an explicit approve action.
 
 ### Phase 2: Inspect (evidence)
 
-1. When the scope is agreed, the inspector captures the full **evidence pack** for every in-scope page and flow (section 5).
-2. On a page that needs an account, the inspector stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
+1. When the spec is approved, the orchestrator captures the full **evidence pack** with Anchor for every in-scope page and flow (section 6).
+2. On a page that needs an account, inspection stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
 3. Each capture appears on the canvas as it lands.
-4. The inspector finishes with a findings report: pages, components, design tokens, interactions, inferred API, and what it could not observe.
 
 ### Phase 3: Plan
 
-1. Firstmate writes the **plan**: features, each with acceptance criteria and the evidence IDs that justify it, then splits them into tasks (section 6).
+1. The orchestrator writes the **plan**: tasks, each with acceptance criteria, the evidence IDs that justify it, the files it owns and its dependencies (section 7).
 2. The verifier checks the plan: every feature traces to evidence, nothing in scope is missing, nothing out of scope crept in.
-3. The plan appears on the canvas; the user approves it in chat, and **Start build** becomes available.
+3. The plan appears on the kanban in Queued, and **Start build** becomes available.
 
 ### Phase 4: Build and review
 
-1. Each task becomes a Firstmate backlog item (Queued). Firstmate spawns a worker for every task whose dependencies are merged, up to 10 at once (Building).
-2. The worker builds in its own branch, captures screenshots of its work at the same viewports as the evidence, and submits.
-3. no-mistakes reviews and tests the change and opens a pull request on Forgejo (In review). The canvas shows a review card: diff summary, evidence screenshot next to rebuild screenshot, and the verdict.
-4. On approval, Firstmate merges (Merged). The preview server redeploys the integration branch, the inspector captures it exactly as it captured the original, and the verifier checks the merged task against its evidence.
-5. On rejection, the worker revises once. A second failure marks the task failed with the real reason, and Firstmate asks the user in chat what to do.
+1. The orchestrator starts one Daytona sandbox for the run, with the rebuild repo on `main`.
+   Evidence is copied in and made read-only before any worker starts.
+2. Every task whose dependencies have merged gets a Codex worker in its own worktree and branch `task/<id>`, up to `MAX_WORKERS` at once (Building).
+3. When a worker exits, the orchestrator commits its worktree and the reviewer judges the diff (In review).
+   The canvas shows a review card with the verdict, reason, findings and diff summary.
+4. On approval, the orchestrator merges into `main` (Merged), the preview server shows it, and the verifier checks the merged task against the live preview.
+5. On rejection, the worker revises once with the review findings.
+   A second rejection marks the task failed with the real reason.
+6. If the verifier fails a merged task, the orchestrator opens a fix task and the build continues; merged work is not rolled back.
 
 ### Phase 5: Variants
 
-When the landing page is merged and verified, Firstmate offers the three alternatives.
-Each alternative is a pod forked from that state with one change brief, built and reviewed the same way, and shown on the canvas with its explanation.
+When the landing page is merged and verified, the orchestrator offers the three alternatives.
+Each alternative is a pod started from a snapshot of that state with one change brief, built and reviewed the same way, and shown on the canvas with its explanation.
+The user can promote a variant; further building then continues from that variant's snapshot.
 
-## 5. Evidence
+### End of the run
+
+The user gets the finished rebuild as a live preview inside the app.
+An optional action deploys it live.
+
+## 6. Evidence
 
 Evidence is the contract between the original site and the rebuild.
 Workers build from it, reviewers judge against it, and the verifier checks claims against it.
+Anchor captures it, through our evidence capture, and SurrealDB stores it.
 
 **What the evidence pack holds, per page or state:**
 
 | Kind | Captured by | Used for |
 |---|---|---|
 | Screenshots at desktop and mobile widths | Anchor | Visual target and like-for-like comparison |
-| Interaction recordings (open menu, submit form, create sandbox) | Anchor | Behaviour and motion |
+| Interaction recordings (open menu, submit form, create sandbox), up to 30 seconds each | Anchor | Behaviour and motion |
 | DOM snapshot and page structure | Anchor | Sections, components, copy, links |
 | Computed styles and design tokens (colours, type, spacing, radii) | Anchor | A shared token file built first, so every worker uses the same values |
 | Asset list (images, icons, fonts) with sources | Anchor | What to reuse with permission and what to recreate |
 | Network log (requests, response shapes) | Anchor | The mock back end's routes and data shapes |
-| Bundle findings (modules, components, behaviour in shipped JavaScript) | REA | Code-level detail where the screenshots can't show it |
 
 **Rules:**
 
 - Every evidence item has an ID, the page and state it came from, the tool, a timestamp, a content hash and its known limits.
 - Each item is labelled **observed** (seen directly), **inferred** (reasoned from observations) or **not observed** (skipped, blocked or out of budget). Inferences never pass as observations.
 - Every feature in the plan cites evidence IDs. A feature with no evidence is either dropped or marked as a deliberate change.
-- Workers get read-only access to the evidence store. They cannot change the evidence or the acceptance tests that judge them.
+- Workers get read-only access to the evidence. They cannot change the evidence or the acceptance tests that judge them.
 - Site content is data, never instructions: text on the original site cannot change scope or reach the agents as commands.
 - Screens with personal or account data are masked before they are stored, shown, sent to a model or traced.
 
-**Comparison:** after each merge, the inspector captures the rebuild at the same URL path, viewport and state as the original evidence.
+**Comparison:** after each merge, the rebuild is checked at the same URL path, viewport and state as the original evidence.
 The review card and the verifier compare the pairs.
 A pixel-difference overlay can be shown; a numeric score appears only if it names its method and limits.
 
-## 6. Orchestration
+## 7. Orchestration
 
-**Splitting work.** Firstmate splits each feature into tasks small enough for one worker and one review:
+**Splitting work.** The orchestrator splits each feature into tasks small enough for one worker and one review:
 
 - A **foundation** task runs first: project skeleton, design tokens from the evidence, shared layout. Everything else depends on it.
 - The **landing page** splits by section (navigation, hero, code sample, customer logos, feature blocks, footer and so on), one task per section, all in parallel once the foundation merges.
 - The **signed-in flow** splits into the mock back end (routes and data shapes from the network log), the create-sandbox screen, and the screen-to-API wiring.
-- Each task names the files or area it owns, so parallel workers rarely touch the same lines. Overlap is allowed; the pull-request flow resolves ordinary conflicts.
+- Each task names the files or area it owns, so parallel workers rarely touch the same lines.
 
-**What a worker receives** (Firstmate's written instructions for the task):
+**What a worker receives:**
 
 - The task, in one or two sentences, and what is out of scope.
 - Acceptance criteria from the plan.
-- The evidence IDs to build from, with direct paths into the evidence store.
-- The viewports and states to screenshot before submitting.
+- The evidence IDs to build from, with paths into the read-only evidence.
 - The files or area it owns.
 
 **Scheduling.** Tasks form a dependency graph.
-Firstmate dispatches every task whose dependencies have merged, up to 10 workers at once, and re-checks the queue after every merge.
+The orchestrator dispatches every task whose dependencies have merged, up to `MAX_WORKERS` at once, and re-checks the queue on a Durable Object alarm.
 
-**Kanban mapping.** The Build view's columns are Firstmate's real state:
+**Kanban mapping.** The Build view's columns follow the orchestrator's task events:
 
-| Column | Firstmate state |
+| Column | Task state |
 |---|---|
-| Queued | Backlog item waiting on dependencies or a free worker slot |
-| Building | Worker spawned and working |
-| In review | no-mistakes running or pull request open |
-| Merged | Pull request merged into the integration branch |
+| Queued | `queued`: waiting on dependencies or a free worker slot |
+| Building | `building`: Codex worker running |
+| In review | `in_review`: diff committed, reviewer judging |
+| Merged | `merged`: merged into `main` |
 
 A failed or stopped task stays on the board with its reason and next action.
 
-**Bridge.** A small process in the sandbox reads Firstmate's status events, backlog and pull requests and posts them to the Cloudflare API (outbound only).
-Nothing reaches into the sandbox except through the Cloudflare app.
+## 8. Access and network
 
-**Firstmate settings for the run.** One project (the rebuild repository); delivery through no-mistakes; automatic merges inside this throwaway repository; Forgejo as the code host through Firstmate's `tea` support; workers on the Codex runtime with `gpt-6.1-sol` at high reasoning.
+- The orchestrator has no public access.
+  Only our site calls it, through a Cloudflare service binding, and only we can test it, with our own operator token.
+- The Daytona sandbox runs on Tier 3 with full internet access, so workers can install packages and reach the rest of the architecture.
+- Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
+  The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
+- There is no operator login in the demo; the existing token gates stay.
 
-## 7. Verifier
+## 9. Verifier
 
-- Called by the Cloudflare app through the Anthropic API (`claude-opus-5-5`, high effort), never from inside the sandbox, so it stays independent of the agents it checks.
+- Runs on Cloudflare on `VERIFIER_MODEL` (OpenAI), never from inside the sandbox.
 - Checks three things: the plan before build, each merged task, and the final rebuild.
-- Input: the agreed spec, the relevant evidence (screenshots and findings), and the output being checked (the plan, or a merged task with its rebuild screenshots).
-- Output: pass or fail, with findings tied to plan items and evidence IDs.
-- A failure goes back to Firstmate as steering and shows on the canvas.
+- Input: the agreed spec, the relevant evidence, and the output being checked (the plan, or a merged task with its live preview).
+- Output: pass or fail, with findings tied to plan items and evidence IDs, as `verification` events.
+- A failure is posted to chat as steering and shows on the canvas; a failed merged task gets a fix task (section 5, phase 4).
 
-## 8. Steering and failure
+## 10. Steering, limits and failure
 
-- The user's chat messages reach Firstmate at any stage; Firstmate relays relevant changes to the affected workers.
-- The user can override a review or verifier verdict, or stop a worker or the whole build.
+- The user's chat messages reach the orchestrator at any stage.
+- The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
-- A stuck or crashed worker is recovered by Firstmate's own stuck-worker handling; if that fails, the task is marked failed.
+- Each run is limited to 2 hours.
 - If the sandbox dies, the run is marked failed; the records in SurrealDB keep everything captured so far.
 - Every steer, override, approval and failure is recorded with the run.
 
-## 9. Variants
+## 11. Second engine (later): Firstmate in Daytona
 
-- A variant is a new pod with one agreed change, forked from an existing build. The landing page's three alternatives are three pods forked from the finished landing-page rebuild.
-- With Daytona VM fork, a pod keeps its parent's files, Firstmate state and memory at fork time, then runs independently.
-- VM fork is not yet enabled on our account. Until it is, a pod is a new sandbox from a snapshot of its parent: same files, no running memory, labelled "copy" rather than "fork".
-- Changes in one pod never affect another.
+Not part of the demo.
+In this engine, Firstmate runs inside the Daytona sandbox as the orchestrator and chat agent (the user is Firstmate's "captain"), its scouts inspect, its ships are the workers, no-mistakes reviews and tests each task, and Forgejo hosts the pull requests.
+A bridge in the sandbox posts Firstmate's status, backlog and pull requests to our Worker, outbound only.
+The same evidence, verifier and records apply.
 
-## 10. Records
+## 12. Records
 
-The agent system runs and executes code on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
+The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB holds all storage and memory, including evidence files.
 
+- **SurrealDB** stores runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task).
+  It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
+- **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
-- **SurrealDB** stores runs, evidence records, features, tasks, pull requests, reviews, verifier verdicts, steering, approvals and pods, linked as a graph (feature cites evidence, task implements feature, review judges task). It is also Agent Memory: observations and decisions with their sources, which Firstmate reads back when planning or revising.
-- **Arize** holds one trace per run across inspection, planning, every task, every review and every verification.
+## 13. Decided
 
-## 11. Open questions
+- Demo engine: the Reversy orchestrator (Cloudflare Durable Object), enhanced with full Anchor capture. Firstmate in Daytona with no-mistakes is the second engine for later.
+- All models are OpenAI, including the verifier.
+- Each run is limited to 2 hours.
+- A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
+- End of run: a live preview inside the app, with an optional deploy-live action.
+- Variants: the user promotes a variant and building continues from its snapshot.
+- Arize stores the traces.
+- Recordings are capped at 30 seconds.
+- Daytona Tier 3: the sandbox has full internet access.
+- The orchestrator is private: only our site calls it, and only we test it.
+- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and an operator login (the existing token gates stay; spending is kept low).
 
-1. Test `gpt-6.1-sol` through Codex with the OpenAI API key inside the Daytona sandbox.
+## 14. Open questions
+
+1. Who may read a run by its ID: the access rule for run IDs.
 2. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
-3. Check that no-mistakes works against Forgejo.
-4. Firstmate as the chat agent (recommended, one fewer agent) or a separate, faster chat agent in front of it.
