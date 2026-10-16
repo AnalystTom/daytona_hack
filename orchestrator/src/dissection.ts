@@ -475,12 +475,20 @@ For each figure return a trace: matches only when the independently fetched quot
     }
     const cap = captures.get(url);
     const normalized = cleanText(quote);
-    return cap &&
-      !excludedSources.has(sourceIdentity(cap.url)) &&
-      normalized &&
-      cleanText(cap.html).includes(normalized)
-      ? cap
-      : null;
+    if (!cap || excludedSources.has(sourceIdentity(cap.url)) || !normalized)
+      return null;
+    const html = cap.html.replace(
+      /<(script|style)\b[^>]*>[\s\S]*?<\/\1>/gi,
+      "",
+    );
+    const passage = [
+      ...html.matchAll(
+        /<(h[1-6]|p|li|figcaption|td|th|blockquote)\b[^>]*>([\s\S]*?)<\/\1>/gi,
+      ),
+    ]
+      .map((block) => cleanText(block[2]))
+      .find((text) => text.includes(normalized));
+    return passage ? { ...cap, quote: passage } : null;
   };
   for (const s of researched.sources) {
     if (
@@ -497,7 +505,7 @@ For each figure return a trace: matches only when the independently fetched quot
       title: cap ? metadata(cap.html, cap.url).title : s.name,
       publisher: cap ? metadata(cap.html, cap.url).publisher : "",
       published: cap ? metadata(cap.html, cap.url).published : "",
-      quote: cap ? s.quote : s.articleQuote,
+      quote: cap?.quote ?? s.articleQuote,
       quoteUrl: cap?.url ?? article.url,
       capturedAt: cap?.capturedAt ?? article.capturedAt,
       hash: cap?.hash ?? article.hash,
@@ -512,13 +520,18 @@ For each figure return a trace: matches only when the independently fetched quot
     const t = researched.traces.find((t) => t.figureId === f.id);
     const cap = t ? await verify(t.url, t.quote) : null;
     if (cap && t) {
-      const matches = t.status === "matches" && exactQuoteEvidence(f, t);
+      const evidence = {
+        value: t.value,
+        quote: cap.quote,
+        completePassage: true,
+      };
+      const matches = t.status === "matches" && exactQuoteEvidence(f, evidence);
       const id = `trace${sources.length}`;
       sources.push({
         id,
         url: cap.url,
         ...metadata(cap.html, cap.url),
-        quote: t.quote,
+        quote: cap.quote,
         quoteUrl: cap.url,
         capturedAt: cap.capturedAt,
         hash: cap.hash,
@@ -529,7 +542,8 @@ For each figure return a trace: matches only when the independently fetched quot
       traces.push({
         figureId: f.id,
         value: matches ? f.value : "",
-        quote: t.quote,
+        quote: cap.quote,
+        completePassage: true,
         status: matches ? "matches" : "not_found",
         sourceId: id,
         reason: matches

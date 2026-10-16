@@ -40,11 +40,12 @@ export const ReportFigure = z.object({
 export type ReportFigure = z.infer<typeof ReportFigure>;
 export function exactQuoteEvidence(
   figure: ReportFigure,
-  trace: { value: string; quote: string },
+  trace: { value: string; quote: string; completePassage?: boolean },
 ) {
   const text = (s: string) => s.replace(/\s+/g, " ").trim();
   const value = text(figure.value);
   if (
+    !trace.completePassage ||
     !value ||
     text(trace.value) !== value ||
     text(trace.quote) !== text(figure.quote)
@@ -87,6 +88,7 @@ export const ReportTrace = z.object({
   status: z.enum(["matches", "differs", "not_found"]),
   value: z.string(),
   quote: z.string(),
+  completePassage: z.boolean().optional(),
   reason: z.string(),
 });
 export const ReportEdit = z.object({

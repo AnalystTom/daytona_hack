@@ -379,6 +379,7 @@ it.each([
       status: expected,
       quote,
       value: expected === "matches" ? value : "",
+      completePassage: true,
     });
     expect(report.sources.find((s) => s.id === trace.sourceId)).toMatchObject({
       url: "https://independent.example/research",
@@ -442,3 +443,56 @@ it("accepts an independently fetched source for both source and figure provenanc
   expect(report.traces[0]).toMatchObject({ status: "matches", value: "2026" });
   expect(fetch).toHaveBeenCalledTimes(1);
 });
+
+it.each(["h1", "h2", "p", "li", "figcaption", "td", "th", "blockquote"])(
+  "compares and retains the full fetched %s passage when the model clips a qualifier",
+  async (tag) => {
+    const quote = "Investment reaches $35 billion";
+    const fullQuote = `${quote} Canadian dollars`;
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(`<${tag}>${quote} <em>Canadian dollars</em></${tag}>`),
+        ),
+    );
+    vi.mocked(llmJson).mockResolvedValueOnce({
+      sources: [
+        {
+          name: "Investment",
+          articleQuote: quote,
+          url: "https://independent.example/research",
+          quote,
+          reason: "Model citation",
+        },
+      ],
+      traces: [
+        {
+          figureId: "article_f1",
+          url: "https://independent.example/research",
+          value: "$35 billion",
+          quote,
+          status: "matches",
+        },
+      ],
+    });
+    const report = await dissect(env, "run", {
+      html: `<h1>${quote}</h1>`,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-16T19:00:00.000Z",
+      hash: "hash",
+    });
+    expect(report.figures[0].quote).toBe(quote);
+    expect(report.traces[0]).toMatchObject({
+      status: "not_found",
+      quote: fullQuote,
+      value: "",
+      completePassage: true,
+    });
+    expect(report.sources.slice(1).map((source) => source.quote)).toEqual([
+      fullQuote,
+      fullQuote,
+    ]);
+  },
+);

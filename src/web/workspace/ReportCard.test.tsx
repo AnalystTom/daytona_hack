@@ -65,9 +65,16 @@ describe("report canvas data", () => {
       "Unverified online",
     ],
     ["not_found", "", "including $581 million in the US", "Unverified online"],
+    [
+      "matches",
+      "$581 billion",
+      "including $581 billion in the US",
+      "Unverified online",
+      false,
+    ],
   ])(
     "renders bounded evidence and both quotes for saved %s comparisons",
-    (status, value, quote, label) => {
+    (status, value, quote, label, completePassage = true) => {
       const report = ReportDissection.parse({
         ...reportContractExample,
         sources: [
@@ -88,6 +95,7 @@ describe("report canvas data", () => {
             status,
             value,
             quote,
+            completePassage,
             reason: "Captured source quotation",
           },
         ],
