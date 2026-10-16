@@ -10,7 +10,8 @@
     "lint": "biome lint",
     "format": "biome format",
     "test": "vitest run",
-    "deploy": "npm run build && wrangler deploy"
+    "deploy": "npm run build && wrangler deploy",
+    "example:save": "scripts/save-example.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

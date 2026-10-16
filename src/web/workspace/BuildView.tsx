@@ -7,7 +7,7 @@ export function BuildView({
   draftSpec,
   events = [],
   status,
-  onStopBuild = () => {},
+  onStopBuild,
   onOverride,
 }: {
   draftSpec?: DraftSpec;

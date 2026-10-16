@@ -11,13 +11,13 @@ That board revision replaces the earlier confirmation form, six-stage stepper an
 
 ## 1. Public landing page and app entry
 
-The path into the product: public landing page → chat start (Entry A) → Spec canvas → Build and review.
+Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). After the user sends a brief, the work moves through the Spec canvas to Build and review.
 
 ### Public landing page
 
 ![Public landing page](screens/board-landing.png)
 
-The landing page introduces Reversy, explains the workflow and leads into chat.
+The landing page introduces Reversy and explains the workflow.
 
 - **Header:** Reversy (beaver logo), "How it works" (scrolls to the workflow), "Workspace" (scrolls to the workspace preview), and **Start a project**.
 - **Hero:** "Take it apart. Make it yours." with "Turn a website into a clear spec, captured evidence, and a build you can review.", **Start a project**, "See how it works", and the chainsaw beaver.
@@ -28,7 +28,7 @@ The landing page introduces Reversy, explains the workflow and leads into chat.
 
 Rules:
 
-- Every **Start a project** button opens Entry A. There is no separate questionnaire or duplicate brief entry.
+- Every **Start a project** button follows the [workspace entry behavior](../README.md#workspace). There is no separate questionnaire or duplicate brief entry.
 - A starter link opens Entry A with an editable draft. Choosing a starter never begins capture or a build; a missing URL or file is asked for in chat.
 - The page stays honest: the workspace preview is labelled as a concept until real app media replaces it, and there are no invented users, testimonials, scores, results or speed claims.
 
@@ -41,11 +41,11 @@ Rules:
 - A starter fills an editable draft; Send carries the same brief into the workspace chat.
 - Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
 
-### Entry B: direct entry into an empty workspace
+### Entry B: empty workspace
 
 ![Entry B: empty workspace with the chat ready](screens/board-entry-b.png)
 
-- Opening the workspace directly shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
+- An empty session shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
 - No questionnaire or input form, and no spec, capture or task card until it actually exists.
 - A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
 

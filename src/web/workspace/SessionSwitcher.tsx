@@ -13,6 +13,9 @@ export function sessionTitle(session: Pick<Session, "runId" | "target">) {
   }
 }
 
+// The saved example run; bare /workspace also shows it until a session is started.
+export const EXAMPLE_PATH = "/workspace/example";
+
 export function startNewSession() {
   // A fresh history key gives the new session its own empty workspace, even from /workspace.
   navigate("/workspace", { session: crypto.randomUUID() });
@@ -20,8 +23,11 @@ export function startNewSession() {
 
 export function SessionSwitcher({
   current,
+  example = false,
 }: {
   current?: Pick<Session, "runId" | "target">;
+  // Set while the saved example run is shown.
+  example?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -75,7 +81,11 @@ export function SessionSwitcher({
       >
         <span className="visually-hidden">Session: </span>
         <span className="ss-current">
-          {current ? sessionTitle(current) : "New session"}
+          {example
+            ? "Example run"
+            : current
+              ? sessionTitle(current)
+              : "New session"}
         </span>
         <svg viewBox="0 0 16 16" aria-hidden="true">
           <path d="m4 6 4 4 4-4" />
@@ -93,6 +103,18 @@ export function SessionSwitcher({
           >
             New session
           </button>
+          <a
+            className="ss-item ss-example"
+            href={EXAMPLE_PATH}
+            aria-current={example ? "page" : undefined}
+            onClick={(event) => {
+              setOpen(false);
+              followLink(event);
+            }}
+          >
+            <span className="ss-target">Example run</span>
+            <span className="ss-phase">Saved, read-only</span>
+          </a>
           {sessions.length > 0 ? (
             <ul className="ss-list" aria-label="Your sessions">
               {sessions.map((session) => (

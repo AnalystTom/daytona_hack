@@ -1,6 +1,7 @@
 import {
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useRef,
   useState,
@@ -124,7 +125,12 @@ export function ChatPanel({
   onSend,
   onRetry,
   onSaveToken,
-}: Handlers & { entries: ChatEntry[] }) {
+  readOnly,
+}: Handlers & {
+  entries: ChatEntry[];
+  // Shown instead of the composer when the chat cannot be written to.
+  readOnly?: ReactNode;
+}) {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLOListElement>(null);
   const isBrief = entries.length === 0;
@@ -177,54 +183,58 @@ export function ChatPanel({
           ))}
         </ol>
       )}
-      <form
-        className={`composer ${isBrief ? "composer-brief" : ""}`}
-        onSubmit={submit}
-      >
-        <p className="composer-hint" id="composer-hint">
-          {isBrief
-            ? "Send the URL and your goal in one message. You can refine the scope in conversation."
-            : "Refine the scope here. The spec updates on the canvas."}
-        </p>
-        <div className="composer-box">
-          <label htmlFor="composer-input" className="visually-hidden">
-            {isBrief ? "Your brief" : "Message"}
-          </label>
-          <textarea
-            id="composer-input"
-            aria-describedby="composer-hint"
-            rows={isBrief ? 3 : 1}
-            value={draft}
-            placeholder={
-              isBrief
-                ? "Paste a URL and describe your goal…"
-                : "Describe a change…"
-            }
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={onKeyDown}
-          />
-          {isBrief ? (
-            <button
-              type="submit"
-              className="button button-primary"
-              disabled={!canSend}
-            >
-              Send brief
-            </button>
-          ) : (
-            <button
-              type="submit"
-              className="send-button"
-              disabled={!canSend}
-              aria-label="Send message"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 19V5 M6 11l6-6 6 6" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </form>
+      {readOnly ? (
+        <div className="composer composer-closed">{readOnly}</div>
+      ) : (
+        <form
+          className={`composer ${isBrief ? "composer-brief" : ""}`}
+          onSubmit={submit}
+        >
+          <p className="composer-hint" id="composer-hint">
+            {isBrief
+              ? "Send the URL and your goal in one message. You can refine the scope in conversation."
+              : "Refine the scope here. The spec updates on the canvas."}
+          </p>
+          <div className="composer-box">
+            <label htmlFor="composer-input" className="visually-hidden">
+              {isBrief ? "Your brief" : "Message"}
+            </label>
+            <textarea
+              id="composer-input"
+              aria-describedby="composer-hint"
+              rows={isBrief ? 3 : 1}
+              value={draft}
+              placeholder={
+                isBrief
+                  ? "Paste a URL and describe your goal…"
+                  : "Describe a change…"
+              }
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={onKeyDown}
+            />
+            {isBrief ? (
+              <button
+                type="submit"
+                className="button button-primary"
+                disabled={!canSend}
+              >
+                Send brief
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!canSend}
+                aria-label="Send message"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 19V5 M6 11l6-6 6 6" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </form>
+      )}
     </aside>
   );
 }

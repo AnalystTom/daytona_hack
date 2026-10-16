@@ -15,7 +15,8 @@ export function Logo() {
 
 function StartLink({ className }: { className: string }) {
   return (
-    <a className={className} href="/start" onClick={followLink}>
+    // Opens the saved example run; it offers Start your own.
+    <a className={className} href="/workspace" onClick={followLink}>
       Start a project
     </a>
   );

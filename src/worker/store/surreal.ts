@@ -23,6 +23,7 @@ export interface SurrealConfig {
 //   steering:<id>, approval:<id>      linked to the run and to the event that announced them
 //   memory:<id>                       Agent Memory entry with its sources
 //   evidence:<id>, evidence_chunk:<id>_<n>, sign_in:<runId>   evidence capture (src/worker/evidence)
+//   example:<key>                     the public example run's snapshot and media (src/worker/example)
 // The JSON RPC turns datetime-like strings into datetimes (normalising their format), so an
 // event's envelope is kept as JSON text to replay exactly what the producer sent.
 const schema = `
@@ -35,6 +36,7 @@ DEFINE TABLE IF NOT EXISTS memory SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS evidence SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS evidence_chunk SCHEMALESS;
 DEFINE TABLE IF NOT EXISTS sign_in SCHEMALESS;
+DEFINE TABLE IF NOT EXISTS example SCHEMALESS;
 DEFINE INDEX IF NOT EXISTS event_run_sequence ON event FIELDS run, sequence;
 DEFINE INDEX IF NOT EXISTS task_run ON task FIELDS run;
 DEFINE INDEX IF NOT EXISTS memory_run ON memory FIELDS run;

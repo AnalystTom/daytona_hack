@@ -13,7 +13,7 @@ type Props = {
   events: readonly (EventEnvelope & { detail?: unknown })[];
   // What the run is doing, shown in place of the empty board while no tasks exist yet.
   status?: string;
-  onStopBuild: () => void;
+  onStopBuild?: () => void;
   onOverride?: (override: Override) => void;
 };
 
@@ -109,7 +109,7 @@ export function BuildBoard({ events, status, onStopBuild, onOverride }: Props) {
         <button
           type="button"
           className="bb-stop"
-          disabled={!started || board.runStopped}
+          disabled={!onStopBuild || !started || board.runStopped}
           onClick={onStopBuild}
         >
           {board.runStopped ? "Build stopped" : "Stop build"}
