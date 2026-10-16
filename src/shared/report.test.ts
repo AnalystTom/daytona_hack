@@ -64,7 +64,17 @@ it.each([
   (value, unit, quote, expected) => {
     const figure = ReportDissection.parse(reportContractExample).figures[0];
     expect(
-      exactQuoteEvidence({ ...figure, value, unit, quote }, { value, quote }),
+      exactQuoteEvidence(
+        { ...figure, value, unit, quote },
+        { value, quote, completePassage: true },
+      ),
     ).toBe(expected);
   },
 );
+
+it("keeps saved comparisons without complete-passage evidence unverified", () => {
+  const figure = ReportDissection.parse(reportContractExample).figures[0];
+  expect(
+    exactQuoteEvidence(figure, { value: figure.value, quote: figure.quote }),
+  ).toBe(false);
+});

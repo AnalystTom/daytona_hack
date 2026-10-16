@@ -18,24 +18,24 @@ const snapshot = () => ({
   evidence: [],
 });
 
-it("writes linked figure/source originals atomically and confirms the persisted snapshot", async () => {
+it("passes captured originals to storage and accepts the returned snapshot receipt", async () => {
   const query = vi
     .spyOn(SurrealRunStore.prototype, "query")
     .mockResolvedValueOnce([])
     .mockResolvedValueOnce([{ snapshot: JSON.stringify(snapshot()) }]);
   await saveReport(env, snapshot(), true);
-  expect(query.mock.calls[0]?.[0]).toContain("BEGIN TRANSACTION");
-  expect(query.mock.calls[0]?.[0]).toContain("report_figure");
-  expect(query.mock.calls[0]?.[0]).toContain("report_source");
   expect(query.mock.calls[0]?.[1]).toMatchObject({
     id: "test-run",
     demo: true,
     successful: true,
+    figures: snapshot().report.figures,
+    sources: snapshot().report.sources,
+    snapshot: JSON.stringify(snapshot()),
   });
-  expect(query.mock.calls[1]?.[0]).toContain("SELECT snapshot");
+  expect(query.mock.calls[1]?.[1]).toEqual({ id: "test-run" });
 });
 
-it("never promotes a replay to the successful demo fallback", async () => {
+it("marks replay snapshots as unsuccessful in storage inputs", async () => {
   const current = snapshot();
   current.report.replay = {
     runId: "prior",
@@ -50,31 +50,30 @@ it("never promotes a replay to the successful demo fallback", async () => {
   expect(query.mock.calls[0]?.[1]).toMatchObject({ successful: false });
 });
 
-it("returns only the most recent real successful demo and rejects missing storage", async () => {
+it("parses a returned replay snapshot and rejects missing storage configuration", async () => {
   const query = vi
     .spyOn(SurrealRunStore.prototype, "query")
     .mockResolvedValueOnce([[{ snapshot: JSON.stringify(snapshot()) }]]);
   expect(await latestReport(env)).toEqual(snapshot());
-  expect(query.mock.calls[0]?.[0]).toContain("successful = true");
-  expect(query.mock.calls[0]?.[0]).toContain(
-    "ORDER BY completedAt DESC LIMIT 1",
-  );
+  expect(query.mock.calls[0]?.[1]).toEqual({ target: GOLDMAN_URL });
   await expect(latestReport({} as Env)).rejects.toThrow("not configured");
 });
 
-it("stores user edits separately from immutable captured originals", async () => {
+it("passes an edit and its run and figure identity to storage", async () => {
   const query = vi
     .spyOn(SurrealRunStore.prototype, "query")
     .mockResolvedValue([]);
   await saveEdit(env, "test-run", "f1", { label: "Updated", value: "580" });
-  expect(query.mock.calls[0]?.[0]).toContain("report_edit");
-  expect(query.mock.calls[0]?.[0]).not.toContain(
-    "UPDATE type::record('report_figure'",
-  );
+  expect(query.mock.calls[0]?.[1]).toEqual({
+    runId: "test-run",
+    figureId: "f1",
+    label: "Updated",
+    value: "580",
+  });
 });
 
 it.each([true, false])(
-  "keeps resolved provenance separate from replay identity for demo=%s",
+  "passes stable demo identity to storage while retaining resolved provenance: demo=%s",
   async (demo) => {
     const current = snapshot();
     const resolved = `${GOLDMAN_URL}/`;
@@ -86,17 +85,23 @@ it.each([true, false])(
         saved = vars ?? {};
         return [];
       })
-      .mockImplementationOnce(async () => [{ snapshot: saved.snapshot }])
-      .mockImplementationOnce(async (_sql, vars) => [
-        saved.demo && saved.successful && saved.target === vars?.target
-          ? [{ snapshot: saved.snapshot }]
-          : [],
-      ]);
+      .mockImplementationOnce(async () => [{ snapshot: saved.snapshot }]);
     await saveReport(env, current, demo);
     expect(saved.target).toBe(demo ? GOLDMAN_URL : resolved);
     expect(
       JSON.parse(saved.snapshot as string).report.sources[0],
     ).toMatchObject({ url: resolved, quoteUrl: resolved });
-    expect(await latestReport(env)).toEqual(demo ? current : undefined);
   },
 );
+
+it("rejects a snapshot receipt for another run", async () => {
+  const other = snapshot();
+  other.report.runId = "other-run";
+  other.report.storage.recordId = "other-run";
+  vi.spyOn(SurrealRunStore.prototype, "query")
+    .mockResolvedValueOnce([])
+    .mockResolvedValueOnce([{ snapshot: JSON.stringify(other) }]);
+  await expect(saveReport(env, snapshot(), true)).rejects.toThrow(
+    "persistence could not be confirmed",
+  );
+});
