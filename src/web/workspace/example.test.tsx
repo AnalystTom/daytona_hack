@@ -119,10 +119,37 @@ describe("exampleView", () => {
   it("serves screenshots from the saved copy and replays the whole chat", () => {
     const { run, entries } = exampleView(example);
     expect(run.evidence.map((e) => e.src)).toEqual([
-      "/api/v1/example/evidence/ev_001",
+      `/api/v1/example/${RUN}/evidence/ev_001`,
     ]);
     expect(entries.map((e) => e.kind)).toEqual(["user", "agent"]);
   });
+
+  it.each(["screenshot", "recording"])(
+    "scopes %s URLs to each saved run",
+    (kind) => {
+      for (const runId of [RUN, "replacement-run"]) {
+        const source = {
+          ...example,
+          runId,
+          events: example.events.map((event) =>
+            event.type === "evidence"
+              ? {
+                  ...event,
+                  data: {
+                    ...(event.data as Record<string, unknown>),
+                    kind,
+                    url: `/runs/${runId}/evidence/ev_001`,
+                  },
+                }
+              : event,
+          ),
+        };
+        expect(exampleView(source).run.evidence).toMatchObject([
+          { kind, src: `/api/v1/example/${runId}/evidence/ev_001` },
+        ]);
+      }
+    },
+  );
 
   it("counts tasks that never ran as never started", () => {
     expect(exampleView(example).outcome).toBe(

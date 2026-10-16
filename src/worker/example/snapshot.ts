@@ -152,7 +152,6 @@ const MediaMeta = z.object({
 });
 
 // Media first, the snapshot last: the example switches runs only once every file is stored.
-// shortcut: files of a replaced example stay in the table; delete them by key prefix if it grows.
 export async function saveSnapshot(
   store: ExampleStore,
   snapshot: Snapshot,
@@ -182,11 +181,10 @@ export async function loadSnapshot(
 
 export async function loadMedia(
   store: ExampleStore,
-  snapshot: Snapshot,
+  runId: string,
   id: string,
 ): Promise<MediaFile | null> {
-  if (!snapshot.media.includes(id)) return null;
-  const key = fileKey(snapshot.runId, id);
+  const key = fileKey(runId, id);
   const meta = MediaMeta.safeParse(await store.get(key));
   if (!meta.success) return null;
   const parts: Uint8Array[] = [];

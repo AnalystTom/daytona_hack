@@ -37,7 +37,7 @@ Use **Spec** or **Build** to work on the canvas:
 
 ### Example run
 
-The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
+The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
 
 Save or replace it with one command, after the Worker is deployed:
 
@@ -46,6 +46,8 @@ OPERATOR_TOKEN=... npm run example:save -- [runId]
 ```
 
 `runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Runs that have not finished are refused. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it.
+
+Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
 
 ## Scripts
 

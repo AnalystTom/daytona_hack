@@ -62,16 +62,18 @@ const events = [
   },
 ];
 
-function fakeOrchestrator(phase = "done") {
+function fakeOrchestrator(phase = "done", runId = RUN, bytes = png) {
   const seen: string[] = [];
   const fetcher = {
     fetch: async (url: string) => {
       seen.push(url);
       const path = new URL(url).pathname;
-      if (path === `/runs/${RUN}`) return Response.json(state(phase));
-      if (path === `/runs/${RUN}/events`) return Response.json(events);
-      if (path === `/runs/${RUN}/evidence/ev_001`)
-        return new Response(png, { headers: { "content-type": "image/png" } });
+      if (path === `/runs/${runId}`)
+        return Response.json({ ...state(phase), id: runId });
+      if (path === `/runs/${runId}/events`)
+        return new Response(JSON.stringify(events).replaceAll(RUN, runId));
+      if (path === `/runs/${runId}/evidence/ev_001`)
+        return new Response(bytes, { headers: { "content-type": "image/png" } });
       if (path.startsWith("/runs/")) return new Response("");
       return Response.json({ error: "not found" }, { status: 404 });
     },
@@ -118,11 +120,11 @@ const env = (orchestrator?: Fetcher): ExampleEnv => ({
 
 const request = (path: string, init: RequestInit = {}) =>
   new Request(`https://reversy.test${path}`, init);
-const save = (headers: Record<string, string> = {}) =>
+const save = (headers: Record<string, string> = {}, runId = RUN) =>
   request("/api/v1/example", {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify({ runId: RUN }),
+    body: JSON.stringify({ runId }),
   });
 
 afterEach(() => vi.unstubAllGlobals());
@@ -157,10 +159,10 @@ describe("example snapshot", () => {
     // 3 MiB is stored in two chunks and read back byte for byte.
     expect(store.rows.has(`file/${RUN}/ev_001/1`)).toBe(true);
     if (!loaded) throw new Error("no snapshot");
-    const file = await loadMedia(store, loaded, "ev_001");
+    const file = await loadMedia(store, loaded.runId, "ev_001");
     expect(file?.contentType).toBe("image/png");
     expect(Buffer.from(file?.bytes ?? []).equals(png)).toBe(true);
-    expect(await loadMedia(store, loaded, "ev_002")).toBeNull();
+    expect(await loadMedia(store, loaded.runId, "ev_002")).toBeNull();
   });
 
   it("refuses a run that is still going", async () => {
@@ -191,7 +193,7 @@ describe("example routes", () => {
     expect(await example?.json()).toMatchObject({ runId: RUN });
 
     const media = await handleExample(
-      request("/api/v1/example/evidence/ev_001"),
+      request(`/api/v1/example/${RUN}/evidence/ev_001`),
       e,
     );
     expect(media?.headers.get("content-type")).toBe("image/png");
@@ -199,6 +201,54 @@ describe("example routes", () => {
     expect(Buffer.from((await media?.arrayBuffer()) ?? []).equals(png)).toBe(
       true,
     );
+  });
+
+  it("keeps replaced media readable and isolates reused evidence IDs by run", async () => {
+    fakeSurreal();
+    const replacement = "replacement-run";
+    const replacementBytes = new Uint8Array([9, 8, 7]);
+    for (const [runId, bytes] of [
+      [RUN, png],
+      [replacement, replacementBytes],
+    ] as const) {
+      const response = await handleExample(
+        save({ authorization: "Bearer op-token" }, runId),
+        env(fakeOrchestrator("done", runId, bytes).fetcher),
+      );
+      expect(response?.status).toBe(200);
+    }
+
+    const current = await handleExample(request("/api/v1/example"), env());
+    expect(await current?.json()).toMatchObject({ runId: replacement });
+    for (const [runId, bytes] of [
+      [RUN, png],
+      [replacement, replacementBytes],
+    ] as const) {
+      const response = await handleExample(
+        request(`/api/v1/example/${runId}/evidence/ev_001`),
+        env(),
+      );
+      expect(response?.status).toBe(200);
+      expect(response?.headers.get("cache-control")).toBe(
+        "public, max-age=31536000, immutable",
+      );
+      expect(
+        Buffer.from((await response?.arrayBuffer()) ?? []).equals(bytes),
+      ).toBe(true);
+      const missing = await handleExample(
+        request(`/api/v1/example/${runId}/evidence/ev_002`),
+        env(),
+      );
+      expect(missing?.status).toBe(404);
+    }
+    const unknown = await handleExample(
+      request("/api/v1/example/unsaved-run/evidence/ev_001"),
+      env(),
+    );
+    expect(unknown?.status).toBe(404);
+    expect(
+      await handleExample(request("/api/v1/example/evidence/ev_001"), env()),
+    ).toBeNull();
   });
 
   it("refuses to save without the operator token", async () => {
@@ -219,7 +269,7 @@ describe("example routes", () => {
       expect(response?.status).toBe(405);
     }
     const media = await handleExample(
-      request("/api/v1/example/evidence/ev_001", { method: "POST" }),
+      request(`/api/v1/example/${RUN}/evidence/ev_001`, { method: "POST" }),
       env(),
     );
     expect(media?.status).toBe(405);

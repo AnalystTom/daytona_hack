@@ -20,9 +20,9 @@ import {
 export type ExampleEnv = OrchestratorEnv & StoreEnv;
 
 const SaveRequest = z.object({ runId: z.string().regex(EXAMPLE_ID) });
-const ROUTE = /^\/api\/v1\/example(?:\/evidence\/([^/]+))?$/;
+const ROUTE = /^\/api\/v1\/example(?:\/([\w-]{1,100})\/evidence\/([\w-]{1,100}))?$/;
 
-// GET /api/v1/example and /api/v1/example/evidence/:id are public and read-only: the saved
+// GET /api/v1/example and /api/v1/example/:runId/evidence/:id are public and read-only: the saved
 // copy cannot reach the run, so nothing here can steer, approve, build or spend.
 // POST /api/v1/example {runId} (operator bearer) saves a finished run as the example.
 export async function handleExample(
@@ -35,7 +35,7 @@ export async function handleExample(
     const resolved = resolveStore(env);
     const store =
       "store" in resolved ? surrealExampleStore(resolved.store) : undefined;
-    const evidenceId = match[1];
+    const [, runId, evidenceId] = match;
     if (request.method === "POST" && evidenceId === undefined) {
       await checkToken(request, env, "OPERATOR_TOKEN");
       if (!env.ORCHESTRATOR) throw notConfigured(["ORCHESTRATOR"]);
@@ -56,16 +56,16 @@ export async function handleExample(
     }
     if (!store)
       throw notConfigured((resolved as { missing: string[] }).missing);
-    const snapshot = await loadSnapshot(store);
-    if (!snapshot) {
-      throw new Failure(404, "no_example", "No example run has been saved.");
-    }
-    if (evidenceId === undefined) {
+    if (runId === undefined || evidenceId === undefined) {
+      const snapshot = await loadSnapshot(store);
+      if (!snapshot) {
+        throw new Failure(404, "no_example", "No example run has been saved.");
+      }
       return Response.json(snapshot, {
         headers: { "cache-control": "public, max-age=60" },
       });
     }
-    const file = await loadMedia(store, snapshot, evidenceId);
+    const file = await loadMedia(store, runId, evidenceId);
     if (!file) throw new Failure(404, "not_found", "No such evidence file.");
     return new Response(file.bytes, {
       headers: {
@@ -73,7 +73,7 @@ export async function handleExample(
         // Captured site content never runs as a page here.
         "content-security-policy": "sandbox; default-src 'none'",
         "x-content-type-options": "nosniff",
-        "cache-control": "public, max-age=300",
+        "cache-control": "public, max-age=31536000, immutable",
       },
     });
   } catch (error) {

@@ -66,7 +66,10 @@ export function exampleView(example: Example): ExampleView {
   const runEvidence = `/api/v1/runs/${example.runId}/evidence/`;
   run.evidence = run.evidence.map((item) => ({
     ...item,
-    src: item.src?.replace(runEvidence, "/api/v1/example/evidence/"),
+    src: item.src?.replace(
+      runEvidence,
+      `/api/v1/example/${example.runId}/evidence/`,
+    ),
   }));
   const counts = new Map<string, number>();
   for (const task of deriveBoard(run.board).tasks) {
