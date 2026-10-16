@@ -23,6 +23,10 @@
   outline-offset: 2px;
 }
 
+.mark {
+  flex: none;
+}
+
 .visually-hidden {
   position: absolute;
   width: 1px;
@@ -104,8 +108,17 @@
   font-weight: 600;
 }
 
-.ws-start {
+.ws-run {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
   margin-left: auto;
+}
+
+.ws-phase {
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .ws-canvas {
@@ -458,6 +471,7 @@
 
 .notice-not_connected,
 .notice-failed,
+.notice-run_error,
 .notice-sign_in_needed {
   border-left-color: var(--error);
   background: var(--error-soft);
@@ -465,6 +479,7 @@
 
 .notice-not_connected .notice-icon,
 .notice-failed .notice-icon,
+.notice-run_error .notice-icon,
 .notice-sign_in_needed .notice-icon {
   color: var(--error);
 }
@@ -478,6 +493,17 @@
 
 .notice-actions .button {
   padding: 0.4rem 0.8rem;
+  font-size: 0.875rem;
+}
+
+.token-form input {
+  flex: 1 1 10rem;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  background: var(--card);
+  font: inherit;
   font-size: 0.875rem;
 }
 

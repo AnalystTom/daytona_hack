@@ -10,21 +10,25 @@ import { Mark } from "./Mark";
 
 const NOTICE_TITLE = {
   not_connected: "Not connected",
-  sign_in_needed: "Sign-in needed",
-  failed: "Not sent",
+  operator_token: "Operator token needed",
+  failed: "Request failed",
+  run_error: "Run error",
 } as const;
+
+type Handlers = {
+  pending: boolean;
+  onRetry: (id: string) => void;
+  onSend: (text: string) => void;
+  onSaveToken: (token: string, noticeId: string) => void;
+};
 
 function Entry({
   entry,
   pending,
   onRetry,
   onSend,
-}: {
-  entry: ChatEntry;
-  pending: boolean;
-  onRetry: (id: string) => void;
-  onSend: (text: string) => void;
-}) {
+  onSaveToken,
+}: Handlers & { entry: ChatEntry }) {
   switch (entry.kind) {
     case "user":
       return (
@@ -57,9 +61,14 @@ function Entry({
       return (
         <li className={`notice notice-${entry.error}`} role="status">
           <StatusIcon />
-          <p>
-            <strong>{NOTICE_TITLE[entry.error]}.</strong> {entry.detail}
-          </p>
+          <div>
+            <p>
+              <strong>{NOTICE_TITLE[entry.error]}.</strong> {entry.detail}
+            </p>
+            {entry.error === "operator_token" && (
+              <TokenForm onSave={(token) => onSaveToken(token, entry.id)} />
+            )}
+          </div>
         </li>
       );
     case "reconnecting":
@@ -113,12 +122,8 @@ export function ChatPanel({
   pending,
   onSend,
   onRetry,
-}: {
-  entries: ChatEntry[];
-  pending: boolean;
-  onSend: (text: string) => void;
-  onRetry: (id: string) => void;
-}) {
+  onSaveToken,
+}: Handlers & { entries: ChatEntry[] }) {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLOListElement>(null);
   const isBrief = entries.length === 0;
@@ -166,6 +171,7 @@ export function ChatPanel({
               pending={pending}
               onRetry={onRetry}
               onSend={onSend}
+              onSaveToken={onSaveToken}
             />
           ))}
         </ol>
@@ -219,6 +225,38 @@ export function ChatPanel({
         </div>
       </form>
     </aside>
+  );
+}
+
+function TokenForm({ onSave }: { onSave: (token: string) => void }) {
+  const [token, setToken] = useState("");
+  return (
+    <form
+      className="notice-actions token-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (token.trim()) onSave(token.trim());
+      }}
+    >
+      <label className="visually-hidden" htmlFor="operator-token">
+        Operator token
+      </label>
+      <input
+        id="operator-token"
+        type="password"
+        autoComplete="off"
+        placeholder="Operator token"
+        value={token}
+        onChange={(event) => setToken(event.target.value)}
+      />
+      <button
+        type="submit"
+        className="button button-primary"
+        disabled={!token.trim()}
+      >
+        Save token
+      </button>
+    </form>
   );
 }
 

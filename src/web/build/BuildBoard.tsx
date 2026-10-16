@@ -3,9 +3,16 @@ import type { EventEnvelope, TaskState } from "../../shared/contracts";
 import { type BoardTask, columns, deriveBoard } from "./board";
 import "./BuildBoard.css";
 
+export type Override = {
+  taskId: string;
+  verdict: "approve" | "reject";
+  reason: string;
+};
+
 type Props = {
   events: readonly (EventEnvelope & { detail?: unknown })[];
   onStopBuild: () => void;
+  onOverride?: (override: Override) => void;
 };
 
 const stateLabels: Record<TaskState, string> = {
@@ -77,7 +84,7 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
 });
 
-export function BuildBoard({ events, onStopBuild }: Props) {
+export function BuildBoard({ events, onStopBuild, onOverride }: Props) {
   const board = useMemo(() => deriveBoard(events), [events]);
   const [selectedId, setSelectedId] = useState<string>();
 
@@ -149,7 +156,12 @@ export function BuildBoard({ events, onStopBuild }: Props) {
       </div>
 
       {selected && (
-        <TaskPanel key={selected.id} task={selected} onClose={close} />
+        <TaskPanel
+          key={selected.id}
+          task={selected}
+          onClose={close}
+          onOverride={onOverride}
+        />
       )}
     </section>
   );
@@ -214,9 +226,11 @@ function TaskCard({
 function TaskPanel({
   task,
   onClose,
+  onOverride,
 }: {
   task: BoardTask;
   onClose: () => void;
+  onOverride?: (override: Override) => void;
 }) {
   const heading = useRef<HTMLHeadingElement>(null);
   // Move focus into the panel when it opens, so keyboard users land on the task they chose.
@@ -331,6 +345,17 @@ function TaskPanel({
         </div>
       )}
 
+      {onOverride &&
+        (review?.verdict || state === "failed") &&
+        state !== "merged" &&
+        state !== "stopped" && (
+          <OverrideForm
+            onOverride={(verdict, reason) =>
+              onOverride({ taskId: task.id, verdict, reason })
+            }
+          />
+        )}
+
       {task.log.length > 0 && (
         <div className="bb-log-wrap">
           <h4>Log</h4>
@@ -349,5 +374,41 @@ function TaskPanel({
 
       {empty && <p className="bb-muted">Nothing recorded for this task yet.</p>}
     </section>
+  );
+}
+
+// Lets the user overrule the reviewer: merge the work as it is, or send it back for another build.
+function OverrideForm({
+  onOverride,
+}: {
+  onOverride: (verdict: Override["verdict"], reason: string) => void;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <form className="bb-override" onSubmit={(event) => event.preventDefault()}>
+      <h4>Override the review</h4>
+      <label htmlFor="bb-override-reason">Reason (optional)</label>
+      <input
+        id="bb-override-reason"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+      />
+      <div className="bb-override-actions">
+        <button
+          type="button"
+          className="bb-button"
+          onClick={() => onOverride("approve", reason.trim())}
+        >
+          Approve and merge
+        </button>
+        <button
+          type="button"
+          className="bb-button"
+          onClick={() => onOverride("reject", reason.trim())}
+        >
+          Send back to build
+        </button>
+      </div>
+    </form>
   );
 }
