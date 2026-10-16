@@ -8,6 +8,7 @@ import {
   runAction,
   sendMessage,
   signIn,
+  startSignIn,
 } from "./runClient";
 
 const reply = (status: number, body?: unknown) =>
@@ -121,6 +122,23 @@ describe("run client", () => {
         '{"taskId":"t02","verdict":"approve","reason":""}',
       ],
     ]);
+  });
+
+  it("starts secure sign-in and accepts only an https live view", async () => {
+    const live = "https://live.anchorbrowser.io?sessionId=s1";
+    const fetchImpl = reply(200, { liveViewUrl: live });
+    expect(await startSignIn("run_1", fetchImpl)).toEqual({
+      ok: true,
+      value: live,
+    });
+    expect(vi.mocked(fetchImpl).mock.calls[0]?.[0]).toBe(
+      "/api/v1/runs/run_1/sign-in",
+    );
+    const unsafe = await startSignIn(
+      "run_1",
+      reply(200, { liveViewUrl: "javascript:alert(1)" }),
+    );
+    expect(unsafe.ok).toBe(false);
   });
 
   it("reads events and drops malformed ones", async () => {

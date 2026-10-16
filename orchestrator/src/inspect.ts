@@ -1,13 +1,25 @@
-// Inspector: captures evidence for in-scope pages. Site content is data, never instructions.
-import { anchorScreenshot, pageHtml, sha256 } from "./services";
+// Inspector: captures evidence for in-scope pages with our shared Anchor capture
+// (src/worker/evidence), stored in SurrealDB. Site content is data, never instructions.
+import {
+  type CaptureRequest,
+  CaptureScope,
+  type EvidenceRecord,
+  inScope,
+  redactQuery,
+} from "../../src/shared/evidence";
+import {
+  type CaptureDeps,
+  captureRun,
+  endSignIn,
+  leftScope,
+} from "../../src/worker/evidence/capture";
+import {
+  type EvidenceStore,
+  evidenceIdPattern,
+  surrealStore,
+} from "../../src/worker/evidence/store";
+import { resolveStore } from "../../src/worker/store";
 import type { Env, Evidence } from "./types";
-
-export interface Capture {
-  evidence: Evidence[];
-  blobs: Record<string, ArrayBuffer | string>; // evidence id -> content, written to the sandbox evidence store
-}
-
-const now = () => new Date().toISOString();
 
 export function routesFrom(html: string, base: string): string[] {
   const origin = new URL(base).origin;
@@ -25,142 +37,134 @@ export function routesFrom(html: string, base: string): string[] {
   return [...seen].slice(0, 40);
 }
 
-function tokensFrom(css: string) {
-  const count = (re: RegExp) => {
-    const m = new Map<string, number>();
-    for (const x of css.matchAll(re))
-      m.set(x[1].trim(), (m.get(x[1].trim()) || 0) + 1);
-    return [...m.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 24)
-      .map(([v, n]) => ({ value: v, uses: n }));
-  };
+// Runs from before SurrealDB storage have ids like ev_001, which the store cannot look up.
+export const isStoredEvidenceId = (id: string) => evidenceIdPattern.test(id);
+
+export function evidenceStore(env: Env): EvidenceStore {
+  const resolved = resolveStore(env);
+  if ("missing" in resolved)
+    throw new Error(
+      `Evidence storage is not configured: missing ${resolved.missing.join(", ")}`,
+    );
+  return surrealStore(resolved.store);
+}
+
+// The capture checks at most this many paths per pass (CaptureScope).
+export const maxPaths = 10;
+
+/** The approved origin and unique paths, capped; `dropped` lists the paths over the cap. */
+export function captureScope(siteUrl: string, paths: string[]) {
+  const target = new URL(siteUrl);
+  const origin = target.origin;
+  // Paths come from the model: anything that resolves off the site is left out.
+  const urls = paths.map((p) => new URL(p, origin));
+  const kept = urls
+    .filter((u) => u.origin === origin)
+    .map((u) => {
+      if (!u.search && inScope(u.href, { origin, paths: [target.pathname] }))
+        u.search = target.search;
+      return u.pathname + u.search;
+    });
+  const unique = [
+    ...new Set(kept.length ? kept : [target.pathname + target.search]),
+  ];
   return {
-    colors: count(/(#[0-9a-fA-F]{3,8}\b|rgba?\([^)]+\)|hsla?\([^)]+\))/g),
-    fonts: count(/font-family:\s*([^;}]+)/g),
-    radii: count(/border-radius:\s*([^;}]+)/g),
-    fontSizes: count(/font-size:\s*([^;}]+)/g),
-    customProperties: count(/(--[a-zA-Z0-9-]+):/g),
+    scope: CaptureScope.parse({ origin, paths: unique.slice(0, maxPaths) }),
+    dropped: unique.slice(maxPaths),
   };
 }
 
-export async function inspectPage(
-  env: Env,
-  url: string,
-  startId: number,
-  opts: { full: boolean },
-): Promise<Capture> {
-  const page = new URL(url).pathname;
-  const evidence: Evidence[] = [];
-  const blobs: Capture["blobs"] = {};
-  let n = startId;
-  const id = () => `ev_${String(n++).padStart(3, "0")}`;
+const extensions: Record<string, string> = {
+  "image/png": "png",
+  "video/mp4": "mp4",
+  "text/html": "html",
+  "application/json": "json",
+};
 
-  const viewports: [string, number, number][] = opts.full
-    ? [
-        ["desktop", 1440, 900],
-        ["mobile", 390, 844],
-      ]
-    : [["desktop", 1440, 900]];
-  for (const [name, w, h] of viewports) {
-    const shot = await anchorScreenshot(env, url, w, h);
-    const eid = id();
-    if (shot) {
-      blobs[eid] = shot;
-      evidence.push({
-        id: eid,
-        page,
-        kind: "screenshot",
-        tool: "anchor",
-        status: "observed",
-        capturedAt: now(),
-        hash: await sha256(shot),
-        limits: `${name} ${w}px, full height, after load + 1.5s`,
-        summary: `${name} screenshot of ${page}`,
-        path: `evidence/${eid}.png`,
-      });
-    } else {
-      evidence.push({
-        id: eid,
-        page,
-        kind: "screenshot",
-        tool: "anchor",
-        status: "not_observed",
-        capturedAt: now(),
-        hash: "",
-        limits: "Anchor not configured",
-        summary: `No ${name} screenshot yet`,
-      });
-    }
-  }
-
-  const { html, tool } = await pageHtml(env, url);
-  const hid = id();
-  blobs[hid] = html;
-  evidence.push({
-    id: hid,
+/** A stored evidence record as the orchestrator's `evidence` event and state entry. */
+export function toEvidence(record: EvidenceRecord): Evidence {
+  const observed = record.label === "observed";
+  const media = record.kind === "screenshot" || record.kind === "recording";
+  const page = redactQuery(record.pageOrState);
+  return {
+    id: record.id,
     page,
-    kind: "html",
-    tool,
-    status: "observed",
-    capturedAt: now(),
-    hash: await sha256(html),
-    limits:
-      tool === "fetch"
-        ? "server HTML only; client-rendered content may be missing"
-        : "rendered HTML",
-    summary: `HTML of ${page} (${Math.round(html.length / 1024)} KB)`,
-    path: `evidence/${hid}.html`,
-  });
+    kind: record.kind,
+    tool: record.tool,
+    status: record.label,
+    capturedAt: record.capturedAt,
+    hash: record.contentHash,
+    // Redirect targets keep their query strings only in the stored record, never in events.
+    limits: redactQuery(record.limitations.join(" ")),
+    summary: `${observed ? "" : "No "}${record.kind} of ${page}`,
+    path: observed
+      ? `evidence/${record.id}.${extensions[record.contentType] ?? "bin"}`
+      : undefined,
+    url:
+      observed && media
+        ? `/runs/${record.runId}/evidence/${record.id}`
+        : undefined,
+  };
+}
 
-  if (opts.full) {
-    const cssUrls = [...html.matchAll(/<link[^>]+href="([^"]+\.css[^"]*)"/g)]
-      .map((m) => new URL(m[1], url).toString())
-      .slice(0, 6);
-    let css = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
-      .map((m) => m[1])
-      .join("\n");
-    for (const c of cssUrls) {
-      try {
-        css += "\n" + (await (await fetch(c)).text());
-      } catch {}
-    }
-    const tid = id();
-    const tokens = JSON.stringify(tokensFrom(css), null, 1);
-    blobs[tid] = tokens;
-    evidence.push({
-      id: tid,
-      page,
-      kind: "styles",
-      tool: "fetch",
-      status: "inferred",
-      capturedAt: now(),
-      hash: await sha256(tokens),
-      limits: "frequency of values in shipped CSS, not computed styles",
-      summary: `Design tokens from ${cssUrls.length} stylesheets`,
-      path: `evidence/${tid}.json`,
-    });
+/** Pages whose capture left the approved scope, usually by redirecting to a sign-in page. */
+export function stoppedPages(records: EvidenceRecord[]): string[] {
+  const left = records.filter(
+    (r) =>
+      r.label === "not_observed" &&
+      r.limitations.some((l) => l.includes(leftScope)),
+  );
+  return [
+    ...new Set(
+      left.map((r) => {
+        const url = new URL(r.url);
+        return url.pathname + url.search;
+      }),
+    ),
+  ];
+}
 
-    const assets = [
-      ...html.matchAll(/<(?:img|source)[^>]+(?:src|srcset)="([^"\s]+)/g),
-    ].map((m) => new URL(m[1], url).toString());
-    const aid = id();
-    const list = JSON.stringify([...new Set(assets)].slice(0, 80), null, 1);
-    blobs[aid] = list;
-    evidence.push({
-      id: aid,
-      page,
-      kind: "assets",
-      tool: "fetch",
-      status: "observed",
-      capturedAt: now(),
-      hash: await sha256(list),
-      limits: "img/source tags in HTML only",
-      summary: `${assets.length} image assets`,
-      path: `evidence/${aid}.json`,
-    });
-  }
-  return { evidence, blobs };
+/** Ends the run's saved sign-in session on skip or stop. */
+export async function endSavedSignIn(env: Env, runId: string) {
+  if (!env.ANCHORBROWSER_API_KEY) return;
+  await endSignIn(
+    { anchorApiKey: env.ANCHORBROWSER_API_KEY, store: evidenceStore(env) },
+    runId,
+  );
+}
+
+/** Runs one capture; every stored record also goes to `landed` as it is written. */
+export async function capture(
+  env: Env,
+  runId: string,
+  request: CaptureRequest,
+  landed: (evidence: Evidence) => Promise<void>,
+  control: Pick<CaptureDeps, "signal" | "onSession"> = {},
+) {
+  if (!env.ANCHORBROWSER_API_KEY)
+    throw new Error(
+      "Evidence capture is not configured: missing ANCHORBROWSER_API_KEY",
+    );
+  const store = evidenceStore(env);
+  return captureRun(
+    {
+      ...control,
+      anchorApiKey: env.ANCHORBROWSER_API_KEY,
+      store: {
+        ...store,
+        async putEvidence(record, content, signal) {
+          control.signal?.throwIfAborted();
+          await store.putEvidence(record, content, signal);
+          control.signal?.throwIfAborted();
+          await landed(toEvidence(record));
+        },
+      },
+      // Each record lands as its own evidence event; the progress events add nothing to the canvas.
+      emit: () => {},
+    },
+    runId,
+    request,
+  );
 }
 
 /** Text the planner and workers can read: HTML stripped to structure and copy. */

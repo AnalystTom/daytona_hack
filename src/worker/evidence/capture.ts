@@ -4,6 +4,7 @@ import {
   type CaptureRequest,
   type EvidenceRecord,
   inScope,
+  redactQuery,
   viewports,
 } from "../../shared/evidence";
 import * as anchor from "./anchor";
@@ -25,6 +26,8 @@ export type CaptureResult =
 export interface CaptureDeps {
   anchorApiKey: string;
   store: EvidenceStore;
+  signal?: AbortSignal;
+  onSession?: (close: () => Promise<void>) => void;
   // Appends the event to the run; the caller adds the envelope (IDs, sequence, timestamp).
   emit: (event: CaptureEvent) => void | Promise<void>;
 }
@@ -44,10 +47,26 @@ async function sha256(bytes: Uint8Array) {
   return `sha256:${Array.from(digest, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 }
 
+export const recordingCapMs = 30_000;
+// Ends the reason on every item of a page that left the scope; the orchestrator offers sign-in on it.
+export const leftScope = "outside the approved scope";
+
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";
 const signedInSkipped =
   "Signed-in DOM, assets and network are not captured until masking exists.";
+
+// Ends the run's saved sign-in session, if any; an end failure is left to Anchor's timeout.
+export async function endSignIn(
+  deps: Pick<CaptureDeps, "anchorApiKey" | "store">,
+  runId: string,
+) {
+  const signIn = await deps.store.takeSignIn(runId);
+  if (signIn)
+    await anchor
+      .endSession(deps.anchorApiKey, signIn.sessionId)
+      .catch(() => {});
+}
 
 // Captures evidence for every approved path, or starts/resumes a secure sign-in.
 export async function captureRun(
@@ -55,6 +74,7 @@ export async function captureRun(
   runId: string,
   request: CaptureRequest,
 ): Promise<CaptureResult> {
+  deps.signal?.throwIfAborted();
   const { scope, mode } = request;
   const full = mode === "full_pack";
   const key = deps.anchorApiKey;
@@ -66,9 +86,7 @@ export async function captureRun(
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
     try {
-      const previous = await deps.store.takeSignIn(runId);
-      if (previous)
-        await anchor.endSession(key, previous.sessionId).catch(() => {});
+      await endSignIn(deps, runId);
       await deps.store.saveSignIn(runId, {
         sessionId: session.id,
         origin: scope.origin,
@@ -108,6 +126,25 @@ export async function captureRun(
   } else {
     sessionId = (await anchor.createSession(key, { recording: full })).id;
   }
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= anchor.endSession(key, sessionId).catch(() => {}));
+  // Recordings are capped at 30 seconds: pause it then, however long the pages take.
+  let capMissed = false;
+  let pausing: Promise<void> | undefined;
+  const cap =
+    full && !signedIn
+      ? setTimeout(() => {
+          pausing = anchor.pauseRecording(key, sessionId).catch(() => {
+            capMissed = true;
+          });
+        }, recordingCapMs)
+      : undefined;
+  const abort = () => {
+    if (cap !== undefined) clearTimeout(cap);
+    void close();
+  };
+  deps.signal?.addEventListener("abort", abort, { once: true });
 
   const items: EvidenceRecord[] = [];
   const save = async (
@@ -117,6 +154,7 @@ export async function captureRun(
     content: Uint8Array,
     limitations: string[],
   ) => {
+    deps.signal?.throwIfAborted();
     const record: EvidenceRecord = {
       id: `ev_${crypto.randomUUID()}`,
       runId,
@@ -129,7 +167,9 @@ export async function captureRun(
       contentType,
       byteLength: content.length,
     };
-    await deps.store.putEvidence(record, content);
+    deps.signal?.throwIfAborted();
+    await deps.store.putEvidence(record, content, deps.signal);
+    deps.signal?.throwIfAborted();
     items.push(record);
     return record.id;
   };
@@ -139,7 +179,9 @@ export async function captureRun(
     save(expected, "not_observed", "text/plain", new Uint8Array(), [reason]);
 
   const capturePage = async (path: string) => {
+    deps.signal?.throwIfAborted();
     const url = `${scope.origin}${path}`;
+    const pageScope = { origin: scope.origin, paths: [path] };
     const shots = Object.entries(
       full ? viewports : { desktop: viewports.desktop },
     );
@@ -173,9 +215,9 @@ export async function captureRun(
     const leave = (verb: string, finalUrl: string) => {
       outOfScope.push(finalUrl);
       const reason = (target: string) =>
-        `${verb} ${target}, outside the approved scope; capture stopped for this page.`;
+        `${verb} ${target}, ${leftScope}; capture stopped for this page.`;
       stopped = reason(finalUrl);
-      shown = reason(finalUrl.split(/[?#]/)[0] as string);
+      shown = reason(redactQuery(finalUrl));
     };
 
     try {
@@ -184,7 +226,8 @@ export async function captureRun(
         sessionId,
         anchor.navigateSnippet(url, scope.origin, full),
       );
-      if (!inScope(facts.finalUrl, scope)) {
+      deps.signal?.throwIfAborted();
+      if (!inScope(facts.finalUrl, pageScope)) {
         leave("Redirected to", facts.finalUrl);
       } else {
         if (full) {
@@ -208,11 +251,13 @@ export async function captureRun(
             ]);
         }
         for (const [, viewport] of shots) {
+          deps.signal?.throwIfAborted();
           const shot = await anchor.runSnippet<{
             finalUrl: string;
             png: string;
           }>(key, sessionId, anchor.screenshotSnippet(viewport));
-          if (!inScope(shot.finalUrl, scope)) {
+          deps.signal?.throwIfAborted();
+          if (!inScope(shot.finalUrl, pageScope)) {
             leave("Page moved to", shot.finalUrl);
             break;
           }
@@ -222,28 +267,43 @@ export async function captureRun(
         }
       }
     } catch (error) {
+      deps.signal?.throwIfAborted();
       // Only browser failures become not_observed; storage failures must fail the capture.
       if (!(error instanceof anchor.AnchorError)) throw error;
+      if (signedIn)
+        throw new CaptureError(
+          "The sign-in session could not be captured; open secure sign-in again.",
+          409,
+        );
       stopped = `Capture failed: ${error.message}`;
-      shown = stopped.replace(/[?#][^\s"']*/g, "");
+      shown = redactQuery(stopped);
     }
 
     while (pending.length) await skip(stopped ?? "");
+    deps.signal?.throwIfAborted();
     await deps.emit({
       type: stopped ? "evidence.page_stopped" : "evidence.page_captured",
       state: "capturing",
-      message: stopped ? `${path}: ${shown}` : `Captured ${path}`,
+      message: stopped
+        ? `${redactQuery(path)}: ${shown}`
+        : `Captured ${redactQuery(path)}`,
       artifactRefs: ids,
     });
   };
 
   try {
+    deps.onSession?.(close);
+    deps.signal?.throwIfAborted();
     for (const path of scope.paths) await capturePage(path);
   } finally {
+    deps.signal?.removeEventListener("abort", abort);
+    if (cap !== undefined) clearTimeout(cap);
+    await pausing;
     // Anchor also ends idle sessions itself, so a failed close only costs a few idle minutes.
-    await anchor.endSession(key, sessionId).catch(() => {});
+    await close();
   }
 
+  deps.signal?.throwIfAborted();
   if (full) {
     const recording: Expected = {
       kind: "recording",
@@ -255,6 +315,11 @@ export async function captureRun(
         recording,
         "Recording is off in signed-in sessions so the user's sign-in is never recorded.",
       );
+    } else if (capMissed) {
+      await notObserved(
+        recording,
+        "Recording was not kept because pausing it at 30 seconds failed.",
+      );
     } else if (outOfScope.length) {
       await notObserved(
         recording,
@@ -265,7 +330,7 @@ export async function captureRun(
         const video = await anchor.primaryRecording(key, sessionId);
         if (video) {
           await save(recording, "observed", "video/mp4", video, [
-            "Page-load recording of the whole capture session; no interactions were performed.",
+            "Page-load recording of the first 30 seconds of the capture session; no interactions were performed.",
           ]);
         } else {
           await notObserved(
@@ -274,6 +339,7 @@ export async function captureRun(
           );
         }
       } catch (error) {
+        if (!(error instanceof anchor.AnchorError)) throw error;
         await notObserved(
           recording,
           `Recording fetch failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -282,6 +348,7 @@ export async function captureRun(
     }
   }
 
+  deps.signal?.throwIfAborted();
   await deps.emit({
     type: "evidence.capture_finished",
     state: "captured",

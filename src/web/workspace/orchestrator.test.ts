@@ -56,15 +56,25 @@ const events = [
   ev("evidence", {
     id: "ev_002",
     page: "/",
-    kind: "html",
-    tool: "fetch",
+    kind: "dom",
+    tool: "anchor",
     status: "observed",
     capturedAt: "2026-10-16T12:00:00.000Z",
     hash: "sha256:def",
     limits: "",
-    summary: "Landing HTML",
+    summary: "dom of /",
   }),
-  ev("evidence", { id: "routes", page: "/", kind: "links", routes: ["/"] }),
+  ev("evidence", {
+    id: "ev_003",
+    page: "session: /",
+    kind: "recording",
+    tool: "anchor",
+    status: "observed",
+    capturedAt: "2026-10-16T12:00:00.000Z",
+    hash: "sha256:fed",
+    limits: "First 30 seconds",
+    url: "/runs/r1/evidence/ev_003",
+  }),
   ev("spec", spec),
   ev("chat", { role: "assistant", text: "Which pages should we include?" }),
   ev("spec", { ...spec, approved: true, revision: 1 }),
@@ -142,7 +152,7 @@ describe("runView", () => {
     });
   });
 
-  it("shows screenshots through the run API and leaves other evidence out", () => {
+  it("shows screenshots and recordings through the run API and leaves other evidence out", () => {
     expect(view.evidence).toEqual([
       {
         id: "ev_001",
@@ -154,6 +164,17 @@ describe("runView", () => {
         contentHash: "sha256:abc",
         limitations: ["Desktop viewport only"],
         src: "/api/v1/runs/r1/evidence/ev_001",
+      },
+      {
+        id: "ev_003",
+        kind: "recording",
+        label: "observed",
+        pageOrState: "session: /",
+        tool: "anchor",
+        capturedAt: "2026-10-16T12:00:00.000Z",
+        contentHash: "sha256:fed",
+        limitations: ["First 30 seconds"],
+        src: "/api/v1/runs/r1/evidence/ev_003",
       },
     ]);
   });

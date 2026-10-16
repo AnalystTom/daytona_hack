@@ -172,7 +172,16 @@ describe("run routes", () => {
 
   it("guards every action that steers a run", async () => {
     const { env, seen } = setup();
-    for (const action of ["messages", "approve", "build", "stop", "override"]) {
+    for (const action of [
+      "messages",
+      "approve",
+      "build",
+      "stop",
+      "override",
+      "sign-in",
+      "sign-in/resume",
+      "sign-in/skip",
+    ]) {
       const response = await call(
         `/api/v1/runs/r1/${action}`,
         { method: "POST", json: {} },
@@ -208,9 +217,17 @@ describe("run routes", () => {
     expect(
       (await post("override", { taskId: "t02", verdict: "maybe" }))?.status,
     ).toBe(400);
-    for (const action of ["approve", "build", "stop"]) {
+    for (const action of [
+      "approve",
+      "build",
+      "stop",
+      "sign-in",
+      "sign-in/resume",
+      "sign-in/skip",
+    ]) {
       expect((await post(action))?.status).toBe(200);
     }
+    expect((await post("sign-in/other"))?.status).toBe(404);
     expect((await post("delete"))?.status).toBe(404);
     expect(
       seen.map((s) => `${s.method} ${new URL(s.url).pathname} ${s.body}`),
@@ -220,6 +237,9 @@ describe("run routes", () => {
       "POST /runs/r1/approve {}",
       "POST /runs/r1/build {}",
       "POST /runs/r1/stop {}",
+      "POST /runs/r1/sign-in {}",
+      "POST /runs/r1/sign-in/resume {}",
+      "POST /runs/r1/sign-in/skip {}",
     ]);
   });
 
@@ -253,6 +273,9 @@ describe("run routes", () => {
     const shot = await get("/api/v1/runs/r1/evidence/ev_001");
     expect(shot?.headers.get("content-type")).toBe("image/png");
     expect(await shot?.text()).toBe("png");
+    // Captured site content must never run on this origin.
+    expect(shot?.headers.get("content-security-policy")).toContain("sandbox");
+    expect(shot?.headers.get("x-content-type-options")).toBe("nosniff");
     expect((await get("/api/v1/runs/r1/events?since=x"))?.status).toBe(400);
     expect((await get("/api/v1/runs/r1/evidence/../x"))?.status).toBe(404);
     expect(seen.map((s) => s.url)).toEqual([
@@ -289,6 +312,37 @@ describe("run routes", () => {
     );
     expect(await built?.json()).toEqual({ id: "r1", phase: "building" });
   });
+
+  it.each(["/api/v1/runs", "/api/v1/orchestrator/runs"])(
+    "preserves JSON evidence bytes through %s",
+    async (prefix) => {
+      const bytes = new TextEncoder().encode(
+        '{\n  "sandboxId": "string", "nested": {"sandboxId": "number"}\n}\n',
+      );
+      const { env } = setup(
+        () =>
+          new Response(bytes, {
+            headers: {
+              "content-type": "application/json",
+              "access-control-allow-origin": "*",
+            },
+          }),
+      );
+      const response = await call(
+        `${prefix}/r1/evidence/ev_001`,
+        { headers: operator },
+        env,
+      );
+      expect(response?.status).toBe(200);
+      expect(new Uint8Array(await response!.arrayBuffer())).toEqual(bytes);
+      expect(response?.headers.get("content-type")).toBe("application/json");
+      expect(response?.headers.get("content-security-policy")).toContain(
+        "sandbox",
+      );
+      expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response?.headers.get("access-control-allow-origin")).toBeNull();
+    },
+  );
 
   it("answers 404 for a run the orchestrator does not know", async () => {
     const { env } = setup(() => new Response(undefined, { status: 200 }));

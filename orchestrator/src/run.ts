@@ -1,8 +1,24 @@
 // One Durable Object per run: brief → inspect → plan → build/review, driven by alarms.
 import { DurableObject } from "cloudflare:workers";
+import {
+  type CaptureRequest,
+  inScope,
+  redactQuery,
+} from "../../src/shared/evidence";
+import { CaptureError } from "../../src/worker/evidence/capture";
 import { Daytona, shq } from "./daytona";
-import { inspectPage, outline, routesFrom } from "./inspect";
-import { llmJson, recall, remember, tracing } from "./services";
+import {
+  capture,
+  captureScope,
+  endSavedSignIn,
+  evidenceStore,
+  isStoredEvidenceId,
+  maxPaths,
+  outline,
+  routesFrom,
+  stoppedPages,
+} from "./inspect";
+import { llmJson, pageHtml, recall, remember, tracing } from "./services";
 import { RunTracer } from "./tracing";
 import type {
   ChatMessage,
@@ -33,7 +49,8 @@ interface State {
   tasks: Task[];
   sandboxId?: string;
   previewUrl?: string;
-  pending?: "inspect" | "build_setup";
+  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup";
+  signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   error?: string;
 }
 
@@ -44,6 +61,18 @@ export class Run extends DurableObject<Env> {
   private seq = 0;
   private daytona: Daytona;
   private _tracer?: RunTracer;
+  private signInTransition = Promise.resolve();
+  private inspection = new AbortController();
+  private captureSessions = new Set<() => Promise<void>>();
+
+  private serializeSignIn<T>(action: () => Promise<T>) {
+    const result = this.signInTransition.then(action);
+    this.signInTransition = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
 
   private get tracer() {
     if (
@@ -82,14 +111,22 @@ export class Run extends DurableObject<Env> {
   }
 
   // ---------- persistence and events ----------
-  private async save() {
+  private async save(signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.ctx.storage.put("state", this.s);
   }
 
-  private async emit(type: RunEvent["type"], data: unknown) {
+  private async emit(
+    type: RunEvent["type"],
+    data: unknown,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const ev: RunEvent = { seq: ++this.seq, ts: now(), type, data };
     await this.ctx.storage.put(`ev:${String(ev.seq).padStart(8, "0")}`, ev);
+    signal?.throwIfAborted();
     await this.ctx.storage.put("seq", this.seq);
+    signal?.throwIfAborted();
     if (this.env.EVENTS_WEBHOOK_URL) {
       this.ctx.waitUntil(
         fetch(this.env.EVENTS_WEBHOOK_URL, {
@@ -118,8 +155,53 @@ export class Run extends DurableObject<Env> {
     return [...m.values()];
   }
 
-  async evidenceBlob(id: string) {
-    return this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
+  /** Reads only this run's evidence, from SurrealDB or legacy Durable Object blobs. */
+  async evidenceFile(id: string) {
+    const evidence = this.s?.evidence.find((e) => e.id === id);
+    if (!evidence) return null;
+    if (!isStoredEvidenceId(id)) {
+      const content = await this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
+      return content
+        ? {
+            contentType:
+              evidence.kind === "screenshot"
+                ? "image/png"
+                : evidence.kind === "html"
+                  ? "text/html"
+                  : "application/json",
+            content: new Uint8Array(content),
+          }
+        : null;
+    }
+    const store = evidenceStore(this.env);
+    const [record, content] = await Promise.all([
+      store.getEvidence(id),
+      store.getContent(id),
+    ]);
+    return record && content
+      ? { contentType: record.contentType, content }
+      : null;
+  }
+
+  /** Sandbox gateway screenshot: only pages in the run's approved scope, recorded as evidence. */
+  async gatewayCapture(url: string) {
+    if (!this.s) return { status: 404, error: "run not found" };
+    const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
+    if (!inScope(url, scope))
+      return { status: 403, error: "url is outside the run's approved scope" };
+    const result = await this.capture({
+      mode: "first_look",
+      scope: captureScope(url, []).scope,
+    });
+    const items = result.status === "captured" ? result.items : [];
+    const shot = items.find((i) => i.label === "observed");
+    const file = shot && (await this.evidenceFile(shot.id));
+    return file
+      ? { png: file.content }
+      : {
+          status: 502,
+          error: items[0]?.limitations.join(" ") || "screenshot not observed",
+        };
   }
 
   /** A signed link to the private sandbox preview, or undefined before the build serves one. */
@@ -131,6 +213,7 @@ export class Run extends DurableObject<Env> {
 
   /** Phase 1: create the run, take a first look, open the conversation. */
   async start(id: string, url: string, goal: string) {
+    const signal = this.inspection.signal;
     this.s = {
       id,
       phase: "brief",
@@ -147,27 +230,46 @@ export class Run extends DurableObject<Env> {
         revision: 0,
       },
     };
-    await this.save();
+    await this.save(signal);
     this.tracer.root(`${url}\n${goal}`);
-    await this.emit("phase", { phase: "brief" });
-    await this.addChat("user", `${url}\n${goal}`);
-    const cap = await this.traced("inspector.first_look", "TOOL", url, () =>
-      inspectPage(this.env, url, 1, { full: false }),
-    );
-    await this.storeEvidence(cap.evidence, cap.blobs);
-    const html = String(
-      Object.values(cap.blobs).find((b) => typeof b === "string") || "",
-    );
+    await this.emit("phase", { phase: "brief" }, signal);
+    await this.addChat("user", `${url}\n${goal}`, signal);
+    try {
+      await this.traced("inspector.first_look", "TOOL", url, () =>
+        this.capture({
+          mode: "first_look",
+          scope: captureScope(url, []).scope,
+        }),
+      );
+    } catch (e: any) {
+      if (signal.aborted) return this.s;
+      // The conversation can start without the screenshot.
+      await this.emit(
+        "error",
+        {
+          message: `First look screenshot failed: ${String(e?.message || e)}`,
+        },
+        signal,
+      );
+    }
+    if (signal.aborted) return this.s;
+    const { html } = await pageHtml(this.env, url);
+    if (signal.aborted) return this.s;
     const routes = routesFrom(html, url);
-    await this.emit("evidence", {
-      id: "routes",
-      page: "/",
-      kind: "links",
-      summary: `${routes.length} same-site routes`,
-      routes,
-    });
+    await this.emit(
+      "evidence",
+      {
+        id: "routes",
+        page: "/",
+        kind: "links",
+        summary: `${routes.length} same-site routes`,
+        routes,
+      },
+      signal,
+    );
     await this.converse(
       `First look done. Main routes found: ${routes.join(", ")}`,
+      signal,
     );
     return this.s;
   }
@@ -181,14 +283,63 @@ export class Run extends DurableObject<Env> {
 
   /** User approved the spec in chat or via button: inspect fully, then plan. */
   async approveSpec() {
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
     if (this.s.phase !== "brief")
       throw new Error(`cannot approve in phase ${this.s.phase}`);
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
     this.s.pending = "inspect";
+    await this.save(signal);
+    await this.emit("spec", this.s.spec, signal);
+    await this.emit("phase", { phase: "inspecting" }, signal);
+    signal.throwIfAborted();
+    await this.ctx.storage.setAlarm(Date.now() + 100);
+    return this.s;
+  }
+
+  /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
+  startSignIn() {
+    return this.serializeSignIn(async () => {
+      const result = await this.capture({
+        mode: "full_pack",
+        scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
+        signIn: "start",
+      });
+      if (result.status !== "awaiting_sign_in")
+        throw new Error("secure sign-in did not start");
+      return { liveViewUrl: result.liveViewUrl };
+    });
+  }
+
+  /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
+  resumeSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      return this.continueInspection("resume_sign_in");
+    });
+  }
+
+  /** Plan without the stopped pages. */
+  skipSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      await endSavedSignIn(this.env, this.s.id);
+      return this.continueInspection("plan");
+    });
+  }
+
+  private awaitingSignIn() {
+    if (this.s.phase !== "awaiting_sign_in" || !this.s.signInPaths?.length)
+      throw new Error(`no sign-in is pending in phase ${this.s.phase}`);
+    return this.s.signInPaths;
+  }
+
+  private async continueInspection(pending: "resume_sign_in" | "plan") {
+    this.s.phase = "inspecting";
+    this.s.pending = pending;
     await this.save();
-    await this.emit("spec", this.s.spec);
     await this.emit("phase", { phase: "inspecting" });
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return this.s;
@@ -208,23 +359,30 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  async stop() {
-    for (const t of this.s.tasks) {
-      if (t.status === "queued" || t.status === "building") {
-        t.status = "stopped";
-        t.nextAction = "Restart the build to resume";
-        await this.emit("task", t);
+  stop() {
+    return this.serializeSignIn(async () => {
+      this.inspection.abort();
+      await Promise.all([...this.captureSessions].map((close) => close()));
+      for (const t of this.s.tasks) {
+        if (t.status === "queued" || t.status === "building") {
+          t.status = "stopped";
+          t.nextAction = "Restart the build to resume";
+          await this.emit("task", t);
+        }
       }
-    }
-    if (this.s.sandboxId)
-      await this.daytona
-        .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
-        .catch(() => {});
-    this.s.phase = "stopped";
-    await this.save();
-    await this.emit("phase", { phase: "stopped" });
-    await this.ctx.storage.deleteAlarm();
-    return this.s;
+      if (this.s.sandboxId)
+        await this.daytona
+          .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
+          .catch(() => {});
+      if (this.s.signInPaths?.length)
+        await endSavedSignIn(this.env, this.s.id).catch(() => {});
+      this.s.phase = "stopped";
+      this.s.pending = undefined;
+      await this.save();
+      await this.emit("phase", { phase: "stopped" });
+      await this.ctx.storage.deleteAlarm();
+      return this.s;
+    });
   }
 
   /** Override a review verdict from the UI. */
@@ -253,13 +411,18 @@ export class Run extends DurableObject<Env> {
   // ---------- alarm loop ----------
   async alarm() {
     try {
-      if (this.s.pending === "inspect") {
+      const pending = this.s.pending;
+      if (
+        pending === "inspect" ||
+        pending === "resume_sign_in" ||
+        pending === "plan"
+      ) {
         this.s.pending = undefined;
         await this.traced(
-          "phase.inspect_and_plan",
+          `phase.${pending}`,
           "CHAIN",
           JSON.stringify(this.s.spec),
-          () => this.inspectAndPlan(),
+          () => this.inspectAndPlan(pending),
         );
       } else if (this.s.pending === "build_setup") {
         this.s.pending = undefined;
@@ -287,6 +450,7 @@ export class Run extends DurableObject<Env> {
         );
       }
     } catch (e: any) {
+      if (this.inspection.signal.aborted) return;
       this.s.error = String(e?.message || e);
       await this.emit("error", { message: this.s.error });
       if (this.s.phase === "inspecting" || this.s.phase === "planning")
@@ -294,35 +458,44 @@ export class Run extends DurableObject<Env> {
       if (this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }
+    if (this.inspection.signal.aborted) return;
     await this.save();
   }
 
   // ---------- phase 1: conversation ----------
-  private async addChat(role: ChatMessage["role"], text: string) {
+  private async addChat(
+    role: ChatMessage["role"],
+    text: string,
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const m = { role, text, ts: now() };
     this.s.chat.push(m);
-    await this.save();
-    await this.emit("chat", m);
+    await this.save(signal);
+    await this.emit("chat", m, signal);
   }
 
-  private async converse(note?: string) {
+  private async converse(note?: string, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     return this.traced(
       "orchestrator.chat_turn",
       "AGENT",
       this.s.chat.at(-1)?.text || "",
-      (set) => this.converseInner(set, note),
+      (set) => this.converseInner(set, note, signal),
     );
   }
 
   private async converseInner(
     set: (a: Record<string, string>) => void,
     note?: string,
+    signal?: AbortSignal,
   ) {
     const memory = await recall(
       this.env,
       this.memScope(),
       this.s.chat.at(-1)?.text || this.s.spec.goal,
     );
+    signal?.throwIfAborted();
     const out = await llmJson<{
       reply: string;
       spec: Omit<Spec, "approved" | "revision" | "url" | "goal">;
@@ -392,61 +565,115 @@ Set userApproved=true only if the user's last message clearly approves the spec.
         },
       },
     });
+    signal?.throwIfAborted();
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
-    await this.emit("spec", this.s.spec);
-    await this.addChat("assistant", out.reply);
+    await this.emit("spec", this.s.spec, signal);
+    await this.addChat("assistant", out.reply, signal);
+    signal?.throwIfAborted();
     if (out.userApproved) await this.approveSpec();
   }
 
   // ---------- phase 2+3: inspect and plan ----------
-  private async storeEvidence(
-    evidence: Evidence[],
-    blobs: Record<string, ArrayBuffer | string>,
-  ) {
-    for (const e of evidence) {
-      const b = blobs[e.id];
-      if (b && (typeof b === "string" ? b.length : b.byteLength) < 1_900_000) {
-        await this.ctx.storage.put(
-          `blob:${e.id}`,
-          typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
-        );
-        if (e.kind === "screenshot")
-          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
-      }
-      this.s.evidence.push(e);
-      await this.emit("evidence", e);
-      if (e.status !== "not_observed") {
-        await remember(
-          this.env,
-          this.memScope(),
-          `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}${e.page}: ${e.summary}. Limits: ${e.limits}.`,
-        );
-      }
-    }
-    await this.save();
+  /** Captures through the shared evidence capture; each record lands on the canvas as it is stored. */
+  private capture(request: CaptureRequest) {
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
+    let closeSession: (() => Promise<void>) | undefined;
+    return capture(
+      this.env,
+      this.s.id,
+      request,
+      async (e) => {
+        signal.throwIfAborted();
+        this.s.evidence.push(e);
+        await this.save(signal);
+        await this.emit("evidence", e, signal);
+        signal.throwIfAborted();
+        if (e.status !== "not_observed") {
+          await remember(
+            this.env,
+            this.memScope(),
+            `Evidence ${e.id} (${e.status}, ${e.tool}) for ${this.s.spec.url}: ${e.summary}. Limits: ${e.limits}`,
+          );
+        }
+      },
+      {
+        signal,
+        onSession: (close) => {
+          closeSession = close;
+          this.captureSessions.add(close);
+        },
+      },
+    ).finally(() => {
+      if (closeSession) this.captureSessions.delete(closeSession);
+    });
   }
 
-  private async inspectAndPlan() {
-    const origin = new URL(this.s.spec.url).origin;
-    for (const p of this.s.spec.pages.filter((p) => p.confirmed)) {
-      const cap = await inspectPage(
-        this.env,
-        origin + p.path,
-        this.s.evidence.length + 1,
-        { full: true },
-      );
-      await this.storeEvidence(cap.evidence, cap.blobs);
-    }
-    this.s.phase = "planning";
-    await this.emit("phase", { phase: "planning" });
+  private approvedPaths() {
+    const confirmed = this.s.spec.pages
+      .filter((p) => p.confirmed)
+      .map((p) => p.path);
+    return confirmed.length ? confirmed : [this.s.spec.url];
+  }
 
-    const htmlEv = this.s.evidence.filter((e) => e.kind === "html").at(-1);
-    const html = htmlEv
-      ? new TextDecoder().decode(
-          (await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!,
-        )
-      : "";
+  /** The DOM of the first captured page, or "" when none was observed. */
+  private async originalHtml() {
+    const dom = this.s.evidence.find(
+      (e) => (e.kind === "dom" || e.kind === "html") && e.status === "observed",
+    );
+    const file = dom && (await this.evidenceFile(dom.id));
+    return file ? new TextDecoder().decode(file.content) : "";
+  }
+
+  private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
+    const signal = this.inspection.signal;
+    signal.throwIfAborted();
+    if (step !== "plan") {
+      const signedIn = step === "resume_sign_in";
+      const { scope, dropped } = captureScope(
+        this.s.spec.url,
+        signedIn ? this.s.signInPaths || [] : this.approvedPaths(),
+      );
+      if (dropped.length)
+        await this.addChat(
+          "assistant",
+          `Evidence covers the first ${maxPaths} pages; not captured: ${dropped.map(redactQuery).join(", ")}.`,
+          signal,
+        );
+      let result: Awaited<ReturnType<typeof capture>>;
+      try {
+        result = await this.capture({
+          mode: "full_pack",
+          scope,
+          signIn: signedIn ? "resume" : undefined,
+        });
+      } catch (e) {
+        signal.throwIfAborted();
+        // No sign-in session to resume: the user can open sign-in again or skip.
+        if (!(signedIn && e instanceof CaptureError)) throw e;
+        await this.awaitSignIn(this.s.signInPaths || [], e.message, signal);
+        return;
+      }
+      signal.throwIfAborted();
+      const stopped =
+        result.status === "captured" ? stoppedPages(result.items) : [];
+      if (stopped.length) {
+        await this.awaitSignIn(
+          stopped,
+          `Capture stopped on ${stopped.map(redactQuery).join(", ")}: the page left the approved scope, which usually means it needs an account.`,
+          signal,
+        );
+        return;
+      }
+    }
+    signal.throwIfAborted();
+    this.s.signInPaths = undefined;
+    this.s.phase = "planning";
+    await this.emit("phase", { phase: "planning" }, signal);
+
+    const html = await this.originalHtml();
+    signal.throwIfAborted();
     const plan = await llmJson<{
       tasks: Omit<Task, "status" | "attempts" | "branch">[];
     }>(this.env, {
@@ -507,6 +734,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         },
       },
     });
+    signal.throwIfAborted();
     this.s.tasks = plan.tasks.map((t) => ({
       ...t,
       status: "queued",
@@ -514,24 +742,44 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       branch: `task/${t.id}`,
     }));
     this.s.phase = "planned";
-    await this.save();
-    await this.emit("plan", { tasks: this.s.tasks });
-    await this.emit("phase", { phase: "planned" });
+    await this.save(signal);
+    await this.emit("plan", { tasks: this.s.tasks }, signal);
+    await this.emit("phase", { phase: "planned" }, signal);
+    signal.throwIfAborted();
     await remember(
       this.env,
       this.memScope(),
       `Plan for ${this.s.spec.url}: ${this.s.tasks.map((t) => `${t.id} ${t.title} (evidence ${t.evidence.join(",")})`).join("; ")}`,
     );
+    signal.throwIfAborted();
     const pv = await verifyPlan(
       this.env,
       this.s.spec,
       this.s.evidence,
       this.s.tasks,
     );
-    await this.verified(pv);
+    await this.verified(pv, signal);
     await this.addChat(
       "assistant",
       `Plan ready: ${this.s.tasks.length} tasks. Verifier: ${pv.pass ? "pass" : "fail"}. Review it on the canvas, then press Start build.`,
+      signal,
+    );
+  }
+
+  private async awaitSignIn(paths: string[], why: string, signal: AbortSignal) {
+    signal.throwIfAborted();
+    this.s.phase = "awaiting_sign_in";
+    this.s.signInPaths = paths;
+    await this.save(signal);
+    await this.emit(
+      "phase",
+      { phase: "awaiting_sign_in", pages: paths.map(redactQuery) },
+      signal,
+    );
+    await this.addChat(
+      "assistant",
+      `${redactQuery(why)} Open secure sign-in and sign in yourself (Reversy never sees your password), then resume capture. Or skip sign-in to plan without ${paths.length > 1 ? "these pages" : "this page"}.`,
+      signal,
     );
   }
 
@@ -555,13 +803,9 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
     for (const e of this.s.evidence) {
       if (!e.path) continue;
-      const b = await this.ctx.storage.get<ArrayBuffer>(`blob:${e.id}`);
-      if (b)
-        await this.daytona.writeFile(
-          id,
-          `/home/daytona/${e.path}`,
-          e.kind === "screenshot" ? b : new TextDecoder().decode(b),
-        );
+      const file = await this.evidenceFile(e.id);
+      if (!file) throw new Error(`evidence ${e.id} is missing from storage`);
+      await this.daytona.writeFile(id, `/home/daytona/${e.path}`, file.content);
     }
     await this.daytona.writeFile(
       id,
@@ -590,7 +834,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     );
   }
 
-  private async verified(v: Verdict) {
+  private async verified(v: Verdict, signal?: AbortSignal) {
+    signal?.throwIfAborted();
     await this.traced(
       `verifier.${v.target}`,
       "EVALUATOR",
@@ -598,7 +843,8 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       async (set) =>
         set({ "output.value": JSON.stringify(v), "eval.pass": v.pass }),
     );
-    await this.emit("verification", v);
+    await this.emit("verification", v, signal);
+    signal?.throwIfAborted();
     await remember(
       this.env,
       this.memScope(),
@@ -609,6 +855,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       await this.addChat(
         "assistant",
         `Verifier flagged ${v.taskId || v.target}: ${v.summary}`,
+        signal,
       );
     }
   }
@@ -675,12 +922,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
         merged: this.s.tasks.filter((t) => t.status === "merged").length,
         failed: this.s.tasks.filter((t) => t.status === "failed").length,
       });
-      const htmlEv = this.s.evidence.find((e) => e.kind === "html");
-      const original = htmlEv
-        ? new TextDecoder().decode(
-            (await this.ctx.storage.get<ArrayBuffer>(`blob:${htmlEv.id}`))!,
-          )
-        : "";
+      const original = await this.originalHtml();
       const fv = await verifyFinal(
         this.env,
         this.s.spec,

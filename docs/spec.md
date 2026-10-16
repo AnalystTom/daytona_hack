@@ -71,7 +71,7 @@ The canvas is the specification and evidence surface:
 
 - **Draft spec** card: the target URL, pages and flows, and open questions. Anything not yet agreed is shown as "Not confirmed yet".
 - **Target screenshot** cards: real screenshots captured from the site.
-- **Video evidence** cards: real recordings of interactions, or "No recording yet".
+- **Video evidence** cards: real recordings from the [evidence contract](orchestrator/spec.md#6-evidence), or "No recording yet".
 - Each piece of evidence links to its page or flow.
 
 The board's raster is a layout reference only; the live canvas shows the original captured artifacts.
@@ -139,7 +139,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 |---|---|
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
 | Daytona | Runs the Codex workers in one sandbox per run (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; VM fork for variants once enabled |
-| Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
+| Anchor | Essential: the browser for [evidence capture](orchestrator/spec.md#6-evidence) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
 | GPT 6.1 via the OpenAI API | Orchestrator (also the chat agent), Codex workers, review and the verifier; all models are OpenAI |

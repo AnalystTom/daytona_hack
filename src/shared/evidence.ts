@@ -17,7 +17,7 @@ export const CaptureScope = z.object({
     }),
   paths: z
     .array(
-      z.string().regex(/^\/[^?#]*$/, "paths start with / and have no query"),
+      z.string().regex(/^\/[^#]*$/, "paths start with / and have no fragment"),
     )
     .min(1)
     .max(10),
@@ -25,7 +25,7 @@ export const CaptureScope = z.object({
 export type CaptureScope = z.infer<typeof CaptureScope>;
 
 export const CaptureRequest = z.object({
-  // first_look: one desktop screenshot per path. full_pack: every kind Anchor can capture.
+  // Capture modes follow docs/orchestrator/api.md#evidence-capture.
   mode: z.enum(["first_look", "full_pack"]),
   scope: CaptureScope,
   // start: open an Anchor live session for the user to sign in themselves.
@@ -55,7 +55,10 @@ export type CaptureEvent = z.infer<typeof CaptureEvent>;
 const normalisePath = (path: string) =>
   path.length > 1 ? path.replace(/\/+$/, "") : path;
 
-// Only the approved origin and paths are in scope; a trailing slash is not a different page.
+export const redactQuery = (value: string) =>
+  value.replace(/[?#][^\s"']*/g, "");
+
+// A scoped query must match exactly; queryless paths allow any query. Trailing slashes are equivalent.
 export function inScope(url: string, scope: CaptureScope): boolean {
   let parsed: URL;
   try {
@@ -66,6 +69,12 @@ export function inScope(url: string, scope: CaptureScope): boolean {
   const path = normalisePath(parsed.pathname);
   return (
     parsed.origin === scope.origin &&
-    scope.paths.some((approved) => normalisePath(approved) === path)
+    scope.paths.some((approved) => {
+      const pathname = approved.split("?")[0] ?? "";
+      const query = approved.slice(pathname.length);
+      return (
+        normalisePath(pathname) === path && (!query || query === parsed.search)
+      );
+    })
   );
 }

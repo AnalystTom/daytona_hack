@@ -59,6 +59,14 @@ export async function endSession(apiKey: string, sessionId: string) {
   });
 }
 
+export async function pauseRecording(apiKey: string, sessionId: string) {
+  await call(
+    apiKey,
+    `/v1/sessions/${encodeURIComponent(sessionId)}/recordings/pause`,
+    { method: "POST" },
+  );
+}
+
 // Runs a snippet (an async function body with `page` injected) and returns its parsed result.
 export async function runSnippet<T>(
   apiKey: string,

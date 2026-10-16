@@ -55,6 +55,21 @@ describe("SpecView", () => {
     expect(html).toContain('src="/evidence/ev_1.png"');
     expect(html).toContain("/ (desktop)");
   });
+
+  it("never puts a run recording's token-guarded URL straight into the video", () => {
+    const recording: CanvasEvidence = {
+      ...screenshot,
+      id: "ev_2",
+      kind: "recording",
+      src: "/api/v1/runs/r1/evidence/ev_2",
+    };
+    const html = renderToStaticMarkup(
+      <SpecView canvas={{ evidence: [recording] }} />,
+    );
+    expect(html).toContain("<video");
+    // Loaded as a blob with the operator token once mounted.
+    expect(html).not.toContain('src="/api/v1/runs/r1/evidence/ev_2"');
+  });
 });
 
 describe("BuildView", () => {
