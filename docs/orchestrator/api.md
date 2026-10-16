@@ -21,7 +21,7 @@ Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no pub
 | `POST /runs/:id/stop` | | Stop build: kills workers, marks open tasks `stopped` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /runs/:id/variants` | | Needs phase `done`. Builds three landing-page variants from a snapshot of the merged rebuild (phase `variants`, back to `done` when they finish) |
-| `POST /runs/:id/promote` | `{variantId}` | Needs phase `done` and a `ready` variant. Building continues from that variant; one promotion per run |
+| `POST /runs/:id/promote` | `{variantId}` | Needs phase `done` and a `ready` variant. Returns to `brief` for follow-up instructions; the next approved plan builds in the promoted sandbox. One promotion per run |
 | `POST /gateway/capture` | `{url, kind: "screenshot"\|"html", width?, height?}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): screenshot through Anchor or page HTML |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
 | `POST /sandboxes/:id/captain`, `GET /sandboxes/:id/screen` | `{text}` | Types a captain message into the first mate's tmux pane, or reads that pane (Bearer `OPERATOR_TOKEN`) |
@@ -34,6 +34,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 Each run is limited to 2 hours from its creation. At the limit the orchestrator stops the workers and every sandbox of the run,
 emits `phase {phase: "stopped", reason: "time_limit"}`, and refuses further actions. Sandboxes also auto-stop after 60 idle minutes.
+Failed sandbox shutdowns stay pending and are retried by alarms until Daytona confirms they stopped.
 
 ## Events
 
@@ -74,6 +75,8 @@ A pod is a Daytona fork of the run sandbox where the account allows it, otherwis
 (`/home/daytona/variants/<id>`, previewed on port 3001-3003), labelled `copy`. Each pod runs at most 2 workers at once.
 Promoting a copy merges it into `main`; promoting a fork makes it the run's sandbox and stops the other pods.
 Variant previews also stay private: their event URLs are signed for two hours, and the run deadline still shuts the sandboxes down.
+Promotion returns to the brief so the user can describe the next changes and approve a follow-up plan.
+Starting that plan reuses the promoted sandbox and its merged files instead of creating a new sandbox.
 
 ## Verifier
 

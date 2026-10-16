@@ -107,6 +107,146 @@ describe("Run", () => {
     expect(alarms).toEqual([Date.parse(startedAt) + 2 * 3600_000]);
   });
 
+  it("retries a failed sandbox shutdown without retrying sandboxes already stopped", async () => {
+    let stops = 0;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === "https://daytona.test/sandbox/sb1/stop" && ++stops === 1)
+        return new Response("temporary failure", { status: 503 });
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      return Response.json({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready, alarms } = fakeRun({
+      ...baseState(
+        new Date(Date.now() - 3 * 3600_000).toISOString(),
+        "done",
+        [],
+      ),
+      variants: [{ sandboxId: "sb2" }],
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({
+      expired: true,
+      phase: "stopped",
+      stoppingSandboxIds: ["sb1"],
+    });
+    expect(alarms[0]).toBeGreaterThan(Date.now());
+    await expect(run.message("more")).rejects.toThrow("2-hour limit");
+    await run.alarm();
+    expect(state().stoppingSandboxIds).toEqual([]);
+    expect(stops).toBe(2);
+    expect(
+      calls.filter((c) => c === "POST https://daytona.test/sandbox/sb2/stop"),
+    ).toHaveLength(1);
+  });
+
+  it("promotes a copy, accepts the next brief and reuses its sandbox for the next build", async () => {
+    const uploads: { path: string; text: string }[] = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      if (input.includes("/files/upload")) {
+        const file = (init.body as FormData).get("file") as Blob;
+        uploads.push({
+          path: new URL(input).searchParams.get("path")!,
+          text: await file.text(),
+        });
+      }
+      if (input === "https://api.openai.com/v1/responses") {
+        const name = JSON.parse(init.body as string).text.format.name;
+        return Response.json({
+          output_text: JSON.stringify(
+            name === "orchestrator_turn"
+              ? {
+                  reply: "Follow-up approved",
+                  spec: { pages: [], flows: [], openQuestions: [] },
+                  userApproved: true,
+                }
+              : name === "plan"
+                ? { tasks: [task("next", "queued")] }
+                : { pass: true, summary: "Plan accepted", findings: [] },
+          ),
+        });
+      }
+      return Response.json({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", []),
+      variants: [
+        {
+          id: "v1",
+          title: "Alternative",
+          pod: "copy",
+          sandboxId: "sb1",
+          dir: "/home/daytona/variants/v1",
+          status: "ready",
+          snapshot: "abc",
+        },
+      ],
+    });
+    await ready;
+    await run.promote("v1");
+    expect(state()).toMatchObject({
+      phase: "brief",
+      promoted: "v1",
+      sandboxId: "sb1",
+      spec: { approved: false },
+    });
+    await run.message("Add a footer. I approve the follow-up.");
+    expect(state().phase).toBe("inspecting");
+    await run.alarm();
+    expect(state().phase).toBe("planned");
+    await run.startBuild();
+    await run.alarm();
+    expect(state()).toMatchObject({ phase: "building", sandboxId: "sb1" });
+    expect(state().pending).toBeUndefined();
+    expect(calls).not.toContain("POST https://daytona.test/sandbox");
+    expect(
+      JSON.parse(
+        uploads.find((u) => u.path.endsWith("/spec.json"))?.text ?? "null",
+      ),
+    ).toMatchObject({ approved: true, revision: 2 });
+  });
+
+  it("preserves the promoted sandbox if follow-up preparation fails", async () => {
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input.endsWith("/toolbox-proxy-url"))
+        return Response.json({ url: "https://toolbox.test" });
+      return new Response("temporary failure", { status: 503 });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", []),
+      promoted: "v1",
+      pending: "build_setup",
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({ phase: "planned", sandboxId: "sb1" });
+    expect(calls).not.toContain("DELETE https://daytona.test/sandbox/sb1");
+  });
+
+  it("refuses a partial variant proposal before creating any pods, allowing a retry", async () => {
+    mockFetch({
+      variants: [{ title: "Only one", change: "", explanation: "" }],
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "variants", []),
+      pending: "variants",
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({ phase: "done" });
+    expect(state().variants).toBeUndefined();
+    expect(calls.some((c) => c.includes("/fork"))).toBe(false);
+    await expect(run.makeVariants()).resolves.toMatchObject({
+      phase: "variants",
+    });
+  });
+
   it("opens a fix task when the verifier fails a merged task, without rolling back", async () => {
     mockFetch({
       pass: false,
