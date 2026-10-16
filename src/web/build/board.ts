@@ -39,6 +39,11 @@ type IncomingEvent = EventEnvelope & { detail?: unknown };
 const isColumn = (state: TaskState): state is BoardColumn =>
   state !== "failed" && state !== "stopped";
 
+const defined = <T extends object>(value: T): Partial<T> =>
+  Object.fromEntries(
+    Object.entries(value).filter(([, field]) => field !== undefined),
+  ) as Partial<T>;
+
 export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
   const seen = new Set<string>();
   const unique = events.filter(
@@ -78,6 +83,7 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
         task.column = state.data;
         task.reason = undefined;
         task.nextAction = undefined;
+        if (state.data === "building") task.review = undefined;
       } else {
         task.column ??= "queued";
       }
@@ -86,8 +92,8 @@ export function deriveBoard(events: readonly IncomingEvent[]): BoardState {
     const detail = TaskDetail.safeParse(event.detail);
     if (detail.success) {
       const { review, ...rest } = detail.data;
-      Object.assign(task, rest);
-      if (review) task.review = { ...task.review, ...review };
+      Object.assign(task, defined(rest));
+      if (review) task.review = { ...task.review, ...defined(review) };
     }
 
     if (

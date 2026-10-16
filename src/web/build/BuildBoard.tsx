@@ -197,6 +197,16 @@ function TaskCard({
           {task.review.verdict === "approved" ? "Approved" : "Rejected"}
         </span>
       )}
+      {!halted && task.review?.verdict === "rejected" && (
+        <>
+          {task.review.reason && (
+            <span className="bb-reason">{task.review.reason}</span>
+          )}
+          <span className="bb-next">
+            {task.nextAction ?? "Reply in chat to decide what happens next."}
+          </span>
+        </>
+      )}
     </button>
   );
 }
@@ -276,6 +286,14 @@ function TaskPanel({
               {review.reason && <> {review.reason}</>}
             </p>
           )}
+          {review.verdict === "rejected" &&
+            state !== "failed" &&
+            state !== "stopped" && (
+              <p className="bb-next">
+                {task.nextAction ??
+                  "Reply in chat to decide what happens next."}
+              </p>
+            )}
           {review.diffSummary && (
             <p className="bb-diff">{review.diffSummary}</p>
           )}

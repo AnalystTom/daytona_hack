@@ -42,4 +42,35 @@ describe("BuildBoard", () => {
     expect(html).toContain("Tests failed twice");
     expect(html).toContain("Reply in chat to decide what happens next.");
   });
+
+  it("keeps a rejected task visible with its reason and next action", () => {
+    // Test fixture only.
+    const html = renderToStaticMarkup(
+      <BuildBoard
+        onStopBuild={noop}
+        events={[
+          {
+            schemaVersion: 1,
+            eventId: "evt_1",
+            sequence: 1,
+            runId: "run_1",
+            taskId: "task_hero",
+            timestamp: "2026-10-16T12:00:00Z",
+            type: "task.state_changed",
+            state: "in_review",
+            message: "",
+            artifactRefs: [],
+            detail: {
+              title: "Hero section",
+              nextAction: "Builder will rework the hero",
+              review: { verdict: "rejected", reason: "Hero spacing off" },
+            },
+          },
+        ]}
+      />,
+    );
+    expect(html).toContain("Rejected");
+    expect(html).toContain("Hero spacing off");
+    expect(html).toContain("Builder will rework the hero");
+  });
 });

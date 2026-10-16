@@ -127,6 +127,72 @@ describe("deriveBoard", () => {
     });
   });
 
+  it("drops only the invalid field of an event's detail", () => {
+    const board = deriveBoard([
+      event({
+        sequence: 1,
+        state: "in_review",
+        detail: {
+          title: "Hero section",
+          previewUrl: "javascript:alert(1)",
+          review: {
+            verdict: "approved",
+            reason: "Looks right",
+            diffUrl: "diff/12",
+          },
+        },
+      }),
+    ]);
+    expect(board.tasks[0]?.title).toBe("Hero section");
+    expect(board.tasks[0]?.previewUrl).toBeUndefined();
+    expect(board.tasks[0]?.review).toEqual({
+      verdict: "approved",
+      reason: "Looks right",
+    });
+  });
+
+  it("clears the previous review round when the task goes back to building", () => {
+    const board = deriveBoard([
+      event({
+        sequence: 1,
+        state: "in_review",
+        detail: {
+          review: {
+            verdict: "rejected",
+            reason: "Hero spacing off",
+            diffSummary: "+120 -4 in Hero.tsx",
+          },
+        },
+      }),
+      event({ sequence: 2, state: "building" }),
+      event({
+        sequence: 3,
+        state: "in_review",
+        detail: { review: { diffSummary: "+8 -2 in Hero.tsx" } },
+      }),
+    ]);
+    expect(board.tasks[0]?.review).toEqual({
+      diffSummary: "+8 -2 in Hero.tsx",
+    });
+  });
+
+  it("keeps a rejected task's next action", () => {
+    const board = deriveBoard([
+      event({
+        sequence: 1,
+        state: "in_review",
+        detail: {
+          nextAction: "Builder will rework the hero",
+          review: { verdict: "rejected", reason: "Hero spacing off" },
+        },
+      }),
+    ]);
+    expect(board.tasks[0]).toMatchObject({
+      nextAction: "Builder will rework the hero",
+      review: { verdict: "rejected", reason: "Hero spacing off" },
+    });
+  });
+
   it("marks the run stopped from a run-level event", () => {
     const board = deriveBoard([
       event({ sequence: 1, state: "building" }),
