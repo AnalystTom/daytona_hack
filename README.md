@@ -41,4 +41,4 @@ The deploy job needs two repository secrets:
 - `CLOUDFLARE_API_TOKEN`
 - `CLOUDFLARE_ACCOUNT_ID`
 
-Without them the deploy job logs that it is skipping and succeeds, so CI stays green.
+Without them the deploy job fails, so a merge to `main` that did not deploy shows red.
