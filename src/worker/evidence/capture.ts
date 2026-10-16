@@ -45,7 +45,9 @@ async function sha256(bytes: Uint8Array) {
 }
 
 const signedInLimit =
-  "Captured in the user's signed-in session; Anchor's sensitive-data masking covers the rendered page, but the DOM and network log may still hold account data.";
+  "Captured in the user's signed-in session; it may show account data.";
+const signedInSkipped =
+  "Signed-in DOM and network are not captured until masking exists.";
 
 // Captures evidence for every approved path, or starts/resumes a secure sign-in.
 export async function captureRun(
@@ -63,10 +65,18 @@ export async function captureRun(
       recording: false,
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
-    await deps.store.saveSignIn(runId, {
-      sessionId: session.id,
-      origin: scope.origin,
-    });
+    const previous = await deps.store.takeSignIn(runId);
+    if (previous)
+      await anchor.endSession(key, previous.sessionId).catch(() => {});
+    try {
+      await deps.store.saveSignIn(runId, {
+        sessionId: session.id,
+        origin: scope.origin,
+      });
+    } catch (error) {
+      await anchor.endSession(key, session.id).catch(() => {});
+      throw error;
+    }
     await deps.emit({
       type: "evidence.sign_in_requested",
       state: "awaiting_sign_in",
@@ -152,6 +162,9 @@ export async function captureRun(
         await save(expected, "observed", contentType, content, limitations),
       );
     };
+    const skip = async (reason: string) => {
+      ids.push(await notObserved(pending.shift() as Expected, reason));
+    };
     let stopped: string | undefined;
 
     try {
@@ -164,18 +177,22 @@ export async function captureRun(
         stopped = `Redirected to ${facts.finalUrl}, outside the approved scope; capture stopped for this page.`;
       } else {
         if (full) {
-          await take("text/html", encoder.encode(facts.html ?? ""), [
-            "Rendered DOM after load; content added on scroll or interaction is missing.",
-          ]);
+          if (signedIn) await skip(signedInSkipped);
+          else
+            await take("text/html", encoder.encode(facts.html ?? ""), [
+              "Rendered DOM after load; content added on scroll or interaction is missing.",
+            ]);
           await take("application/json", json(facts.styles), [
             "Most frequent computed values on up to 5000 elements, plus :root custom properties from readable stylesheets; names are not the site's own tokens.",
           ]);
           await take("application/json", json(facts.assets), [
             "Images, icons and fonts present after load; reuse needs permission.",
           ]);
-          await take("application/json", json(facts.network), [
-            "Requests during page load only; response shapes keep keys and types, not values; headers and bodies are not kept.",
-          ]);
+          if (signedIn) await skip(signedInSkipped);
+          else
+            await take("application/json", json(facts.network), [
+              "Requests during page load only; response shapes keep keys and types, not values; headers and bodies are not kept.",
+            ]);
         }
         for (const [, viewport] of shots) {
           const shot = await anchor.runSnippet<{
@@ -197,8 +214,7 @@ export async function captureRun(
       stopped = `Capture failed: ${error.message}`;
     }
 
-    for (const expected of pending)
-      ids.push(await notObserved(expected, stopped ?? ""));
+    while (pending.length) await skip(stopped ?? "");
     await deps.emit({
       type: stopped ? "evidence.page_stopped" : "evidence.page_captured",
       state: "capturing",

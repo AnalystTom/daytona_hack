@@ -14,8 +14,20 @@ const body = {
   mode: "first_look",
   scope: { origin: "https://example.com", paths: ["/"] },
 };
-const call = (path: string, env: object, init?: RequestInit) =>
-  worker.fetch(new Request(`https://reversy.test${path}`, init), env);
+const operator = { OPERATOR_TOKEN: "op-secret" };
+const call = (
+  path: string,
+  env: object,
+  init?: RequestInit,
+  token = operator.OPERATOR_TOKEN,
+) =>
+  worker.fetch(
+    new Request(`https://reversy.test${path}`, {
+      ...init,
+      headers: { authorization: `Bearer ${token}` },
+    }),
+    { ...operator, ...env },
+  );
 const post = (env: object, payload: unknown) =>
   call("/api/v1/runs/run_1/capture", env, {
     method: "POST",
@@ -41,6 +53,64 @@ describe("evidence routes", () => {
         "SURREALDB_PASSWORD",
       ],
     });
+  });
+
+  it("names OPERATOR_TOKEN when it is unset", async () => {
+    for (const path of [
+      "/api/v1/runs/run_1/capture",
+      "/api/v1/evidence/ev_x",
+      "/api/v1/evidence/ev_x/content",
+    ]) {
+      const response = await call(
+        path,
+        { OPERATOR_TOKEN: undefined, ...surreal },
+        path.endsWith("capture") ? { method: "POST" } : undefined,
+      );
+      expect(response.status).toBe(503);
+      expect(await response.json()).toMatchObject({
+        missing: ["OPERATOR_TOKEN"],
+      });
+    }
+  });
+
+  it("refuses a missing or wrong operator token on every route", async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal("fetch", fetchSpy);
+    const id = "ev_00000000-0000-4000-8000-000000000000";
+    for (const token of ["wrong", "", "op-secret-longer"]) {
+      for (const [path, init] of [
+        ["/api/v1/runs/run_1/capture", { method: "POST", body: "{}" }],
+        [`/api/v1/evidence/${id}`, undefined],
+        [`/api/v1/evidence/${id}/content`, undefined],
+      ] as const) {
+        const response = await call(
+          path,
+          { ANCHOR_API_KEY: "k", ...surreal },
+          init,
+          token,
+        );
+        expect(response.status).toBe(401);
+      }
+    }
+    const bare = await worker.fetch(
+      new Request(`https://reversy.test/api/v1/evidence/${id}`),
+      { ...operator, ...surreal },
+    );
+    expect(bare.status).toBe(401);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("answers malformed escapes in ids with 400 and 404, not a crash", async () => {
+    const capture = await call(
+      "/api/v1/runs/%E0/capture",
+      { ANCHOR_API_KEY: "k", ...surreal },
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    expect(capture.status).toBe(400);
+    expect((await call("/api/v1/evidence/%E0", surreal)).status).toBe(404);
+    expect((await call("/api/v1/evidence/%E0/content", surreal)).status).toBe(
+      404,
+    );
   });
 
   it("rejects a scope that is not a bare origin", async () => {

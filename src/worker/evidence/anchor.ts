@@ -108,16 +108,22 @@ export async function primaryRecording(
     data?.items?.find((item) => item.is_primary) ?? data?.items?.[0];
   if (!primary) return null;
   // The file is held in memory and base64-encoded for SurrealDB, within a 128 MB Worker.
-  if ((primary.size ?? 0) > maxRecordingBytes) {
-    throw new AnchorError(
-      `Recording is ${Math.round((primary.size ?? 0) / 1e6)} MB, over the ${maxRecordingBytes / 1e6} MB storage limit`,
-    );
-  }
+  const checkSize = (bytes: number) => {
+    if (bytes > maxRecordingBytes) {
+      throw new AnchorError(
+        `Recording is ${Math.round(bytes / 1e6)} MB, over the ${maxRecordingBytes / 1e6} MB storage limit`,
+      );
+    }
+  };
+  checkSize(primary.size ?? 0);
   const file = await call(
     apiKey,
     `/v1/sessions/${id}/recordings/primary/fetch`,
   );
-  return new Uint8Array(await file.arrayBuffer());
+  checkSize(Number(file.headers.get("content-length") ?? 0));
+  const video = new Uint8Array(await file.arrayBuffer());
+  checkSize(video.byteLength);
+  return video;
 }
 
 export interface PageFacts {

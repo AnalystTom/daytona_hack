@@ -31,4 +31,14 @@ describe("CaptureScope", () => {
       CaptureScope.safeParse({ ...scope, paths: ["pricing"] }).success,
     ).toBe(false);
   });
+
+  it("accepts at most 10 paths", () => {
+    const paths = (n: number) => Array.from({ length: n }, (_, i) => `/p${i}`);
+    expect(CaptureScope.safeParse({ ...scope, paths: paths(10) }).success).toBe(
+      true,
+    );
+    expect(CaptureScope.safeParse({ ...scope, paths: paths(11) }).success).toBe(
+      false,
+    );
+  });
 });

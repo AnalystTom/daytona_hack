@@ -222,6 +222,20 @@ describe("captureRun (fixture Anchor responses)", () => {
       label: "not_observed",
     });
     expect(items[0]?.limitations.at(-1)).toContain("signed-in session");
+    for (const kind of ["dom", "network"]) {
+      const skipped = items.filter((i) => i.kind === kind);
+      expect(skipped).toHaveLength(2);
+      for (const item of skipped) {
+        expect(item).toMatchObject({ label: "not_observed", byteLength: 0 });
+        expect(item.limitations[0]).toContain("until masking exists");
+        expect(memory.content.get(item.id)).toEqual(new Uint8Array());
+      }
+    }
+    expect(
+      items.filter((i) => i.kind === "styles" || i.kind === "screenshot"),
+    ).toSatisfy((kept: EvidenceRecord[]) =>
+      kept.every((i) => i.label === "observed"),
+    );
 
     await expect(
       captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
@@ -241,6 +255,35 @@ describe("captureRun limits", () => {
         input.endsWith("/recordings")
           ? Response.json(big)
           : anchorFetch(input, init),
+      ),
+    );
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.at(-1)).toMatchObject({
+      kind: "recording",
+      label: "not_observed",
+    });
+    expect(items.at(-1)?.limitations[0]).toContain(
+      "over the 25 MB storage limit",
+    );
+  });
+
+  it("skips a recording too large to store when Anchor reports no size", async () => {
+    fakeAnchor();
+    const unsized = structuredClone(recordingList);
+    delete (unsized.data.items[0] as { size?: number }).size;
+    const anchorFetch = fetch;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string, init?: RequestInit) =>
+        input.endsWith("/recordings")
+          ? Response.json(unsized)
+          : input.endsWith("/recordings/primary/fetch")
+            ? new Response(new Uint8Array(25_000_001))
+            : anchorFetch(input, init),
       ),
     );
     const { deps: d } = deps(memoryStore().store);
@@ -287,5 +330,44 @@ describe("captureRun sign-in scope", () => {
     ).rejects.toThrow("different origin");
     expect(calls.some((c) => c.path === "/v1/tools/execute-code")).toBe(false);
     expect(calls.at(-1)?.method).toBe("DELETE");
+  });
+});
+
+describe("captureRun session cleanup", () => {
+  it("ends the new sign-in session when saving it fails", async () => {
+    const calls = fakeAnchor();
+    const { store } = memoryStore();
+    store.saveSignIn = async () => {
+      throw new Error("SurrealDB request failed with 500");
+    };
+    const { deps: d } = deps(store);
+
+    await expect(
+      captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "start" }),
+    ).rejects.toThrow("SurrealDB request failed");
+    expect(calls.at(-1)).toMatchObject({
+      method: "DELETE",
+      path: `/v1/sessions/${fixtureSession.data.id}`,
+    });
+  });
+
+  it("ends a run's earlier sign-in session when sign-in starts again", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    memory.signIns.set("run_1", {
+      sessionId: "old-session",
+      origin: "https://example.com",
+    });
+    const { deps: d } = deps(memory.store);
+
+    await captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "start" });
+
+    expect(calls).toContainEqual(
+      expect.objectContaining({
+        method: "DELETE",
+        path: "/v1/sessions/old-session",
+      }),
+    );
+    expect(memory.signIns.get("run_1")?.sessionId).toBe(fixtureSession.data.id);
   });
 });

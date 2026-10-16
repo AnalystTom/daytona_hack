@@ -9,7 +9,10 @@ import {
 } from "./store";
 
 export type EvidenceEnv = Partial<
-  Record<"ANCHOR_API_KEY" | (typeof surrealBindings)[number], string>
+  Record<
+    "OPERATOR_TOKEN" | "ANCHOR_API_KEY" | (typeof surrealBindings)[number],
+    string
+  >
 >;
 
 // A feature with a missing binding reports exactly which ones, never a faked result.
@@ -26,6 +29,30 @@ function requireBindings<K extends keyof EvidenceEnv>(
     : (env as Record<K, string>);
 }
 
+const decode = (segment: string) => {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return "";
+  }
+};
+
+const encoder = new TextEncoder();
+const digest = async (value: string) =>
+  new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(value)));
+
+async function authorized(request: Request, token: string) {
+  const header = request.headers.get("authorization") ?? "";
+  const [given, expected] = await Promise.all([
+    digest(header),
+    digest(`Bearer ${token}`),
+  ]);
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++)
+    diff |= (given[i] as number) ^ (expected[i] as number);
+  return diff === 0;
+}
+
 const notFound = () =>
   Response.json({ error: "Evidence not found" }, { status: 404 });
 
@@ -37,9 +64,18 @@ export async function handleEvidence(
   const { pathname } = new URL(request.url);
   const capture = pathname.match(/^\/api\/v1\/runs\/([^/]+)\/capture$/);
   const evidence = pathname.match(/^\/api\/v1\/evidence\/([^/]+)(\/content)?$/);
+  const isCapture = capture && request.method === "POST";
+  const isEvidence = evidence && request.method === "GET";
+  if (!isCapture && !isEvidence) return null;
 
-  if (capture && request.method === "POST") {
-    const runId = decodeURIComponent(capture[1] as string);
+  const operator = requireBindings(env, ["OPERATOR_TOKEN"]);
+  if (operator instanceof Response) return operator;
+  if (!(await authorized(request, operator.OPERATOR_TOKEN))) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (isCapture) {
+    const runId = decode(capture[1] as string);
     if (!runIdPattern.test(runId)) {
       return Response.json({ error: "Invalid run id" }, { status: 400 });
     }
@@ -86,8 +122,8 @@ export async function handleEvidence(
     }
   }
 
-  if (evidence && request.method === "GET") {
-    const id = decodeURIComponent(evidence[1] as string);
+  if (isEvidence) {
+    const id = decode(evidence[1] as string);
     if (!evidenceIdPattern.test(id)) return notFound();
     const bound = requireBindings(env, surrealBindings);
     if (bound instanceof Response) return bound;

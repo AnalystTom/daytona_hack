@@ -20,7 +20,7 @@ export const CaptureScope = z.object({
       z.string().regex(/^\/[^?#]*$/, "paths start with / and have no query"),
     )
     .min(1)
-    .max(50),
+    .max(10),
 });
 export type CaptureScope = z.infer<typeof CaptureScope>;
 
