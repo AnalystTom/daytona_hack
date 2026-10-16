@@ -15,6 +15,7 @@ import { Workspace } from "./Workspace";
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
   useEffect: vi.fn(),
+  useCallback: (callback: unknown) => callback,
   useMemo: (factory: () => unknown) => factory(),
   useRef: (current: unknown) => ({ current }),
   useState: (initial: unknown) => [

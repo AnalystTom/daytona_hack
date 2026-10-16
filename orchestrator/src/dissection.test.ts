@@ -849,6 +849,7 @@ it("aborts the in-flight OpenAI research request", async () => {
     webSearch: 4,
     signal: controller.signal,
   });
+  await vi.waitFor(() => expect(fetcher).toHaveBeenCalledOnce());
   controller.abort();
   await expect(pending).rejects.toMatchObject({ name: "AbortError" });
   expect(fetcher).toHaveBeenCalledExactlyOnceWith(

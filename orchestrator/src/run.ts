@@ -1,4 +1,4 @@
-// One Durable Object per run: brief → inspect → plan → build/review, driven by alarms.
+// One Durable Object per run: website builds or report dissection, driven by alarms.
 import { DurableObject } from "cloudflare:workers";
 import {
   type CaptureRequest,
