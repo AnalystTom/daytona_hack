@@ -7,10 +7,15 @@
 #   reversy remember "<observation or decision, with its sources>"
 #   reversy recall "<question>"
 #   reversy say "<message to the captain>"             shows in the user's chat
+#   reversy whoami                                     role used for memory access
 set -euo pipefail
 [ -n "${REVERSY_GATEWAY_URL:-}" ] || . "$HOME/.reversy.env"  # agent shells skip .bashrc
 : "${REVERSY_GATEWAY_URL:?}" "${REVERSY_GATEWAY_TOKEN:?}"
 RUN_ID=${RUN_ID:-local}
+# Who am I? A crewmate works in a treehouse worktree on branch fm/<task>; anything else is the first mate.
+# The gateway mints a SurrealDB Agent Memory key scoped to that role, so SurrealDB enforces what it can see.
+BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+if [[ "$PWD" == *"/.treehouse/"* && "$BRANCH" == fm/* ]]; then ROLE=crew; TASK=${BRANCH#fm/}; else ROLE=firstmate; TASK=; fi
 FM=${FM_HOME:-$HOME/firstmate}
 post() { curl -sS --fail-with-body --max-time 180 -X POST "$REVERSY_GATEWAY_URL/gateway/$1" \
   -H "Authorization: Bearer $REVERSY_GATEWAY_TOKEN" -H 'Content-Type: application/json' -d "$2" "${@:3}"; }
@@ -23,10 +28,12 @@ case "${1:-}" in
     echo "saved $4 ($(wc -c < "$4") bytes, $size ${w}px, tool=anchor)";;
   html)
     post capture "$(js url="$2" kind=html)" -o "$3"; echo "saved $3 ($(wc -c < "$3") bytes)";;
-  remember)
-    post remember "$(js runId="$RUN_ID" text="$2")"; echo;;
+  remember)  # reversy remember "<fact with sources>" [--site]  (--site: durable knowledge about the target site)
+    scope=; [ "${3:-}" = --site ] && scope=site
+    post remember "$(js role=$ROLE taskId="$TASK" runId="$RUN_ID" text="$2" scope="$scope")"; echo;;
   recall)
-    post recall "$(js runId="$RUN_ID" query="$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).context||"(nothing)"))';;
+    post recall "$(js role=$ROLE taskId="$TASK" runId="$RUN_ID" query="$2")" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);console.log(`as ${r.role}:`);for(const h of r.hits||[])console.log(`- [${(h.at||"").slice(0,16)}] ${h.text}`);if(!(r.hits||[]).length)console.log("(nothing visible to this role)")})';;
+  whoami) echo "$ROLE ${TASK:+task=$TASK} run=$RUN_ID";;
   say)
     mkdir -p "$FM/state"
     node -e 'console.log(JSON.stringify({ts:Math.floor(Date.now()/1000),text:process.argv[1]}))' "$2" >> "$FM/state/captain-outbox.jsonl"
