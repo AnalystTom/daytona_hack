@@ -15,6 +15,9 @@ export type RunCallError = {
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
 
 const CreatedRun = z.object({ id: z.string().min(1) });
+const RunHistory = z.array(
+  z.object({ id: z.string().min(1), createdAt: z.iso.datetime() }),
+);
 const SignIn = z.object({ liveViewUrl: z.url({ protocol: /^https$/ }) });
 const ErrorBody = z.union([
   z.object({ message: z.string().min(1) }).transform((b) => b.message),
@@ -189,6 +192,26 @@ export function overrideVerdict(
   );
 }
 
+export function fetchRun(runId: string, fetchImpl: typeof fetch = fetch) {
+  return call(
+    "GET",
+    runPath(runId),
+    undefined,
+    async (r) => CreatedRun.parse(await r.json()),
+    fetchImpl,
+  );
+}
+
+export function fetchRunHistory(fetchImpl: typeof fetch = fetch) {
+  return call(
+    "GET",
+    "/api/v1/runs",
+    undefined,
+    async (r) => RunHistory.parse(await r.json()),
+    fetchImpl,
+  );
+}
+
 // Events after `since`, oldest first.
 export async function fetchEvents(
   runId: string,
@@ -196,13 +219,7 @@ export async function fetchEvents(
   fetchImpl: typeof fetch = fetch,
 ) {
   if (since === 0) {
-    const run = await call(
-      "GET",
-      runPath(runId),
-      undefined,
-      async (r) => CreatedRun.parse(await r.json()),
-      fetchImpl,
-    );
+    const run = await fetchRun(runId, fetchImpl);
     if (!run.ok) return run;
   }
   return call(

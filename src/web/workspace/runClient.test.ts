@@ -4,6 +4,8 @@ import {
   fetchEvents,
   fetchEvidence,
   fetchPreviewLink,
+  fetchRun,
+  fetchRunHistory,
   overrideVerdict,
   runAction,
   sendMessage,
@@ -100,6 +102,8 @@ describe("run client", () => {
           edge,
         ),
       () => fetchEvents("r1", 0, edge),
+      () => fetchRun("r1", edge),
+      () => fetchRunHistory(edge),
       () => fetchPreviewLink("r1", edge),
       () => fetchEvidence("/api/v1/runs/r1/evidence/ev1", edge),
       () => signIn("token", edge),
@@ -108,7 +112,7 @@ describe("run client", () => {
         ok: false,
         error: "access_required",
       });
-    expect(edge).toHaveBeenCalledTimes(8);
+    expect(edge).toHaveBeenCalledTimes(10);
   });
 
   it("signs in by posting the token to the session endpoint", async () => {
@@ -245,6 +249,23 @@ describe("run client", () => {
       "/api/v1/runs/run_1",
       "/api/v1/runs/run_1/events?since=0",
     ]);
+  });
+
+  it("reads the caller's run history and refuses malformed history replies", async () => {
+    const history = [{ id: "run_1", createdAt: "2026-10-16T12:00:00Z" }];
+    const fetchImpl = reply(200, history);
+    expect(await fetchRunHistory(fetchImpl)).toEqual({
+      ok: true,
+      value: history,
+    });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      "/api/v1/runs",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(await fetchRunHistory(reply(200, [{ id: "run_1" }]))).toMatchObject({
+      ok: false,
+      error: "failed",
+    });
   });
 
   it("reports an unknown run without reading its empty event stream", async () => {

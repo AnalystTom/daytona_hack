@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SpecCanvas } from "../../shared/workspace";
 import type { Override } from "../build/BuildBoard";
 import { navigate } from "../router";
@@ -29,6 +29,7 @@ import { SessionSwitcher } from "./SessionSwitcher";
 import { SpecView } from "./SpecView";
 import {
   type Layout,
+  forgetSession,
   loadLayout,
   phaseLabel,
   rememberSession,
@@ -88,6 +89,7 @@ export function Workspace({
   // Set from the Start build click until the next event, so a second click cannot race the phase change.
   const [starting, setStarting] = useState(false);
   const pollSoon = useRef<() => void>(undefined);
+  const refused = useRef(false);
   // Messages sent before the brief had a URL; they are sent with it.
   const briefParts = useRef<string[]>([]);
   const run = useMemo(() => runView(runId ?? "", events), [runId, events]);
@@ -101,9 +103,34 @@ export function Workspace({
   const signingIn = runId !== undefined && run.phase === "awaiting_sign_in";
   const target = run.draftSpec?.url ?? briefTarget;
 
+  const refuseRun = useCallback(() => {
+    refused.current = true;
+    if (runId) forgetSession(runId);
+    setConfirmed(false);
+    setEvents([]);
+    setBriefTarget(undefined);
+    setEntries([
+      {
+        kind: "notice",
+        id: "events-not-found",
+        error: "not_found",
+        detail:
+          "This run is unavailable. Open one of your sessions or start a new session.",
+      },
+    ]);
+    setLayout({});
+    layoutChanged.current = false;
+    briefParts.current = [];
+    setView("spec");
+    setOffline(false);
+    setStarting(false);
+    setPending(false);
+    pollSoon.current = undefined;
+  }, [runId]);
+
   // Lists this run among the browser's sessions, with its latest target and phase.
   useEffect(() => {
-    if (runId && confirmed && !fixture)
+    if (runId && confirmed && !fixture && !refused.current)
       rememberSession({ runId, target, phase: run.phase });
   }, [runId, confirmed, target, run.phase, fixture]);
 
@@ -131,18 +158,9 @@ export function Workspace({
       busy = true;
       const result = await fetchEvents(runId, since);
       busy = false;
-      if (!live) return;
+      if (!live || refused.current) return;
       if (!result.ok && result.error === "not_found") {
-        setOffline(false);
-        setEntries((list) => [
-          ...list,
-          {
-            kind: "notice",
-            id: "events-not-found",
-            error: result.error,
-            detail: `${result.detail} Check the run ID or start a new session.`,
-          },
-        ]);
+        refuseRun();
         return;
       }
       setOffline(
@@ -188,16 +206,20 @@ export function Workspace({
       live = false;
       clearTimeout(timer);
     };
-  }, [runId]);
+  }, [runId, refuseRun]);
 
-  const addNotice = (error: RunCallError, id: string = crypto.randomUUID()) =>
+  const addNotice = (error: RunCallError, id: string = crypto.randomUUID()) => {
+    if (refused.current) return;
+    if (runId && error.error === "not_found") return refuseRun();
     setEntries((list) => [
       ...list,
       { kind: "notice", id, error: error.error, detail: error.detail },
     ]);
+  };
 
   const act = async (call: Promise<RunCallResult<unknown>>) => {
     const result = await call;
+    if (refused.current) return;
     if (result.ok) pollSoon.current?.();
     else {
       setStarting(false);
@@ -219,6 +241,10 @@ export function Workspace({
     }
     tab.opener = null;
     const result = await startSignIn(runId);
+    if (refused.current) {
+      tab.close();
+      return;
+    }
     if (result.ok) tab.location.href = result.value;
     else {
       tab.close();
@@ -234,10 +260,12 @@ export function Workspace({
     );
 
   const send = async (id: string, text: string) => {
+    if (refused.current) return;
     setPending(true);
     const message =
       runId === undefined ? [...briefParts.current, text].join("\n") : text;
     const result = await deliver(runId, message);
+    if (refused.current) return;
     setPending(false);
     if (result.needsUrl) {
       briefParts.current.push(text);
@@ -276,6 +304,7 @@ export function Workspace({
   };
 
   const onSend = (text: string) => {
+    if (refused.current) return;
     const id = crypto.randomUUID();
     setEntries((list) => [
       ...list,
@@ -340,7 +369,10 @@ export function Workspace({
             <span>Reversy</span>
           </a>
           {!fixture && (
-            <SessionSwitcher current={runId ? { runId, target } : undefined} />
+            <SessionSwitcher
+              key={confirmed ? runId : "unconfirmed"}
+              current={runId && confirmed ? { runId, target } : undefined}
+            />
           )}
           <nav className="ws-views" aria-label="Canvas view">
             {VIEWS.map(({ id, label }) => (
@@ -415,7 +447,11 @@ export function Workspace({
             // The preview's iframe stays outside the canvas so it is never panned or zoomed.
             <PreviewView runId={runId} onRefused={(e) => addNotice(e)} />
           ) : (
-            <Canvas key={view} layout={layout} onLayout={onLayout}>
+            <Canvas
+              key={refused.current ? "unavailable" : view}
+              layout={layout}
+              onLayout={onLayout}
+            >
               {view === "spec" ? (
                 <SpecView canvas={canvas} />
               ) : (
@@ -438,6 +474,7 @@ export function Workspace({
         </main>
       </div>
       <ChatPanel
+        key={refused.current ? "unavailable" : "chat"}
         entries={
           offline
             ? [...entries, { kind: "reconnecting", id: "offline" }]

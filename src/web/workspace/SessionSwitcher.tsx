@@ -1,6 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from "react";
 import { followLink, navigate } from "../router";
-import { listSessions, phaseLabel, RUN_ID, type Session } from "./sessions";
+import { ownedSessions, phaseLabel, RUN_ID, type Session } from "./sessions";
+import type { RunCallError } from "./runClient";
 
 // "www.daytona.io/pricing" rather than the full URL; the run id until the target is known.
 export function sessionTitle(session: Pick<Session, "runId" | "target">) {
@@ -30,13 +31,23 @@ export function SessionSwitcher({
   example?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const [sessions, setSessions] = useState<Session[]>();
+  const [error, setError] = useState<RunCallError>();
   const [runId, setRunId] = useState("");
   const root = useRef<HTMLDivElement>(null);
 
   // Read on open: another tab may have started a session since.
   useEffect(() => {
-    if (open) setSessions(listSessions());
+    if (!open) return;
+    let live = true;
+    void ownedSessions().then((result) => {
+      if (!live) return;
+      if (result.ok) setSessions(result.value);
+      else setError(result);
+    });
+    return () => {
+      live = false;
+    };
   }, [open]);
 
   // Clicking or focusing outside closes the list.
@@ -77,7 +88,11 @@ export function SessionSwitcher({
         className="ss-toggle"
         aria-expanded={open}
         aria-controls="ss-panel"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => {
+          setSessions(undefined);
+          setError(undefined);
+          setOpen((o) => !o);
+        }}
       >
         <span className="visually-hidden">Session: </span>
         <span className="ss-current">
@@ -115,7 +130,23 @@ export function SessionSwitcher({
             <span className="ss-target">Example run</span>
             <span className="ss-phase">Saved, read-only</span>
           </a>
-          {sessions.length > 0 ? (
+          {error ? (
+            <p className="ss-empty" role="status">
+              {error.detail}
+              {error.error === "access_required" && (
+                <>
+                  {" "}
+                  <a href="/start" target="_blank" rel="noopener noreferrer">
+                    Sign in in a new tab
+                  </a>
+                </>
+              )}
+            </p>
+          ) : !sessions ? (
+            <p className="ss-empty" role="status">
+              Loading sessions…
+            </p>
+          ) : sessions.length > 0 ? (
             <ul className="ss-list" aria-label="Your sessions">
               {sessions.map((session) => (
                 <li key={session.runId}>
