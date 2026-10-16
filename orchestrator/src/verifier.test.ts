@@ -49,7 +49,7 @@ const task = {
 } as Task;
 
 // Stubs the model and the preview; records every request and what the verifier was shown.
-function stub() {
+function stub(html?: string) {
   const requests: { url: string; method: string }[] = [];
   const inputs: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
@@ -65,6 +65,8 @@ function stub() {
       });
     }
     requests.push({ url, method: init?.method ?? "GET" });
+    if (url === "https://site.example/" && html !== undefined)
+      return new Response(html, { headers: { "content-type": "text/html" } });
     if (url.startsWith("https://site.example/api/articles?"))
       return Response.json({ items: [{ id: 1, title: "t" }], total: 1 });
     if (
@@ -92,6 +94,37 @@ const env = { ORCHESTRATOR_MODEL: "m" } as Env;
 afterEach(() => vi.unstubAllGlobals());
 
 describe("backend verification", () => {
+  it.each(["backend", "both"] as const)(
+    "probes decoded HTML endpoints and unchanged script endpoints for %s",
+    async (scope) => {
+      const { requests, inputs } = stub(
+        `<a href="/api/articles?id=1&amp;lang=en">Articles</a>
+<script>fetch("/api/raw?id=1&amp;lang=en")</script>
+<a href="https://elsewhere.example/api/external?id=1&amp;lang=en">Elsewhere</a>`,
+      );
+      const { evidence } = await inspectBackend("https://site.example/", 1);
+      const inferred = evidence.find((e) => e.status === "inferred")!;
+      expect(inferred.routes).toEqual([
+        "/api/articles?id=1&lang=en",
+        "/api/raw?id=1&amp;lang=en",
+      ]);
+      const routeTask = { ...task, evidence: [inferred.id] };
+      requests.length = 0;
+      await verifyTask(env, spec(scope), evidence, routeTask, PREVIEW);
+      await verifyFinal(env, spec(scope), evidence, [routeTask], PREVIEW);
+      expect(requests.filter((r) => r.url !== PREVIEW)).toEqual([
+        { url: `${PREVIEW}api/articles?id=1&lang=en`, method: "GET" },
+        { url: `${PREVIEW}api/raw?id=1&amp;lang=en`, method: "GET" },
+        { url: `${PREVIEW}api/articles?id=1&lang=en`, method: "GET" },
+        { url: `${PREVIEW}api/raw?id=1&amp;lang=en`, method: "GET" },
+      ]);
+      for (const input of inputs)
+        expect(input.evidence).toContainEqual(
+          expect.objectContaining({ id: inferred.id, routes: inferred.routes }),
+        );
+    },
+  );
+
   it("probes the task's observed routes instead of the preview root", async () => {
     const { requests, inputs } = stub();
     await verifyTask(env, spec("backend"), evidence, task, PREVIEW);

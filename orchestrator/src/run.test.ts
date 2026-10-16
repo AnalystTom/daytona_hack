@@ -115,14 +115,14 @@ async function plannedRun(scope: string, goal: string, tasks: unknown[]) {
   await run.start("run-1", SITE, goal);
   await run.message("Yes, go ahead.");
   await run.alarm();
-  return { state: await run.getState(), calls };
+  return { state: await run.getState(), calls, run };
 }
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("run scope", () => {
   it("keeps a backend-only brief backend only, from spec to plan", async () => {
-    const { state, calls } = await plannedRun(
+    const { state, calls, run } = await plannedRun(
       "backend",
       "Do not copy the frontend; reverse engineer the backend only.",
       [
@@ -132,8 +132,7 @@ describe("run scope", () => {
           ["server/routes/articles.js", "server/mock/article.html"],
           ["t01"],
         ),
-        task("t03", ["sections/hero.html", "styles/hero.css"], ["t01"]),
-        task("t04", ["server/routes/search.js"], ["t01", "t03"]),
+        task("t03", ["server/routes/search.js"], ["t01", "t02"]),
       ],
     );
     expect(state.phase).toBe("planned");
@@ -164,12 +163,11 @@ describe("run scope", () => {
       }),
     );
 
-    // the frontend task is dropped and nothing waits on it
-    expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02", "t04"]);
-    expect(state.tasks.find((t: Task) => t.id === "t04")?.dependsOn).toEqual([
+    expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02", "t03"]);
+    expect(state.tasks.find((t: Task) => t.id === "t03")?.dependsOn).toEqual([
       "t01",
+      "t02",
     ]);
-    expect(state.chat.at(-2)?.text).toContain("Dropped t03");
 
     // a page path that leaves the run's site is never fetched
     expect(state.evidence.some((e: Evidence) => e.page === "/x")).toBe(false);
@@ -195,7 +193,54 @@ describe("run scope", () => {
         status: "not_observed",
       }),
     );
+    expect((await run.startBuild()).phase).toBe("building");
   });
+
+  it.each([
+    {
+      name: "mixed foundation",
+      tasks: [
+        task("t01", ["server/server.js", "index.html"]),
+        task("t02", ["server/routes/articles.js"], ["t01"]),
+      ],
+    },
+    {
+      name: "mixed route prerequisite",
+      tasks: [
+        task("t01", ["server/server.js"]),
+        task(
+          "t02",
+          ["server/routes/articles.js", "sections/hero.html"],
+          ["t01"],
+        ),
+        task("t03", ["server/routes/search.js"], ["t01", "t02"]),
+      ],
+    },
+    {
+      name: "frontend prerequisite",
+      tasks: [
+        task("t01", ["server/server.js"]),
+        task("t02", ["index.html"], ["t01"]),
+        task("t03", ["server/routes/articles.js"], ["t01", "t02"]),
+      ],
+    },
+  ])(
+    "rejects a backend plan with a $name before accepting it",
+    async ({ tasks }) => {
+      const { state, calls, run } = await plannedRun(
+        "backend",
+        "Backend only.",
+        tasks,
+      );
+      expect(state.phase).toBe("failed");
+      expect(state.error).toContain("Plan rejected:");
+      expect(state.tasks).toEqual([]);
+      expect(calls.some((c) => c.name === "verify_plan")).toBe(false);
+      expect((await run.events(0)).some((e) => e.type === "plan")).toBe(false);
+      await expect(run.startBuild()).rejects.toThrow("No build started");
+      expect((await run.getState()).sandboxId).toBeUndefined();
+    },
+  );
 
   it("still plans a frontend rebuild from a frontend brief", async () => {
     const { state, calls } = await plannedRun(
@@ -207,6 +252,7 @@ describe("run scope", () => {
       ],
     );
     expect(state.spec.scope).toBe("frontend");
+    expect(state.phase).toBe("planned");
     const plan = calls.find((c) => c.name === "plan");
     expect(plan?.instructions).toContain("sections/NAME.html");
     expect(plan?.instructions).not.toContain("server/routes");
@@ -219,6 +265,7 @@ describe("run scope", () => {
       task("t01", ["index.html", "server/server.js"]),
     ]);
     expect(state.spec.scope).toBe("both");
+    expect(state.phase).toBe("planned");
     for (const call of calls)
       expect(call.instructions).not.toMatch(
         /daytona\.io|create[- ]a?[- ]?sandbox|landing page|for this version/i,

@@ -20,7 +20,16 @@ import {
 } from "../../src/worker/evidence/store";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { resolveStore } from "../../src/worker/store";
+import { Parser } from "htmlparser2";
+import { sha256 } from "./services";
 import type { Env, Evidence } from "./types";
+
+export interface Capture {
+  evidence: Evidence[];
+  blobs: Record<string, ArrayBuffer | string>;
+}
+
+const now = () => new Date().toISOString();
 
 export function routesFrom(html: string, base: string): string[] {
   const origin = new URL(base).origin;
@@ -247,34 +256,62 @@ export function backendFacts(html: string, base: string) {
       return "";
     }
   };
-  const scripts = [
-    ...new Set(
-      [...html.matchAll(/<script[^>]+src="([^"]+)"/g)].map((m) => abs(m[1])),
-    ),
-  ]
-    .filter(Boolean)
-    .slice(0, 40);
-  const endpoints = [
-    ...new Set(
-      [
-        ...html.matchAll(
-          /["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b[^"'`\s<>]*)["'`]/g,
-        ),
-      ].map((m) => abs(m[1])),
-    ),
-  ]
-    .filter(Boolean)
-    .slice(0, 40);
+  const scripts = new Set<string>();
+  const endpoints = new Set<string>();
+  const addEndpoint = (value: string) => {
+    if (
+      /^(?:https?:\/\/[^/\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b/.test(
+        value,
+      )
+    ) {
+      const url = abs(value);
+      if (url) endpoints.add(url);
+    }
+  };
+  const findEndpoints = (text: string) => {
+    for (const m of text.matchAll(
+      /["'`]((?:https?:\/\/[^"'`\s]+)?\/(?:api|graphql|v\d+|_next\/data|wp-json|rest)\b[^"'`\s<>]*)["'`]/g,
+    ))
+      addEndpoint(m[1]);
+  };
   const data: { type: string; shape: unknown }[] = [];
-  for (const m of html.matchAll(
-    /<script[^>]+type="(application\/(?:ld\+)?json)"[^>]*>([\s\S]*?)<\/script>/g,
-  )) {
-    try {
-      data.push({ type: m[1], shape: shapeOf(JSON.parse(m[2])) });
-    } catch {}
-    if (data.length >= 10) break;
-  }
-  return { scripts, endpoints, data };
+  let script: { type: string; text: string } | undefined;
+  new Parser({
+    onopentag(name, attrs) {
+      for (const value of Object.values(attrs)) {
+        addEndpoint(value);
+        findEndpoints(value);
+      }
+      if (name === "script") {
+        if (attrs.src) {
+          const url = abs(attrs.src);
+          if (url) scripts.add(url);
+        }
+        script = { type: attrs.type || "", text: "" };
+      }
+    },
+    ontext(text) {
+      if (script) script.text += text;
+    },
+    onclosetag(name) {
+      if (name !== "script" || !script) return;
+      findEndpoints(script.text);
+      if (/^application\/(?:ld\+)?json$/.test(script.type) && data.length < 10) {
+        try {
+          data.push({
+            type: script.type,
+            shape: shapeOf(JSON.parse(script.text)),
+          });
+        } catch {}
+      }
+      script = undefined;
+    },
+  }).end(html);
+  return {
+    scripts: [...scripts].slice(0, 40),
+    endpoints: [...endpoints].slice(0, 40),
+    data,
+  };
 }
 
 /** Back-end evidence for one route: the response itself, the APIs it points at, crawl files, code analysis. */

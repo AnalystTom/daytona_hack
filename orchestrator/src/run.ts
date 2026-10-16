@@ -828,21 +828,17 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
       },
     });
     signal.throwIfAborted();
-    const dropped = offScope(scope, plan.tasks);
-    this.s.tasks = plan.tasks
-      .filter((t) => !dropped.includes(t.id))
-      .map((t) => ({
-        ...t,
-        dependsOn: t.dependsOn.filter((d) => !dropped.includes(d)),
-        status: "queued",
-        attempts: 0,
-        branch: `task/${t.id}`,
-      }));
-    if (dropped.length)
-      await this.addChat(
-        "assistant",
-        `Dropped ${dropped.join(", ")} from the plan: the agreed scope is back end only and they own frontend files.`,
+    const outsideScope = offScope(scope, plan.tasks);
+    if (outsideScope.length)
+      throw new Error(
+        `Plan rejected: ${outsideScope.join(", ")} own frontend files but the agreed scope is back end only.`,
       );
+    this.s.tasks = plan.tasks.map((t) => ({
+      ...t,
+      status: "queued",
+      attempts: 0,
+      branch: `task/${t.id}`,
+    }));
     this.s.phase = "planned";
     await this.save(signal);
     await this.emit("plan", { tasks: this.s.tasks }, signal);
