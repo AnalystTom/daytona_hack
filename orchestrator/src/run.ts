@@ -25,6 +25,7 @@ import { llmJson, pageHtml, recall, remember, tracing } from "./services";
 import {
   architecture,
   CHAT_INSTRUCTIONS,
+  DATA_INSTRUCTIONS,
   offScope,
   previewCommand,
   SCOPES,
@@ -777,7 +778,8 @@ export class Run extends DurableObject<Env> {
 Architecture every task must respect (it keeps parallel work conflict-free):
 ${architecture(scope, APP)}
 Every task cites the evidence ids it builds from. A feature with no evidence is a deliberate change and must say so.
-Acceptance criteria must be checkable by a reviewer from the diff and the evidence.`,
+Acceptance criteria must be checkable by a reviewer from the diff and the evidence.
+${DATA_INSTRUCTIONS}`,
       input: JSON.stringify({
         spec: this.s.spec,
         evidence: this.s.evidence.map((e) => ({
@@ -1054,7 +1056,8 @@ ${ev.map((e) => `- ${e.id} ${e.kind} ${e.status}: ${e.summary}${e.path ? ` -> /h
 Full evidence index: ${EV}/index.json. Agreed spec: ${EV}/spec.json.
 ${t.review?.verdict === "reject" ? `\nYour previous attempt was rejected: ${t.review.reason}\n${t.review.findings.join("\n")}` : ""}
 Work in the current directory (a git worktree of the rebuild). Do not commit; the orchestrator commits and reviews your work.
-Do not invent content, routes or response shapes that the evidence does not show; if something was not observed, leave a clear TODO comment, and label inferred behaviour as inferred.
+Do not invent routes or response shapes that the evidence does not show; label inferred behaviour as inferred.
+${DATA_INSTRUCTIONS}
 The original site is NOT reachable from this sandbox: build only from the evidence files. Do not try to fetch or screenshot it.
 Never start servers, watchers or other long-running processes (the orchestrator already serves a preview on port 3000).
 ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
@@ -1146,9 +1149,11 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
     } else {
       verdict = await llmJson<NonNullable<Task["review"]>>(this.env, {
         name: "review",
-        instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.`,
+        instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.
+${DATA_INSTRUCTIONS}`,
         input: JSON.stringify({
           task: { ...t, review: undefined },
+          evidence: this.s.evidence.filter((e) => t.evidence.includes(e.id)),
           filesOutsideOwnership: outside,
           diffStat: t.diffStat,
           diff,

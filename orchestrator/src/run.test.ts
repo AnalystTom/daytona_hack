@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Daytona } from "./daytona";
 import { inspectBackend } from "./inspect";
 import type { Env, Evidence, Task } from "./types";
 
@@ -103,6 +104,7 @@ async function plannedRun(scope: string, goal: string, tasks: unknown[]) {
   const calls = stubFetch({
     orchestrator_turn: [turn(scope, false), turn(scope, true)],
     plan: [{ tasks }],
+    review: [{ verdict: "approve", reason: "ok", findings: [] }],
   });
   const ctx = context();
   const run = new Run(
@@ -118,9 +120,107 @@ async function plannedRun(scope: string, goal: string, tasks: unknown[]) {
   return { state: await run.getState(), calls, run };
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("run scope", () => {
+  it.each(["frontend", "backend", "both"] as const)(
+    "requires observed content and explicit unavailable states in emitted %s agent contracts",
+    async (scope) => {
+      // All sandbox work and model answers are test doubles; no paid run starts.
+      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "test" });
+      vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+      vi.spyOn(Daytona.prototype, "startAsync").mockResolvedValue("cmd");
+      const uploads = vi
+        .spyOn(Daytona.prototype, "writeFile")
+        .mockResolvedValue();
+      vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
+        "https://preview.example/",
+      );
+      vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
+        "https://preview.example/",
+      );
+      const owned =
+        scope === "frontend"
+          ? "sections/articles.html"
+          : "server/routes/articles.js";
+      vi.spyOn(Daytona.prototype, "exec").mockImplementation(
+        async (_id, command) => ({
+          exitCode: 0,
+          result: command.startsWith("cat ")
+            ? "0"
+            : command.includes("--name-only")
+              ? owned
+              : "submitted diff",
+        }),
+      );
+      const { run, calls } = await plannedRun(
+        scope,
+        "Rebuild from the available evidence.",
+        [{ ...task("t01", [owned]), evidence: ["ev_002"] }],
+      );
+      await run.startBuild();
+      await run.alarm(); // isolated sandbox setup
+      await run.alarm(); // dispatch: worker prompt uploaded
+      await run.alarm(); // review, task verification and final verification
+      expect((await run.getState()).phase).toBe("done");
+      expect((await run.getState()).tasks[0].status).toBe("merged");
+
+      // These are the actual model requests and sandbox prompt file, not source text.
+      expect(calls.map((call) => call.name)).toEqual([
+        "orchestrator_turn",
+        "orchestrator_turn",
+        "plan",
+        "verify_plan",
+        "review",
+        "verify_task",
+        "verify_final",
+      ]);
+      const workerPrompt = uploads.mock.calls.find(([, path]) =>
+        path.endsWith("t01.prompt.md"),
+      )?.[2];
+      expect(workerPrompt).toEqual(expect.any(String));
+      for (const instructions of [
+        ...calls.map((call) => call.instructions),
+        String(workerPrompt),
+      ]) {
+        expect(instructions).toContain(
+          "Use only observed real application data",
+        );
+        expect(instructions).toContain(
+          "A response shape or inferred route is not evidence for content values",
+        );
+        expect(instructions).toContain(
+          "explicit loading, empty, unavailable or error state",
+        );
+        expect(instructions).toContain(
+          "Do not expand capture to collect private values",
+        );
+        expect(instructions).toContain("Reject invented content values");
+        expect(instructions).not.toMatch(
+          /with mock data|mock data in the response shape/,
+        );
+      }
+      const review = calls.find((call) => call.name === "review")!;
+      expect(review.input.evidence).toEqual(
+        (await run.getState()).evidence.filter((e) => e.id === "ev_002"),
+      );
+      expect(review.input.evidence).toHaveLength(1);
+      if (scope !== "frontend") {
+        const plan = calls.find((call) => call.name === "plan")!;
+        expect(plan.instructions).toContain(
+          'HTTP 503 with {"error":"Data unavailable","status":"not_observed"}',
+        );
+        expect(plan.instructions).not.toContain("server/mock/NAME.json");
+        expect(String(workerPrompt)).toContain(
+          'HTTP 503 with {"error":"Data unavailable","status":"not_observed"}',
+        );
+      }
+    },
+  );
+
   it("keeps a backend-only brief backend only, from spec to plan", async () => {
     const { state, calls, run } = await plannedRun(
       "backend",
