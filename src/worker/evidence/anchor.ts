@@ -117,6 +117,8 @@ export async function screenshotTool(
       wait: 1500,
     }),
   });
+  if (!response.headers.get("content-type")?.startsWith("image/"))
+    throw new AnchorError("Anchor screenshot tool did not return an image");
   return new Uint8Array(await response.arrayBuffer());
 }
 

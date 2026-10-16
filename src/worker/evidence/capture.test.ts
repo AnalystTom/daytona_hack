@@ -51,7 +51,9 @@ function fakeAnchor(
         );
       }
       if (url.pathname === "/v1/tools/screenshot")
-        return new Response(Buffer.from(fixturePngBase64, "base64"));
+        return new Response(Buffer.from(fixturePngBase64, "base64"), {
+          headers: { "content-type": "image/png" },
+        });
       if (url.host !== "api.anchorbrowser.io") {
         // The plain fetch that finds where a page lands.
         const page = new Response("<html></html>");
