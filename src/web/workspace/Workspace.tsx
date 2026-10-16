@@ -401,7 +401,9 @@ export function Workspace({
                       ? phaseLabel(run.phase)
                       : undefined
                   }
-                  onStopBuild={() => runId && void act(runAction(runId, "stop"))}
+                  onStopBuild={() =>
+                    runId && void act(runAction(runId, "stop"))
+                  }
                   onOverride={onOverride}
                 />
               )}
