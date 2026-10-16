@@ -28,6 +28,32 @@ describe("parseBrief", () => {
     });
   });
 
+  it("accepts a bare domain, with or without a path", () => {
+    expect(parseBrief("wikipedia.com")).toEqual({
+      url: "https://wikipedia.com",
+      goal: "Rebuild this website.",
+    });
+    expect(parseBrief("en.wikipedia.org/wiki/Cloud")).toEqual({
+      url: "https://en.wikipedia.org/wiki/Cloud",
+      goal: "Rebuild this website.",
+    });
+    expect(
+      parseBrief("Rebuild goldmansachs.com/insights, only the header."),
+    ).toEqual({
+      url: "https://goldmansachs.com/insights",
+      goal: "Rebuild, only the header.",
+    });
+    expect(parseBrief("copy wikipedia.com.")).toEqual({
+      url: "https://wikipedia.com",
+      goal: "copy.",
+    });
+  });
+
+  it("does not treat emails or file names as sites", () => {
+    expect(parseBrief("mail me at tom@example.com")).toBeUndefined();
+    expect(parseBrief("see report.pdf and main.js")).toBeUndefined();
+  });
+
   it("finds no URL in plain text", () => {
     expect(parseBrief("rebuild the daytona landing page")).toBeUndefined();
   });
