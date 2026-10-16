@@ -14,10 +14,11 @@ import {
 import { resolveStore, type StoreEnv } from "../store";
 import { type RunStore, StoreError } from "../store/types";
 import { defaultStreamOptions, eventStream, type StreamOptions } from "./sse";
+import { runBridgeToken } from "../daytona/bridge-token";
 import { checkTargetUrl } from "./url";
 
 export interface RunsEnv extends StoreEnv {
-  // Shared secret the sandbox bridge sends as `Authorization: Bearer <token>`.
+  // Worker-wide secret; a bridge sends only its run's derived token (`runBridgeToken`).
   BRIDGE_TOKEN?: string;
   // Interim operator secret required to create runs, sent as `Authorization: Bearer <token>`.
   OPERATOR_TOKEN?: string;
@@ -92,7 +93,8 @@ async function route(
   const handler = runId === undefined ? rootRoutes[key] : runRoutes[key];
   if (!handler) throw new Failure(404, "not_found", "No such route.");
 
-  if (bridgeRoutes.has(key)) await checkToken(request, env, "BRIDGE_TOKEN");
+  if (bridgeRoutes.has(key))
+    await checkToken(request, env, "BRIDGE_TOKEN", runId);
   if (key === "POST ") await checkToken(request, env, "OPERATOR_TOKEN");
   const resolved = injectedStore ? { store: injectedStore } : resolveStore(env);
   if ("missing" in resolved) throw notConfigured(resolved.missing);
@@ -336,9 +338,13 @@ async function checkToken(
   request: Request,
   env: RunsEnv,
   binding: "BRIDGE_TOKEN" | "OPERATOR_TOKEN",
+  runId?: string,
 ) {
-  const token = env[binding];
-  if (!token) throw notConfigured([binding]);
+  const secret = env[binding];
+  if (!secret) throw notConfigured([binding]);
+  // A bridge holds only its run's derived token, never the Worker-wide secret.
+  const token =
+    runId === undefined ? secret : await runBridgeToken(secret, runId);
   const given = request.headers.get("authorization") ?? "";
   // Comparing digests keeps the comparison time independent of the secret.
   const [a, b] = await Promise.all(

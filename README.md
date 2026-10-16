@@ -77,7 +77,7 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_DATABASE` | Database inside that namespace (it must already exist) |
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
-| `BRIDGE_TOKEN` | Shared secret the sandbox bridge sends as `Authorization: Bearer <token>` |
+| `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
 | `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` requires it as `Authorization: Bearer <token>` |
 
 Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
@@ -100,3 +100,70 @@ The deploy job needs two repository secrets:
 - `CLOUDFLARE_ACCOUNT_ID`
 
 Without them the deploy job fails, so a merge to `main` that did not deploy shows red.
+
+## Run sandbox (Daytona)
+
+Each run gets one Daytona sandbox that holds the agent system (`docs/orchestrator/spec.md` sections 2, 3 and 6): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
+
+- `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).
+- `sandbox/`: the snapshot (`Dockerfile`, `setup.sh`, pinned versions in `versions.env`), the scripts the Worker runs inside a sandbox, and the bridge (`sandbox/bridge/bridge.ts`).
+
+The adapter calls Daytona's REST API with `fetch`, following the paths and payloads of the official TypeScript SDK `@daytona/sdk` 0.224.1 (and its `@daytona/api-client` 0.224.1), checked against Daytona's docs on 2026-10-16.
+The SDK itself is not bundled because it depends on Node-only packages that the Worker does not need.
+
+### Bindings
+
+| Binding | Needed for |
+|---|---|
+| `SANDBOX_API_TOKEN` | Every sandbox route: callers send it as `Authorization: Bearer`, because these routes spend money and instruct agents that hold secrets |
+| `DAYTONA_API_KEY` | Every sandbox route |
+| `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox |
+| `BRIDGE_TOKEN` | Starting a run sandbox or a pod: never sent to a sandbox; each run's bridge gets only `HMAC-SHA256(BRIDGE_TOKEN, runId)` (hex, `runBridgeToken` in `src/worker/daytona/bridge-token.ts`) and sends that as `Authorization: Bearer` |
+| `DAYTONA_SNAPSHOT` (optional) | Snapshot name; defaults to `reversy-run` |
+| `DAYTONA_API_URL` (optional) | Daytona API base; defaults to `https://app.daytona.io/api` |
+
+A route whose bindings are missing answers 503 and lists them by name; a caller without the right token gets 401.
+Other Worker code can call the lifecycle functions in `lifecycle.ts` directly instead of going through these routes.
+The run API's bridge routes derive that same token for the run id in the URL, so a run's token works only for that run.
+Secrets reach the sandbox through the toolbox at boot (`sandbox/save-env.sh`, owner-only files), never through Daytona's sandbox metadata or the snapshot.
+
+### Routes
+
+| Route | What it does |
+|---|---|
+| `POST /api/v1/runs/:id/sandbox` | Creates the run's sandbox from the snapshot (or restarts a stopped one) and starts `boot.sh`; returns the existing sandbox if it is running and booted, and reruns `boot.sh` if its boot failed or never started |
+| `GET /api/v1/runs/:id/sandbox` | State, boot status and log tail, and a signed preview URL (port 4173, valid for an hour) |
+| `POST /api/v1/runs/:id/sandbox/messages` | `{ kind: "chat" \| "approved_spec", text, podId? }`: pastes the message into Firstmate's session as captain input |
+| `POST /api/v1/runs/:id/pods` | `{ fromSandboxId? }`: creates a variant pod with Daytona fork, or a snapshot copy when fork is refused; the answer says `"fork"` or `"copy"` |
+| `DELETE /api/v1/runs/:id/sandbox` | Deletes the run's pods, copy snapshots and sandbox; answers 200 with the report, or 502 with each failure |
+
+Sandboxes are found by their labels (`reversy.run`, `reversy.role`), so the Worker holds no sandbox state.
+Auto-stop is off, because agents keep working without toolbox traffic; a 12-hour wall-clock TTL backstops a run whose cleanup never arrives.
+
+### Inside the sandbox
+
+`boot.sh` sets up, once, and then starts each of these in its own tmux session:
+
+- Forgejo on `localhost:3000` with a `reversy` admin and the `reversy/rebuild` repository, and a `tea` login for it.
+- The Firstmate home at `~/firstmate` (pinned commit of `https://github.com/kunchenguid/firstmate`) with one project, `rebuild [no-mistakes +yolo forge=forgejo]`, cloned from Forgejo and initialised for no-mistakes; workers on Codex with `gpt-6.1-sol` at high effort (`config/crew-harness`, `config/crew-dispatch.json`).
+- Firstmate itself (Codex, same model) in session `firstmate`; captain input is pasted there.
+- The preview server on port 4173, serving `main` from Forgejo and rebuilding it after every merge.
+- The bridge, which every 5 seconds posts new `EventEnvelope` batches to `POST /api/v1/runs/:id/events`: `task.status` (each line of a Firstmate status file), `backlog.item` (a task changing column) and `pull_request` (a pull request opening, merging or closing). Event ids are stable, so a retried post deduplicates; events from a pod carry `pod:<podId>` in `artifactRefs` and a `<podId>/<taskId>` task id, and a new pod posts only what changes after it starts.
+
+### Building the snapshot
+
+Install the [Daytona CLI](https://www.daytona.io/docs/en/tools/cli.md), sign in, then from the repository root:
+
+```sh
+daytona snapshot create reversy-run --dockerfile sandbox/Dockerfile --context sandbox --cpu 4 --memory 8 --disk 20
+```
+
+`setup.sh` installs the pinned versions in `sandbox/versions.env` (Node, Git, Codex CLI, no-mistakes, Forgejo, `tea`, and the Firstmate commit), verifies every download's SHA-256, and skips anything already at its pin, so it is safe to re-run.
+To change a version, edit `versions.env` and build a new snapshot.
+
+Daytona forks only Linux VM sandboxes, and builds from a Dockerfile only for containers.
+Until VM fork is enabled on the account, pods are snapshot copies: the parent is stopped for the cold snapshot and restarted afterwards.
+To use fork, push the image built from `sandbox/Dockerfile` to a registry and create the snapshot from it with `--image <image> --sandbox-class linux-vm`.
+
+Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo (both open questions in the agent system spec).

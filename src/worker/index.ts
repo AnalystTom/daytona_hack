@@ -1,4 +1,5 @@
 import { version } from "../../package.json";
+import { type DaytonaEnv, handleSandboxRoute } from "./daytona/routes";
 import { handleRunsApi, type RunsEnv } from "./runs/api";
 import { handleVerify, type VerifierEnv } from "./verifier/route";
 
@@ -12,7 +13,9 @@ export default {
     if (request.method === "POST" && verify?.[1]) {
       return handleVerify(request, env, verify[1]);
     }
+    const sandbox = await handleSandboxRoute(request, env);
+    if (sandbox) return sandbox;
     if (pathname.startsWith("/api/v1/")) return handleRunsApi(request, env);
     return Response.json({ error: "Not found" }, { status: 404 });
   },
-} satisfies ExportedHandler<RunsEnv & VerifierEnv>;
+} satisfies ExportedHandler<RunsEnv & VerifierEnv & DaytonaEnv>;
