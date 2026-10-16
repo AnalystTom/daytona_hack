@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { EventEnvelope } from "../../shared/contracts";
 import { SurrealRunStore } from "./surreal";
 import { StoreError } from "./types";
 
@@ -54,5 +55,96 @@ describe("SurrealRunStore over HTTP", () => {
   ])("reports %s as a StoreError", async (_name, answer) => {
     const { store } = storeAnswering(answer);
     await expect(store.getRun("r1")).rejects.toBeInstanceOf(StoreError);
+  });
+
+  describe("appendEvents", () => {
+    const event = (eventId: string): EventEnvelope => ({
+      schemaVersion: 1,
+      eventId,
+      sequence: 0,
+      runId: "r1",
+      timestamp: "2026-10-16T12:00:00Z",
+      type: "status",
+      state: "working",
+      message: eventId,
+      artifactRefs: [],
+    });
+    const ok = (...results: unknown[]) =>
+      Response.json({
+        id: 1,
+        result: results.map((result) => ({ status: "OK", result })),
+      });
+    // Answers the schema query, then the append transaction (via `append`), then the SELECT.
+    const fakeSurreal = (append: () => Response | Promise<Response>) => {
+      const sent: { sql: string; vars: Record<string, unknown> }[] = [];
+      const store = new SurrealRunStore(
+        { ...config, url: `https://${crypto.randomUUID()}.example.com` },
+        async (_input, init) => {
+          const { params } = JSON.parse(String(init?.body)) as {
+            params: [string, Record<string, unknown>];
+          };
+          const [sql, vars] = params;
+          sent.push({ sql, vars });
+          if (sql.includes("BEGIN TRANSACTION")) return append();
+          if (sql.startsWith("SELECT envelope")) {
+            const ids = vars.ids as string[];
+            return ok(
+              ids.map((id, i) => ({
+                envelope: JSON.stringify(event(id)),
+                sequence: i + 7,
+              })),
+            );
+          }
+          return ok(null);
+        },
+      );
+      return { store, sent };
+    };
+
+    it("reports an event ID repeated within one batch as a duplicate", async () => {
+      const { store, sent } = fakeSurreal(() =>
+        ok(null, null, null, null, [], null),
+      );
+      const result = await store.appendEvents("r1", [
+        event("a"),
+        event("b"),
+        event("a"),
+      ]);
+      const append = sent.find((q) => q.sql.includes("BEGIN TRANSACTION"));
+      expect(
+        (
+          (append as (typeof sent)[number]).vars.events as { eventId: string }[]
+        ).map((e) => e.eventId),
+      ).toEqual(["a", "b"]);
+      expect(result.stored.map((e) => [e.eventId, e.sequence])).toEqual([
+        ["a", 7],
+        ["b", 8],
+      ]);
+      expect(result.duplicates).toEqual(["a"]);
+    });
+
+    it("returns the stored events when a retry finds an earlier attempt committed them", async () => {
+      let attempts = 0;
+      const { store } = fakeSurreal(() =>
+        ++attempts === 1
+          ? Promise.reject(new TypeError("connection reset"))
+          : ok(null, null, null, null, ["a"], null),
+      );
+      const result = await store.appendEvents("r1", [event("a")]);
+      expect(attempts).toBe(2);
+      expect(result.stored.map((e) => [e.eventId, e.sequence])).toEqual([
+        ["a", 7],
+      ]);
+      expect(result.duplicates).toEqual([]);
+    });
+
+    it("still reports a duplicate found on the first attempt", async () => {
+      const { store } = fakeSurreal(() =>
+        ok(null, null, null, null, ["a"], null),
+      );
+      const result = await store.appendEvents("r1", [event("a"), event("b")]);
+      expect(result.stored.map((e) => e.eventId)).toEqual(["b"]);
+      expect(result.duplicates).toEqual(["a"]);
+    });
   });
 });

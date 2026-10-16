@@ -78,9 +78,14 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `SURREALDB_USER` | SurrealDB user the Worker signs in as |
 | `SURREALDB_PASSWORD` | That user's password |
 | `BRIDGE_TOKEN` | Shared secret the sandbox bridge sends as `Authorization: Bearer <token>` |
-| `RUN_STORE` | Optional. `memory` keeps records in the Worker's memory instead, for local dev and tests only; it is honoured only for requests to `localhost` |
+| `OPERATOR_TOKEN` | Interim operator secret; `POST /runs` requires it as `Authorization: Bearer <token>` |
 
-Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same.
+Without the SurrealDB bindings the run API answers 503 naming the missing ones; without `BRIDGE_TOKEN` the bridge routes do the same, and without `OPERATOR_TOKEN` so does `POST /runs`.
+A missing or wrong token answers 401.
+
+Interim access policy: only creating a run (which will start a paid sandbox) needs the operator token.
+Every other run route treats the random run ID as its capability: whoever has the ID can read the run, stream its events, chat, approve the spec and stop it.
+There is no user identity, run ownership or rate limiting yet.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 

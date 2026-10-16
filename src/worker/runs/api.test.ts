@@ -1,30 +1,39 @@
 import { describe, expect, it } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import { ApiError } from "../../shared/runs";
+import { MemoryRunStore } from "../store/memory";
+import type { RunStore } from "../store/types";
 import { handleRunsApi, type RunsEnv } from "./api";
 
-const env: RunsEnv = { RUN_STORE: "memory", BRIDGE_TOKEN: "bridge-secret" };
+const env: RunsEnv = {
+  BRIDGE_TOKEN: "bridge-secret",
+  OPERATOR_TOKEN: "operator-secret",
+};
 const bridge = { authorization: "Bearer bridge-secret" };
+const operator = { authorization: "Bearer operator-secret" };
+const memoryStore = new MemoryRunStore();
 const fast = { pollMs: 5, heartbeatMs: 1000, maxMs: 5000 };
 
 const call = (
   path: string,
   init: RequestInit & { json?: unknown } = {},
   callEnv: RunsEnv = env,
-  base = "http://localhost",
+  store: RunStore | null = memoryStore,
 ) => {
   const { json, ...rest } = init;
   const body = json === undefined ? rest.body : JSON.stringify(json);
   return handleRunsApi(
-    new Request(`${base}/api/v1${path}`, { ...rest, body }),
+    new Request(`https://reversy.test/api/v1${path}`, { ...rest, body }),
     callEnv,
     fast,
+    store ?? undefined,
   );
 };
 
 const createRun = async () => {
   const response = await call("/runs", {
     method: "POST",
+    headers: operator,
     json: { url: "https://example.com", goal: "Rebuild the landing page" },
   });
   expect(response.status).toBe(201);
@@ -85,17 +94,12 @@ const readEvents = async (response: Response, count: number) => {
 
 describe("run API configuration", () => {
   it("answers 503 naming every missing SurrealDB binding", async () => {
-    const response = await call("/runs/x", {}, {}, "https://reversy.test");
+    const response = await call("/runs/x", {}, {}, null);
     const body = await expectError(response, 503, "not_configured");
     expect(body.message).toBe(
       "Missing Worker bindings: SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD.",
     );
     expect(body.retryable).toBe(false);
-  });
-
-  it("ignores the in-memory store away from localhost", async () => {
-    const response = await call("/runs/x", {}, env, "https://reversy.test");
-    await expectError(response, 503, "not_configured");
   });
 
   it("uses the Cloudflare ray ID as the request ID", async () => {
@@ -133,6 +137,7 @@ describe("POST /runs", () => {
   ])("rejects %s", async (url, reason) => {
     const response = await call("/runs", {
       method: "POST",
+      headers: operator,
       json: { url, goal: "x" },
     });
     const body = await expectError(response, 400, "invalid_url");
@@ -143,29 +148,55 @@ describe("POST /runs", () => {
     await expectError(
       await call("/runs", {
         method: "POST",
+        headers: operator,
         json: { url: "https://example.com", goal: " " },
       }),
       400,
       "invalid_request",
     );
     await expectError(
-      await call("/runs", { method: "POST", body: "{" }),
+      await call("/runs", { method: "POST", headers: operator, body: "{" }),
       400,
       "invalid_json",
     );
     await expectError(
-      await call("/runs", { method: "POST", body: "x".repeat(1_000_001) }),
+      await call("/runs", {
+        method: "POST",
+        headers: operator,
+        body: "x".repeat(1_000_001),
+      }),
       413,
       "payload_too_large",
     );
     await expectError(
       await call("/runs", {
         method: "POST",
-        headers: { "content-length": "2000000" },
+        headers: { ...operator, "content-length": "2000000" },
         body: "{}",
       }),
       413,
       "payload_too_large",
+    );
+  });
+
+  it("requires the OPERATOR_TOKEN binding and the right token", async () => {
+    const json = { url: "https://example.com", goal: "x" };
+    const missing = await call(
+      "/runs",
+      { method: "POST", headers: operator, json },
+      { BRIDGE_TOKEN: "bridge-secret" },
+    );
+    const body = await expectError(missing, 503, "not_configured");
+    expect(body.message).toContain("OPERATOR_TOKEN");
+    await expectError(
+      await call("/runs", { method: "POST", json }),
+      401,
+      "unauthorized",
+    );
+    await expectError(
+      await call("/runs", { method: "POST", headers: bridge, json }),
+      401,
+      "unauthorized",
     );
   });
 
@@ -228,7 +259,7 @@ describe("bridge events", () => {
     const missing = await call(
       `/runs/${runId}/events`,
       { method: "POST", headers: bridge, json: envelope(runId, "a") },
-      { RUN_STORE: "memory" },
+      { OPERATOR_TOKEN: "operator-secret" },
     );
     const body = await expectError(missing, 503, "not_configured");
     expect(body.message).toContain("BRIDGE_TOKEN");

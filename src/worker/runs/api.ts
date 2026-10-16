@@ -19,6 +19,8 @@ import { checkTargetUrl } from "./url";
 export interface RunsEnv extends StoreEnv {
   // Shared secret the sandbox bridge sends as `Authorization: Bearer <token>`.
   BRIDGE_TOKEN?: string;
+  // Interim operator secret required to create runs, sent as `Authorization: Bearer <token>`.
+  OPERATOR_TOKEN?: string;
 }
 
 class Failure extends Error {
@@ -45,10 +47,11 @@ export async function handleRunsApi(
   request: Request,
   env: RunsEnv,
   streamOptions: StreamOptions = defaultStreamOptions,
+  store?: RunStore,
 ): Promise<Response> {
   const requestId = request.headers.get("cf-ray") ?? crypto.randomUUID();
   try {
-    return await route(request, env, streamOptions);
+    return await route(request, env, streamOptions, store);
   } catch (error) {
     const failure =
       error instanceof Failure
@@ -76,6 +79,7 @@ async function route(
   request: Request,
   env: RunsEnv,
   streamOptions: StreamOptions,
+  injectedStore: RunStore | undefined,
 ): Promise<Response> {
   const url = new URL(request.url);
   const [collection, runId, action, ...rest] = url.pathname
@@ -88,8 +92,9 @@ async function route(
   const handler = runId === undefined ? rootRoutes[key] : runRoutes[key];
   if (!handler) throw new Failure(404, "not_found", "No such route.");
 
-  if (bridgeRoutes.has(key)) await checkBridgeToken(request, env);
-  const resolved = resolveStore(env, url);
+  if (bridgeRoutes.has(key)) await checkToken(request, env, "BRIDGE_TOKEN");
+  if (key === "POST ") await checkToken(request, env, "OPERATOR_TOKEN");
+  const resolved = injectedStore ? { store: injectedStore } : resolveStore(env);
   if ("missing" in resolved) throw notConfigured(resolved.missing);
   const { store } = resolved;
 
@@ -327,12 +332,17 @@ async function readJson<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
   return parsed.data;
 }
 
-async function checkBridgeToken(request: Request, env: RunsEnv) {
-  if (!env.BRIDGE_TOKEN) throw notConfigured(["BRIDGE_TOKEN"]);
+async function checkToken(
+  request: Request,
+  env: RunsEnv,
+  binding: "BRIDGE_TOKEN" | "OPERATOR_TOKEN",
+) {
+  const token = env[binding];
+  if (!token) throw notConfigured([binding]);
   const given = request.headers.get("authorization") ?? "";
   // Comparing digests keeps the comparison time independent of the secret.
   const [a, b] = await Promise.all(
-    [given, `Bearer ${env.BRIDGE_TOKEN}`].map((value) =>
+    [given, `Bearer ${token}`].map((value) =>
       crypto.subtle.digest("SHA-256", new TextEncoder().encode(value)),
     ),
   );
@@ -340,6 +350,6 @@ async function checkBridgeToken(request: Request, env: RunsEnv) {
     (byte, i) => byte === new Uint8Array(b as ArrayBuffer)[i],
   );
   if (!same) {
-    throw new Failure(401, "unauthorized", "Missing or wrong bridge token.");
+    throw new Failure(401, "unauthorized", "Missing or wrong bearer token.");
   }
 }

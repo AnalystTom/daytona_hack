@@ -144,9 +144,13 @@ export class SurrealRunStore implements RunStore {
     runId: string,
     events: EventEnvelope[],
   ): Promise<AppendResult> {
+    const seen = new Set<string>();
+    const unique = events.filter(
+      (e) => !seen.has(e.eventId) && seen.add(e.eventId),
+    );
     const vars = {
       runId,
-      events: events.map((e) => ({
+      events: unique.map((e) => ({
         eventId: e.eventId,
         taskId: e.taskId,
         state: e.state,
@@ -157,7 +161,8 @@ export class SurrealRunStore implements RunStore {
     // Concurrent appends to one run conflict on its lastSequence; retrying is safe because
     // events already stored are skipped as duplicates.
     let results: unknown[] = [];
-    for (let attempt = 1; ; attempt++) {
+    let attempt = 1;
+    for (; ; attempt++) {
       try {
         results = await this.query(appendSql, vars);
         break;
@@ -168,7 +173,11 @@ export class SurrealRunStore implements RunStore {
     }
     // Statement results are BEGIN, LET, LET, FOR, RETURN, COMMIT.
     const existing = new Set(results.at(-2) as string[]);
-    const ids = events.map((e) => e.eventId);
+    // A retry that finds the whole batch stored means an earlier attempt committed it.
+    if (attempt > 1 && unique.every((e) => existing.has(e.eventId))) {
+      existing.clear();
+    }
+    const ids = unique.map((e) => e.eventId);
     const [stored] = await this.query(
       `SELECT envelope, sequence FROM event
        WHERE run = type::record('run', $runId) AND eventId IN $ids
@@ -177,7 +186,9 @@ export class SurrealRunStore implements RunStore {
     );
     return {
       stored: toEvents(stored),
-      duplicates: ids.filter((id) => existing.has(id)),
+      duplicates: events
+        .map((e) => e.eventId)
+        .filter((id, i, all) => existing.has(id) || all.indexOf(id) !== i),
     };
   }
 

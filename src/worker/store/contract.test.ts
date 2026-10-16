@@ -137,6 +137,24 @@ describe.each(stores)("%s run store", (_name, makeStore) => {
     ).toEqual(["b"]);
   });
 
+  it("reports an event ID repeated within one batch as a duplicate", async () => {
+    const store = makeStore();
+    const run = newRun();
+    await store.createRun(run);
+    const result = await store.appendEvents(run.id, [
+      event(run.id, "a"),
+      event(run.id, "b"),
+      event(run.id, "a", { message: "again" }),
+    ]);
+    expect(result.stored.map((e) => [e.eventId, e.sequence])).toEqual([
+      ["a", 1],
+      ["b", 2],
+    ]);
+    expect(result.duplicates).toEqual(["a"]);
+    const all = await store.listEvents(run.id, 0, 100);
+    expect(all.map((e) => e.message)).toEqual(["a", "b"]);
+  });
+
   it("keeps sequences unique under concurrent appends", async () => {
     const store = makeStore();
     const run = newRun();
