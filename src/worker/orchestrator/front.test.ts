@@ -313,6 +313,37 @@ describe("run routes", () => {
     expect(await built?.json()).toEqual({ id: "r1", phase: "building" });
   });
 
+  it.each(["/api/v1/runs", "/api/v1/orchestrator/runs"])(
+    "preserves JSON evidence bytes through %s",
+    async (prefix) => {
+      const bytes = new TextEncoder().encode(
+        '{\n  "sandboxId": "string", "nested": {"sandboxId": "number"}\n}\n',
+      );
+      const { env } = setup(
+        () =>
+          new Response(bytes, {
+            headers: {
+              "content-type": "application/json",
+              "access-control-allow-origin": "*",
+            },
+          }),
+      );
+      const response = await call(
+        `${prefix}/r1/evidence/ev_001`,
+        { headers: operator },
+        env,
+      );
+      expect(response?.status).toBe(200);
+      expect(new Uint8Array(await response!.arrayBuffer())).toEqual(bytes);
+      expect(response?.headers.get("content-type")).toBe("application/json");
+      expect(response?.headers.get("content-security-policy")).toContain(
+        "sandbox",
+      );
+      expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response?.headers.get("access-control-allow-origin")).toBeNull();
+    },
+  );
+
   it("answers 404 for a run the orchestrator does not know", async () => {
     const { env } = setup(() => new Response(undefined, { status: 200 }));
     const response = await call(

@@ -40,7 +40,7 @@ export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 export interface Evidence {
   id: string; // ev_<uuid>
   page: string; // URL path and state, e.g. "/ @ desktop 1440"
-  kind: EvidenceRecord["kind"];
+  kind: EvidenceRecord["kind"] | "html";
   tool: string;
   status: EvidenceStatus;
   capturedAt: string;

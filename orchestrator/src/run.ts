@@ -57,6 +57,16 @@ export class Run extends DurableObject<Env> {
   private seq = 0;
   private daytona: Daytona;
   private _tracer?: RunTracer;
+  private signInTransition = Promise.resolve();
+
+  private serializeSignIn<T>(action: () => Promise<T>) {
+    const result = this.signInTransition.then(action);
+    this.signInTransition = result.then(
+      () => {},
+      () => {},
+    );
+    return result;
+  }
 
   private get tracer() {
     if (
@@ -133,8 +143,22 @@ export class Run extends DurableObject<Env> {
 
   /** One of this run's evidence files, read from SurrealDB. */
   async evidenceFile(id: string) {
-    if (!isStoredEvidenceId(id) || !this.s?.evidence.some((e) => e.id === id))
-      return null;
+    const evidence = this.s?.evidence.find((e) => e.id === id);
+    if (!evidence) return null;
+    if (!isStoredEvidenceId(id)) {
+      const content = await this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
+      return content
+        ? {
+            contentType:
+              evidence.kind === "screenshot"
+                ? "image/png"
+                : evidence.kind === "html"
+                  ? "text/html"
+                  : "application/json",
+            content: new Uint8Array(content),
+          }
+        : null;
+    }
     const store = evidenceStore(this.env);
     const [record, content] = await Promise.all([
       store.getEvidence(id),
@@ -246,28 +270,34 @@ export class Run extends DurableObject<Env> {
   }
 
   /** Opens secure sign-in (an Anchor live view) at the stopped pages. Only the caller gets its one-time URL. */
-  async startSignIn() {
-    const result = await this.capture({
-      mode: "full_pack",
-      scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
-      signIn: "start",
+  startSignIn() {
+    return this.serializeSignIn(async () => {
+      const result = await this.capture({
+        mode: "full_pack",
+        scope: captureScope(this.s.spec.url, this.awaitingSignIn()).scope,
+        signIn: "start",
+      });
+      if (result.status !== "awaiting_sign_in")
+        throw new Error("secure sign-in did not start");
+      return { liveViewUrl: result.liveViewUrl };
     });
-    if (result.status !== "awaiting_sign_in")
-      throw new Error("secure sign-in did not start");
-    return { liveViewUrl: result.liveViewUrl };
   }
 
   /** The user signed in: capture the stopped pages in that session, then plan (async; watch events). */
-  async resumeSignIn() {
-    this.awaitingSignIn();
-    return this.continueInspection("resume_sign_in");
+  resumeSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      return this.continueInspection("resume_sign_in");
+    });
   }
 
   /** Plan without the stopped pages. */
-  async skipSignIn() {
-    this.awaitingSignIn();
-    await endSavedSignIn(this.env, this.s.id);
-    return this.continueInspection("plan");
+  skipSignIn() {
+    return this.serializeSignIn(async () => {
+      this.awaitingSignIn();
+      await endSavedSignIn(this.env, this.s.id);
+      return this.continueInspection("plan");
+    });
   }
 
   private awaitingSignIn() {
@@ -299,25 +329,28 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  async stop() {
-    for (const t of this.s.tasks) {
-      if (t.status === "queued" || t.status === "building") {
-        t.status = "stopped";
-        t.nextAction = "Restart the build to resume";
-        await this.emit("task", t);
+  stop() {
+    return this.serializeSignIn(async () => {
+      for (const t of this.s.tasks) {
+        if (t.status === "queued" || t.status === "building") {
+          t.status = "stopped";
+          t.nextAction = "Restart the build to resume";
+          await this.emit("task", t);
+        }
       }
-    }
-    if (this.s.sandboxId)
-      await this.daytona
-        .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
-        .catch(() => {});
-    if (this.s.signInPaths?.length)
-      await endSavedSignIn(this.env, this.s.id).catch(() => {});
-    this.s.phase = "stopped";
-    await this.save();
-    await this.emit("phase", { phase: "stopped" });
-    await this.ctx.storage.deleteAlarm();
-    return this.s;
+      if (this.s.sandboxId)
+        await this.daytona
+          .exec(this.s.sandboxId, "pkill -f 'codex exec' || true")
+          .catch(() => {});
+      if (this.s.signInPaths?.length)
+        await endSavedSignIn(this.env, this.s.id).catch(() => {});
+      this.s.phase = "stopped";
+      this.s.pending = undefined;
+      await this.save();
+      await this.emit("phase", { phase: "stopped" });
+      await this.ctx.storage.deleteAlarm();
+      return this.s;
+    });
   }
 
   /** Override a review verdict from the UI. */
@@ -524,7 +557,7 @@ Set userApproved=true only if the user's last message clearly approves the spec.
   /** The DOM of the first captured page, or "" when none was observed. */
   private async originalHtml() {
     const dom = this.s.evidence.find(
-      (e) => e.kind === "dom" && e.status === "observed",
+      (e) => (e.kind === "dom" || e.kind === "html") && e.status === "observed",
     );
     const file = dom && (await this.evidenceFile(dom.id));
     return file ? new TextDecoder().decode(file.content) : "";

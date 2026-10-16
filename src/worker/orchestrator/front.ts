@@ -164,7 +164,8 @@ async function forward(
   });
   if (response.ok) {
     const type = response.headers.get("content-type") ?? "";
-    if (!type.includes("json")) return withoutCors(response);
+    if (path.includes("/evidence/") || !type.includes("json"))
+      return withoutCors(response);
     // The browser has no use for the Daytona sandbox id, in state or in events.
     const text = await response.text();
     const body =
