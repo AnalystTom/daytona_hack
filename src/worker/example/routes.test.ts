@@ -51,6 +51,15 @@ const events = [
     type: "chat",
     data: { role: "assistant", text: `Build finished. Preview: ${PREVIEW}` },
   },
+  {
+    seq: 6,
+    ts: "2026-10-16T19:11:27.000Z",
+    type: "verification",
+    data: {
+      summary:
+        "Checked https://3000-signedtoken123.proxy.daytona.works/?a=1 ok",
+    },
+  },
 ];
 
 function fakeOrchestrator(phase = "done") {
@@ -134,14 +143,16 @@ describe("example snapshot", () => {
       runId: RUN,
       target: "https://www.daytona.io/",
       phase: "done",
-      finishedAt: "2026-10-16T19:11:26.709Z",
+      finishedAt: "2026-10-16T19:11:27.000Z",
       savedAt: "2026-10-16T21:00:00.000Z",
       media: ["ev_001"],
     });
-    expect(loaded?.events).toHaveLength(5);
+    expect(loaded?.events).toHaveLength(6);
     const text = JSON.stringify(loaded);
     expect(text).not.toContain(SANDBOX);
     expect(text).not.toContain("sandboxId");
+    expect(text).not.toContain("signedtoken123");
+    expect(text).toContain("Checked [not kept] ok");
 
     // 3 MiB is stored in two chunks and read back byte for byte.
     expect(store.rows.has(`file/${RUN}/ev_001/1`)).toBe(true);

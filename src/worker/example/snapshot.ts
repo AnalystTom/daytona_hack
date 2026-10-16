@@ -110,6 +110,9 @@ export async function exportRun(
   for (const secret of [state.previewUrl, state.sandboxId]) {
     if (secret) json = json.replaceAll(secret, "[not kept]");
   }
+  // Signed preview links carry a token instead of the sandbox id: drop every port-prefixed
+  // sandbox host (https://3000-<id or token>.<proxy>/...).
+  json = json.replace(/https?:\/\/\d{2,5}-[^\s"\\]+/g, "[not kept]");
   events = JSON.parse(json);
 
   const files = new Map<string, MediaFile>();
