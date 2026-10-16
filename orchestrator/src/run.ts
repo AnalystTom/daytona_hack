@@ -1259,10 +1259,12 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
         `cd ${APP} && git diff --stat main...${t.branch}`,
       )
     ).result.trim();
+    // Every changed file gets its own bounded slice, so a big file cannot hide the rest of the change.
     const diff = (
       await this.daytona.exec(
         id,
-        `cd ${APP} && git diff main...${t.branch} | head -c 30000`,
+        `cd ${APP} && for f in $(git diff --name-only main...${t.branch}); do git diff main...${t.branch} -- "$f" | head -c 5000; echo; done | head -c 70000`,
+        { timeout: 120 },
       )
     ).result;
     const outside = (
@@ -1274,10 +1276,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .trim()
       .split("\n")
       .filter(Boolean)
-      .filter(
-        (f) =>
-          !t.owns.some((o) => f === o || f.startsWith(o.replace(/\*.*$/, ""))),
-      );
+      .filter((f) => !t.owns.some((o) => ownedBy(f, o)));
 
     let verdict: Task["review"];
     if (exitCode !== 0 || !diff.trim()) {
@@ -1294,6 +1293,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
         beforeCall: this.beforeWork,
         name: "review",
         instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.
+Each file's diff is capped at 5 KB to fit; a capped file is not a defect. Reject only for problems you can point to in the diff, the file list or the log.
 ${DATA_INSTRUCTIONS}`,
         input: JSON.stringify({
           task: { ...t, review: undefined },
@@ -1385,4 +1385,12 @@ ${DATA_INSTRUCTIONS}`,
       ),
     );
   }
+}
+
+/** Plans name owned files as repo paths, absolute app paths or globs; git reports repo-relative paths. */
+function ownedBy(file: string, owned: string) {
+  const o = owned.replace(new RegExp(`^${APP}/`), "").replace(/^\.\//, "");
+  if (o === file) return true;
+  const prefix = o.replace(/\*.*$/, "");
+  return o.includes("*") ? file.startsWith(prefix) : file.startsWith(`${o.replace(/\/$/, "")}/`);
 }
