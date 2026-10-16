@@ -161,14 +161,27 @@ async function userRunRoute(
   const ended: string[] = [];
   for (const owned of recent) {
     const reply = await forward(orchestrator, "GET", `/runs/${owned.runId}`);
-    const { phase } = JSON.parse((await reply.text()) || "{}") as {
+    const { phase, pending } = JSON.parse((await reply.text()) || "{}") as {
       phase?: string;
+      pending?: string;
     };
+    if (pending === "stop") continue;
     if (phase && ENDED.includes(phase)) ended.push(owned.runId);
     else if (now - owned.createdAt >= maxMinutes * 60_000) {
-      if (phase)
-        await forward(orchestrator, "POST", `/runs/${owned.runId}/stop`, {});
-      ended.push(owned.runId);
+      if (phase) {
+        const stopped = await forward(
+          orchestrator,
+          "POST",
+          `/runs/${owned.runId}/stop`,
+          {},
+        );
+        const result = (await stopped.json()) as {
+          phase?: string;
+          pending?: string;
+        };
+        if (result.phase === "stopped" && result.pending !== "stop")
+          ended.push(owned.runId);
+      } else ended.push(owned.runId);
     }
   }
   const id = crypto.randomUUID();

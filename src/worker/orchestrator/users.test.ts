@@ -40,6 +40,8 @@ function setup(
   onStart?: (id: string) => Promise<Response | void>,
 ) {
   const phases = new Map<string, string>();
+  const pending = new Map<string, string>();
+  let onStop: (() => Promise<Response>) | undefined;
   const calls: string[] = [];
   const fetcher = {
     async fetch(input: string, init: RequestInit = {}) {
@@ -57,8 +59,16 @@ function setup(
       }
       const [, , id = "", action] = path.split("/");
       if (!phases.has(id)) return new Response("");
-      if (action === "stop") phases.set(id, "stopped");
-      return Response.json({ id, phase: phases.get(id) });
+      if (action === "stop") {
+        if (onStop) return onStop();
+        phases.set(id, "stopped");
+        pending.delete(id);
+      }
+      return Response.json({
+        id,
+        phase: phases.get(id),
+        pending: pending.get(id),
+      });
     },
   } as unknown as Fetcher;
   const env: OrchestratorEnv = {
@@ -97,7 +107,18 @@ function setup(
       url: "https://example.com",
       goal: "Rebuild it",
     });
-  return { as, start, phases, calls, env, owners };
+  return {
+    as,
+    start,
+    phases,
+    pending,
+    calls,
+    env,
+    owners,
+    setStop: (handler: () => Promise<Response>) => {
+      onStop = handler;
+    },
+  };
 }
 
 describe("Cloudflare Access users", () => {
@@ -204,6 +225,57 @@ describe("Cloudflare Access users", () => {
       vi.useRealTimers();
     }
   });
+
+  it.each(["brief", "building", "done", "failed", "stopped"])(
+    "holds admission for a %s run with pending cancellation, even after expiry",
+    async (phase) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const { start, phases, pending, calls } = setup();
+        const { id } = (await (await start("ada@example.com")).json()) as {
+          id: string;
+        };
+        phases.set(id, phase);
+        pending.set(id, "stop");
+        vi.setSystemTime(Date.now() + 121 * 60_000);
+        expect((await start("ada@example.com")).status).toBe(429);
+        expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+        pending.delete(id);
+        phases.set(id, "stopped");
+        expect((await start("ada@example.com")).status).toBe(201);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it.each(["pending", "failed", "unconfirmed"])(
+    "does not release expired admission after a %s cancellation response",
+    async (outcome) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const { start, phases, setStop, calls } = setup();
+        const { id } = (await (await start("ada@example.com")).json()) as {
+          id: string;
+        };
+        phases.set(id, "building");
+        vi.setSystemTime(Date.now() + 121 * 60_000);
+        setStop(async () =>
+          outcome === "failed"
+            ? Response.json({ error: "cancellation failed" }, { status: 500 })
+            : Response.json({
+                phase: outcome === "pending" ? "stopped" : "building",
+                pending: outcome === "pending" ? "stop" : undefined,
+              }),
+        );
+        const second = await start("ada@example.com");
+        expect(second.status).toBe(outcome === "failed" ? 502 : 429);
+        expect(calls.filter((c) => c === "POST /runs")).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("disables bearer, old cookies, session creation and the operator proxy in Access mode", async () => {
     const { as, env, calls } = setup();

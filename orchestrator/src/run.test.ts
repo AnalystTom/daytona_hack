@@ -30,7 +30,7 @@ const task = (status: Task["status"]): Task => ({
 async function setup(
   options: {
     phase?: Phase;
-    pending?: "inspect" | "build_setup";
+    pending?: "inspect" | "build_setup" | "stop";
     tasks?: Task[];
     minutes?: string;
     empty?: boolean;
@@ -76,6 +76,7 @@ async function setup(
     storage,
     blockConcurrencyWhile: (fn: () => Promise<unknown>) => {
       ready = fn();
+      return ready;
     },
     waitUntil: () => {},
   };
@@ -126,6 +127,7 @@ async function setup(
   );
   return {
     run,
+    ctx,
     state,
     storage,
     data,
@@ -322,6 +324,204 @@ describe("run paid-work deadlines", () => {
     expect(calls).toEqual([]);
     expect((await run.getState()).phase).toBe("stopped");
   });
+
+  it.each(["brief", "building", "done", "failed"] as const)(
+    "keeps %s runs blocked and nonterminal until worker cancellation completes",
+    async (phase) => {
+      const { run, state, data, ctx, env, calls, storage, startWorker } =
+        await setup({ phase, tasks: [task("building")] });
+      state.sandboxId = "sb1";
+      let release!: () => void;
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const blocked = new Promise<string>((resolve) => {
+        release = () => resolve("");
+      });
+      vi.mocked(Daytona.prototype.must).mockImplementationOnce(async () => {
+        entered();
+        return blocked;
+      });
+      const stopping = run.stop();
+      await started;
+      expect(await run.getState()).toMatchObject({ phase, pending: "stop" });
+      expect(data.get("state")).toMatchObject({ phase, pending: "stop" });
+      const reloaded = new Run(ctx as unknown as DurableObjectState, env);
+      await Promise.resolve();
+      await expect(reloaded.message("continue")).rejects.toThrow(/stopping/);
+      await expect(run.override("t01", "approve", "continue")).rejects.toThrow(
+        /stopping/,
+      );
+      await run.alarm();
+      expect(storage.setAlarm).not.toHaveBeenCalled();
+      expect(calls).toEqual([]);
+      expect(startWorker).not.toHaveBeenCalled();
+      release();
+      await stopping;
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      expect(data.get("state")).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+    },
+  );
+
+  it.each(["network", "command"] as const)(
+    "keeps cancellation pending after a %s failure until an explicit successful stop",
+    async (kind) => {
+      const { run, data, calls, storage } = await setup({
+        phase: "building",
+        tasks: [task("building")],
+      });
+      vi.mocked(Daytona.prototype.must).mockRestore();
+      if (kind === "network")
+        vi.mocked(Daytona.prototype.exec).mockRejectedValueOnce(
+          new Error("toolbox unavailable"),
+        );
+      else
+        vi.mocked(Daytona.prototype.exec).mockResolvedValueOnce({
+          exitCode: 1,
+          result: "workers still running",
+        });
+      await expect(run.stop()).rejects.toThrow();
+      expect(data.get("state")).toMatchObject({
+        phase: "building",
+        pending: "stop",
+      });
+      await expect(run.message("continue")).rejects.toThrow(/stopping/);
+      await expect(run.override("t01", "reject", "retry")).rejects.toThrow(
+        /stopping/,
+      );
+      await run.alarm();
+      expect(calls).toEqual([]);
+      expect(storage.setAlarm).not.toHaveBeenCalled();
+      await run.stop();
+      expect(await run.getState()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+    },
+  );
+
+  it("keeps expired runs blocked when cancellation fails", async () => {
+    const { run, expire, data, calls, storage } = await setup({
+      phase: "building",
+      tasks: [task("building")],
+    });
+    vi.mocked(Daytona.prototype.must).mockRejectedValueOnce(
+      new Error("cancellation refused"),
+    );
+    expire();
+    await run.alarm();
+    expect(data.get("state")).toMatchObject({
+      phase: "building",
+      pending: "stop",
+    });
+    await run.alarm();
+    expect(calls).toEqual([]);
+    expect(storage.setAlarm).not.toHaveBeenCalled();
+  });
+
+  it("checks the deadline again after worker launch returns", async () => {
+    const { run, expire, calls, startWorker } = await setup({
+      phase: "building",
+      tasks: [task("queued")],
+    });
+    startWorker.mockImplementationOnce(async () => {
+      expire();
+      return "cmd1";
+    });
+    await run.alarm();
+    expect(startWorker).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
+    expect(await run.getState()).toMatchObject({
+      phase: "stopped",
+      pending: undefined,
+    });
+  });
+
+  it("blocks plan verification after stop arrives during planning", async () => {
+    const { run, request, calls } = await setup({
+      phase: "inspecting",
+      pending: "inspect",
+    });
+    request.mockImplementation(async (input) => {
+      if (String(input).includes("api.openai.com")) {
+        calls.push("plan");
+        await run.stop();
+        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
+      }
+      return new Response("<html>observed</html>");
+    });
+    await run.alarm();
+    expect(calls).toEqual(["plan"]);
+    expect((await run.getState()).phase).toBe("stopped");
+  });
+
+  it.each(["provider", "json", "refusal", "recording"] as const)(
+    "makes final verification %s failures terminal without another paid attempt",
+    async (failure) => {
+      const { run, request, calls, storage, ctx, env, data } = await setup({
+        phase: "building",
+      });
+      request.mockImplementation(async (input, init) => {
+        if (String(input).includes("api.openai.com")) {
+          const body = JSON.parse(String(init?.body));
+          calls.push(body.text.format.name);
+          if (failure === "provider")
+            return Response.json({ error: "unavailable" }, { status: 503 });
+          if (failure === "json") return Response.json({ output_text: "{" });
+          if (failure === "refusal")
+            return Response.json({
+              output: [{ content: [{ type: "refusal", refusal: "No" }] }],
+            });
+          return Response.json({
+            output_text: JSON.stringify({
+              pass: true,
+              findings: [],
+              summary: "Pass",
+            }),
+          });
+        }
+        return new Response("<html>observed</html>");
+      });
+      if (failure === "recording") {
+        const put = storage.put;
+        let failed = false;
+        storage.put = async (key, value) => {
+          if (
+            !failed &&
+            typeof value === "object" &&
+            value !== null &&
+            "type" in value &&
+            value.type === "verification"
+          ) {
+            failed = true;
+            throw new Error("event write failed");
+          }
+          await put(key, value);
+        };
+      }
+      await run.alarm();
+      expect(await run.getState()).toMatchObject({
+        phase: "failed",
+        error: expect.any(String),
+      });
+      expect(data.get("state")).toMatchObject({ phase: "failed" });
+      expect(storage.deleteAlarm).toHaveBeenCalled();
+      expect(storage.setAlarm).not.toHaveBeenCalled();
+      await run.alarm();
+      const reloaded = new Run(ctx as unknown as DurableObjectState, env);
+      await Promise.resolve();
+      await reloaded.alarm();
+      expect(calls).toEqual(["verify_final"]);
+      expect(storage.setAlarm).not.toHaveBeenCalled();
+    },
+  );
 
   it("still starts and converses, plans, dispatches and verifies within the deadline", async () => {
     const first = await setup({ empty: true });
