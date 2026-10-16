@@ -4,7 +4,7 @@ The orchestrator is a Cloudflare Worker (`orchestrator/`) with one Durable Objec
 It owns the phases from [`spec.md`](spec.md): brief (chat), inspect, plan, build and review.
 Code is written only inside Daytona sandboxes, by Codex workers. Everything else runs on Cloudflare.
 
-Call it over HTTP or through a service binding (`env.ORCHESTRATOR.fetch(...)`).
+Call it through a service binding (`env.ORCHESTRATOR.fetch(...)`); it has no public address.
 
 ## Routes
 
@@ -63,7 +63,9 @@ A failure is also posted to chat as steering.
 
 ## Deployed
 
-`https://reversy-orchestrator.thomasmann2001.workers.dev`. `orchestrator/scripts/demo-run.sh` drives one full run.
+No public address: `workers_dev` and `preview_urls` are off. The `reversy` Worker reaches it through its `ORCHESTRATOR` service binding,
+the workspace through `/api/v1/runs/*` and operators through `/api/v1/orchestrator/*` with `Authorization: Bearer <OPERATOR_TOKEN>`.
+`orchestrator/scripts/demo-run.sh` drives one full run that way (set `REVERSY_URL` and `OPERATOR_TOKEN`).
 
 ## Not built yet
 

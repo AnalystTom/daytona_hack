@@ -537,7 +537,7 @@ Acceptance criteria must be checkable by a reviewer from the diff and the eviden
     const id = sb.id;
     await this.daytona.must(
       id,
-      `mkdir -p ${APP} ${WT} ${EV} ${LOGS} && cd ${APP} && git init -q -b main && git config --global user.email reversy@local && git config --global user.name Reversy && echo '# Reversy rebuild of ${this.s.spec.url}' > README.md && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init`,
+      `mkdir -p ${APP} ${WT} ${EV} ${LOGS} && cd ${APP} && git init -q -b main && git config --global user.email reversy@local && git config --global user.name Reversy && echo ${shq(`# Reversy rebuild of ${this.s.spec.url}`)} > README.md && printf 'node_modules/\n' > .gitignore && git add -A && git commit -qm init`,
     );
     await this.daytona.must(
       id,

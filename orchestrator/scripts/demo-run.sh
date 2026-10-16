@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Drive one full run against the orchestrator: brief -> approve -> plan -> build, printing progress.
-# Usage: orchestrator/scripts/demo-run.sh [base_url]
+# It spends money (OpenAI, Daytona). The orchestrator has no public address, so this goes through
+# the reversy Worker's operator-only pass-through.
+# Usage: REVERSY_URL=https://<reversy host> OPERATOR_TOKEN=<token> orchestrator/scripts/demo-run.sh
 set -euo pipefail
-B=${1:-https://reversy-orchestrator.thomasmann2001.workers.dev}
+B="${REVERSY_URL:?set REVERSY_URL to the reversy Worker origin}/api/v1/orchestrator"
+: "${OPERATOR_TOKEN:?set OPERATOR_TOKEN to the reversy Worker operator token}"
+curl() { command curl -H "authorization: Bearer $OPERATOR_TOKEN" "$@"; }
 j() { python3 -c "import json,sys; d=json.load(sys.stdin); $1"; }
 
 R=$(curl -s -X POST "$B/runs" -H 'content-type: application/json' \
