@@ -18,7 +18,22 @@ npm run dev
 ```
 
 `npm run dev` serves the front end and the Worker together through the Cloudflare Vite plugin.
-The workspace is at `/workspace`; in development only (`npm run dev`), `/workspace?fixture=spec` shows it with labelled sample data for design review; production builds leave fixture mode out.
+In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sample data for design review; production builds leave fixture mode out.
+
+## Workspace
+
+Open `/workspace` for an empty session. The header's session menu offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run requires operator access; an unknown run shows recovery guidance and is not added to the session list.
+
+The session list remembers up to 50 runs in this browser's local storage, after successful creation or a confirmed run read. Card positions are also saved locally per run; they do not sync across browsers. If local storage is blocked or full, the workspace still works but changes may not be remembered. Chat, spec, evidence and tasks are restored from the run's events.
+
+Use **Spec** or **Build** to work on the canvas:
+
+- Drag empty canvas space or scroll to pan. Scrollable card content scrolls normally until its edge.
+- Use **Zoom out** / **Zoom in**, or Ctrl/Meta + scroll, to zoom between 25% and 200%. The percentage button returns to 100%; **Fit to screen** brings the cards into view.
+- Drag a card's non-interactive area to move it. For keyboard movement, activate its **Move** button, use arrow keys (Shift moves further), and press Enter or Escape to finish.
+- **Reset layout** clears the run's saved card positions. Pan and zoom are temporary and reset when changing views or reopening a session.
+
+**Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
 
 ## Scripts
 

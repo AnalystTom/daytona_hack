@@ -11,6 +11,7 @@ import { Mark } from "./Mark";
 const NOTICE_TITLE = {
   not_connected: "Not connected",
   operator_token: "Operator token needed",
+  not_found: "Not found",
   failed: "Request failed",
   run_error: "Run error",
 } as const;

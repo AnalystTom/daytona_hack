@@ -82,14 +82,22 @@ export type RunView = {
   board: BuildEvent[];
 };
 
-// Chat lines for new events. The user's own messages are already in the chat, so they are skipped.
-export function chatEntries(events: readonly OrchestratorEvent[]): ChatEntry[] {
+// Chat lines for new events. The user's own messages are already in the chat, so they are
+// skipped unless `withUser` is set (a session reopened from its link starts with an empty chat).
+export function chatEntries(
+  events: readonly OrchestratorEvent[],
+  { withUser = false } = {},
+): ChatEntry[] {
   return events.flatMap((event): ChatEntry[] => {
     const id = `run-${event.seq}`;
     if (event.type === "chat") {
       const chat = Chat.safeParse(event.data);
-      return chat.success && chat.data.role === "assistant"
-        ? [{ kind: "agent", id, text: chat.data.text }]
+      if (!chat.success) return [];
+      if (chat.data.role === "assistant") {
+        return [{ kind: "agent", id, text: chat.data.text }];
+      }
+      return withUser && chat.data.role === "user"
+        ? [{ kind: "user", id, text: chat.data.text, delivery: "sent" }]
         : [];
     }
     if (event.type === "error") {

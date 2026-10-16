@@ -4,6 +4,7 @@ import type {
   DraftSpec,
   SpecCanvas,
 } from "../../shared/workspace";
+import { CanvasItem } from "./Canvas";
 import { fetchEvidence } from "./runClient";
 
 // Run evidence needs the operator token, so it is fetched and shown from a blob URL.
@@ -142,15 +143,35 @@ export function SpecView({ canvas }: { canvas: SpecCanvas }) {
   }
   return (
     <div className="spec-board">
-      {canvas.draftSpec && <DraftSpecCard spec={canvas.draftSpec} />}
+      {canvas.draftSpec && (
+        <CanvasItem id="draft-spec" label="Draft spec" className="spec-card">
+          <DraftSpecCard spec={canvas.draftSpec} />
+        </CanvasItem>
+      )}
       <div className="evidence-column">
         {screenshots.map((item) => (
-          <ScreenshotCard key={item.id} item={item} />
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`screenshot of ${item.pageOrState}`}
+          >
+            <ScreenshotCard item={item} />
+          </CanvasItem>
         ))}
         {recordings.map((item) => (
-          <VideoCard key={item.id} item={item} />
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`recording of ${item.pageOrState}`}
+          >
+            <VideoCard item={item} />
+          </CanvasItem>
         ))}
-        {canvas.draftSpec && recordings.length === 0 && <VideoCard />}
+        {canvas.draftSpec && recordings.length === 0 && (
+          <CanvasItem id="video-evidence" label="Video evidence">
+            <VideoCard />
+          </CanvasItem>
+        )}
       </div>
     </div>
   );
