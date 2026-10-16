@@ -476,7 +476,8 @@ export class Run extends DurableObject<Env> {
   // ---------- alarm loop ----------
   async alarm() {
     // Runs spend money while they work, so one that outlives its time limit is stopped.
-    const limitMinutes = Number(this.env.RUN_MAX_MINUTES) || 120;
+    const set = Number(this.env.RUN_MAX_MINUTES);
+    const limitMinutes = Number.isInteger(set) && set > 0 ? set : 120;
     if (
       this.s.startedAt &&
       Date.now() - this.s.startedAt > limitMinutes * 60_000

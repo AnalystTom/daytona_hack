@@ -2,7 +2,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import type { Run } from "../../shared/runs";
 import { MemoryRunStore } from "./memory";
-import { SurrealRunStore } from "./surreal";
+import { surrealOwners } from "../orchestrator/owners";
+import { type SurrealConfig, SurrealRunStore } from "./surreal";
 import type { RunStore } from "./types";
 
 // The same behaviour is required of every store. The SurrealDB suite runs only when
@@ -231,5 +232,29 @@ describe.each(stores)("%s run store", (_name, makeStore) => {
       eventId: "e2",
       createdAt: now,
     });
+  });
+});
+
+describe.skipIf(!surreal)("surreal run owners", () => {
+  it("records owners, lists them newest first and counts starts per day", async () => {
+    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const [a, b] = [crypto.randomUUID(), crypto.randomUUID()];
+    expect(await owners.get(a)).toBeNull();
+    await owners.claim(a, "ada@example.com", 1000);
+    await owners.claim(b, "ada@example.com", 2000);
+    expect(await owners.get(a)).toEqual({
+      runId: a,
+      owner: "ada@example.com",
+      createdAt: 1000,
+    });
+    expect(
+      (await owners.list("ada@example.com", 0)).map((r) => r.runId),
+    ).toEqual([b, a]);
+    expect(await owners.list("ada@example.com", 1500)).toHaveLength(1);
+    expect(await owners.list("bob@example.com", 0)).toEqual([]);
+    expect(await owners.count("ada@example.com", "2026-10-16", 1)).toBe(1);
+    expect(await owners.count("ada@example.com", "2026-10-16", 1)).toBe(2);
+    expect(await owners.count("ada@example.com", "2026-10-16", -1)).toBe(1);
+    expect(await owners.count("ada@example.com", "2026-10-17", 1)).toBe(1);
   });
 });
