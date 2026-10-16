@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { EvidenceItem } from "./contracts";
 
-// Verifier contracts (docs/orchestrator/spec.md section 7): what the Worker sends to the
+// Verifier contracts (docs/orchestrator/spec.md section 9): what the Worker sends to the
 // verifier and the verdict it gets back.
 
 export const verifyKinds = ["plan", "task", "final"] as const;
@@ -15,7 +15,7 @@ export const PlanItem = z.object({
   title: z.string().min(1),
   acceptanceCriteria: z.array(z.string().min(1)),
   evidenceIds: z.array(Id),
-  // A feature with no evidence must be marked as a deliberate change (spec section 5).
+  // A feature with no evidence must be marked as a deliberate change (spec section 6).
   deliberateChange: z.boolean().default(false),
 });
 export type PlanItem = z.infer<typeof PlanItem>;

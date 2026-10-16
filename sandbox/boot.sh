@@ -138,7 +138,7 @@ if [ ! -d "$FM_HOME/projects/rebuild/.git" ]; then
 fi
 
 # The Daytona sandbox is the isolation boundary: agents run commands freely inside it
-# (docs/orchestrator/spec.md section 3), so Codex's own approvals and sandbox are off.
+# (docs/orchestrator/spec.md section 4), so Codex's own approvals and sandbox are off.
 if ! tmux has-session -t firstmate 2>/dev/null; then
   tmux new-session -d -s firstmate -x 200 -y 50 -c "$FM_HOME" \
     "codex --sandbox danger-full-access --ask-for-approval never"
