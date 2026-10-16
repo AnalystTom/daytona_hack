@@ -85,10 +85,22 @@ export default {
             );
       }
       if (req.method === "GET" && action === "evidence") {
-        const blob = await run.evidenceBlob(parts[3]);
-        return blob
-          ? new Response(blob, { headers: { "Content-Type": "image/png" } })
+        const file = await run.evidenceFile(parts[3]);
+        return file
+          ? new Response(file.content, {
+              headers: {
+                "Content-Type": file.contentType,
+                // Captured pages are site content: they must never run as a page.
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+              },
+            })
           : json({ error: "not found" }, 404);
+      }
+      if (req.method === "POST" && action === "sign-in") {
+        if (!parts[3]) return json(await run.startSignIn());
+        if (parts[3] === "resume") return json(await run.resumeSignIn());
+        if (parts[3] === "skip") return json(await run.skipSignIn());
       }
       if (req.method === "POST" && action === "messages")
         return json(await run.message(body.text));
@@ -110,16 +122,19 @@ export default {
 } satisfies ExportedHandler<Env>;
 
 const ROUTES = [
-  "POST /gateway/capture {url, kind: screenshot|html, width?, height?} (Bearer GATEWAY_TOKEN, from the sandbox)",
+  "POST /gateway/capture {runId, url, kind: screenshot|html} (Bearer GATEWAY_TOKEN, from the sandbox; approved pages only)",
   "POST /gateway/remember {runId, text, observedAt?} / POST /gateway/recall {runId, query} (Bearer GATEWAY_TOKEN)",
   "POST /sandboxes/:id/captain {text} / GET /sandboxes/:id/screen (Bearer OPERATOR_TOKEN, from the backend)",
   "POST /runs {url, goal} -> run state (first look + first chat reply)",
   "GET  /runs/:id -> state {phase, spec, chat, evidence, tasks, previewUrl}",
   "GET  /runs/:id/preview -> {url}: a 30-minute signed link to the private sandbox preview",
   "GET  /runs/:id/events?since=N -> [{seq, ts, type, data}]",
-  "GET  /runs/:id/evidence/:evId -> screenshot png",
+  "GET  /runs/:id/evidence/:evId -> evidence file (png, mp4, html or json)",
   "POST /runs/:id/messages {text}",
   "POST /runs/:id/approve -> inspect + plan (async; watch events)",
+  "POST /runs/:id/sign-in -> {liveViewUrl} (phase awaiting_sign_in: the user signs in in Anchor's live view)",
+  "POST /runs/:id/sign-in/resume -> capture the stopped pages signed in, then plan (async)",
+  "POST /runs/:id/sign-in/skip -> plan without the stopped pages (async)",
   "POST /runs/:id/build -> start build (async)",
   "POST /runs/:id/stop",
   "POST /runs/:id/override {taskId, verdict, reason}",

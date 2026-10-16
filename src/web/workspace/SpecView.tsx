@@ -108,6 +108,7 @@ function ScreenshotCard({ item }: { item: CanvasEvidence }) {
 }
 
 function VideoCard({ item }: { item?: CanvasEvidence }) {
+  const src = useEvidenceSrc(item?.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">
@@ -117,7 +118,7 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
       {item ? (
         <>
           {/* biome-ignore lint/a11y/useMediaCaption: captured recordings have no caption track */}
-          <video className="evidence-media" src={item.src} controls />
+          <video className="evidence-media" src={src} controls />
           <EvidenceCaption item={item} />
         </>
       ) : (

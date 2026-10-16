@@ -1,4 +1,4 @@
-// OpenAI (structured outputs), SurrealDB Agent Memory, Anchor Browser — all over plain fetch.
+// OpenAI (structured outputs), SurrealDB Agent Memory, page HTML — all over plain fetch.
 import type { RunTracer } from "./tracing";
 import type { Env } from "./types";
 
@@ -141,31 +141,7 @@ export async function recall(
   return res.ok ? ((await res.json()) as any).context || "" : "";
 }
 
-// --- Anchor Browser (optional until a key exists) ---
-export async function anchorScreenshot(
-  env: Env,
-  url: string,
-  width: number,
-  height: number,
-): Promise<ArrayBuffer | null> {
-  if (!env.ANCHORBROWSER_API_KEY) return null;
-  const res = await fetch("https://api.anchorbrowser.io/v1/tools/screenshot", {
-    method: "POST",
-    headers: {
-      "anchor-api-key": env.ANCHORBROWSER_API_KEY,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      url,
-      width,
-      height,
-      capture_full_height: true,
-      wait: 1500,
-    }),
-  });
-  return res.ok ? res.arrayBuffer() : null;
-}
-
+// --- Page HTML for route discovery (Anchor when set, else a plain fetch) ---
 export async function pageHtml(
   env: Env,
   url: string,
@@ -188,13 +164,4 @@ export async function pageHtml(
     headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
   });
   return { html: await res.text(), tool: "fetch" };
-}
-
-export async function sha256(data: string | ArrayBuffer): Promise<string> {
-  const buf = typeof data === "string" ? new TextEncoder().encode(data) : data;
-  const d = await crypto.subtle.digest("SHA-256", buf);
-  return [...new Uint8Array(d)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 16);
 }

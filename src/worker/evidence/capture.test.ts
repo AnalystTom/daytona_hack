@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CaptureEvent, EvidenceRecord } from "../../shared/evidence";
-import { CaptureError, captureRun } from "./capture";
+import { CaptureError, captureRun, recordingCapMs } from "./capture";
 import {
   executeCodeResponse,
   fixturePageFacts,
@@ -39,6 +39,8 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
       }
       if (url.pathname.endsWith("/recordings"))
         return Response.json(recordingList);
+      if (url.pathname.endsWith("/recordings/pause"))
+        return Response.json({ data: { status: "paused" } });
       if (url.pathname.endsWith("/recordings/primary/fetch")) {
         return new Response(new Uint8Array([0, 0, 0, 24]));
       }
@@ -303,6 +305,46 @@ describe("captureRun (fixture Anchor responses)", () => {
 });
 
 describe("captureRun limits", () => {
+  it("pauses the recording 30 seconds into the session", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = fakeAnchor();
+      const anchorFetch = fetch;
+      // The second page load passes the 30-second mark.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init?: RequestInit) => {
+          if (String(init?.body).includes("/pricing"))
+            vi.advanceTimersByTime(recordingCapMs);
+          return anchorFetch(input, init);
+        }),
+      );
+      const { deps: d } = deps(memoryStore().store);
+
+      const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+      const paths = calls.map((c) => c.path);
+      expect(paths.filter((p) => p.endsWith("/recordings/pause"))).toHaveLength(
+        1,
+      );
+      // Paused before the session ends.
+      expect(
+        paths.findIndex((p) => p.endsWith("/recordings/pause")),
+      ).toBeLessThan(calls.findIndex((c) => c.method === "DELETE"));
+      const items = result.status === "captured" ? result.items : [];
+      expect(items.at(-1)?.limitations[0]).toContain("first 30 seconds");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never pauses a capture that ends within 30 seconds", async () => {
+    const calls = fakeAnchor();
+    const { deps: d } = deps(memoryStore().store);
+    await captureRun(d, "run_1", { mode: "full_pack", scope });
+    expect(calls.some((c) => c.path.endsWith("/recordings/pause"))).toBe(false);
+  });
+
   it("skips a recording too large to store", async () => {
     fakeAnchor();
     const big = structuredClone(recordingList);

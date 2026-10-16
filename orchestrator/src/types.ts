@@ -1,4 +1,8 @@
-export interface Env {
+import type { EvidenceRecord } from "../../src/shared/evidence";
+import type { StoreEnv } from "../../src/worker/store";
+
+// SURREALDB_* (StoreEnv) hold evidence records and files.
+export interface Env extends StoreEnv {
   RUNS: DurableObjectNamespace;
   DAYTONA_API_URL: string;
   DAYTONA_TARGET: string;
@@ -23,6 +27,7 @@ export interface Env {
 export type Phase =
   | "brief"
   | "inspecting"
+  | "awaiting_sign_in" // a page left the scope (usually to sign in): user signs in or skips
   | "planning"
   | "planned"
   | "building"
@@ -33,24 +38,17 @@ export type Phase =
 export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 
 export interface Evidence {
-  id: string; // ev_001
-  page: string; // URL path
-  kind:
-    | "screenshot"
-    | "html"
-    | "markdown"
-    | "styles"
-    | "assets"
-    | "links"
-    | "network";
-  tool: "anchor" | "fetch" | "llm";
+  id: string; // ev_<uuid>
+  page: string; // URL path and state, e.g. "/ @ desktop 1440"
+  kind: EvidenceRecord["kind"];
+  tool: string;
   status: EvidenceStatus;
   capturedAt: string;
   hash: string;
   limits: string;
   summary: string;
   path?: string; // where it lives in the sandbox evidence store
-  url?: string; // where the UI can load it (screenshots)
+  url?: string; // where the UI can load it (screenshots and recordings)
 }
 
 export interface Spec {

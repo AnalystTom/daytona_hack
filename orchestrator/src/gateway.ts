@@ -2,7 +2,7 @@
 // so Firstmate's crew calls these routes (via the `reversy` CLI) instead. Keys stay on Cloudflare either way:
 // the sandbox only holds GATEWAY_TOKEN. Also relays captain (user) messages into the first mate's tmux pane.
 import { Daytona } from "./daytona";
-import { anchorScreenshot, pageHtml, recall, remember } from "./services";
+import { recall, remember } from "./services";
 import type { Env } from "./types";
 
 const json = (data: unknown, status = 200) =>
@@ -26,29 +26,25 @@ export async function handleGateway(
   const scope = `org/reversy/run/${String(body.runId || "local").slice(0, 40)}`;
   switch (path[0]) {
     case "capture": {
-      // {url, kind: "screenshot"|"html", width?, height?}
-      if (!/^https?:\/\//.test(body.url || ""))
-        return json({ error: "url required" }, 400);
-      if (body.kind === "html") {
-        const { html, tool } = await pageHtml(env, body.url);
-        return new Response(html, {
-          headers: {
-            "Content-Type": "text/html; charset=utf-8",
-            "X-Tool": tool,
-          },
-        });
-      }
-      const png = await anchorScreenshot(
-        env,
+      // {runId, url, kind: "screenshot"|"html"}: only pages in the run's approved scope
+      if (!body.runId || !/^https?:\/\//.test(body.url || ""))
+        return json({ error: "runId and url required" }, 400);
+      const run = env.RUNS.get(env.RUNS.idFromName(String(body.runId))) as any;
+      const out = await run.gatewayCapture(
         body.url,
-        body.width || 1440,
-        body.height || 900,
+        body.kind === "html" ? "html" : "screenshot",
       );
-      return png
-        ? new Response(png, {
+      if (out.error) return json({ error: out.error }, out.status);
+      return out.png
+        ? new Response(out.png, {
             headers: { "Content-Type": "image/png", "X-Tool": "anchor" },
           })
-        : json({ error: "screenshot not observed" }, 502);
+        : new Response(out.html, {
+            headers: {
+              "Content-Type": "text/html; charset=utf-8",
+              "X-Tool": out.tool,
+            },
+          });
     }
     case "remember":
       // {text, observedAt?} — an observation or decision with its sources written into the text
