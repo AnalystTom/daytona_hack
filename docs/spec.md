@@ -156,10 +156,11 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Each run is limited to 2 hours.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
-- Out of the demo for now: REA, financial reports, and an operator login (the existing token gates stay).
+- Runs are secure: a run ID alone never gives access; every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
+- Out of the demo for now: REA, financial reports, and user accounts beyond that operator session (the existing token gates stay).
 - Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the minimal canvas workspace (chat on the right; Spec and Build views; kanban) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.
 
-Still open: the hard spend cap, which sponsor accounts actually work, and who may read a run by its ID.
+Still open: the hard spend cap, and which sponsor accounts actually work.

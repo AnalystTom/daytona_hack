@@ -169,7 +169,9 @@ A failed or stopped task stays on the board with its reason and next action.
 - The Daytona sandbox runs on Tier 3 with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
   The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
-- There is no operator login in the demo; the existing token gates stay.
+- Knowing a run ID is not enough to view or use a run.
+  Every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
+- There are no user accounts in the demo; the existing token gates stay.
 
 ## 9. Verifier
 
@@ -215,9 +217,9 @@ The agents' code runs on Daytona; the service lives on Cloudflare; SurrealDB hol
 - Recordings are capped at 30 seconds.
 - Daytona Tier 3: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
-- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and an operator login (the existing token gates stay; spending is kept low).
+- Runs are secure: every run route needs an authenticated operator session: the operator enters the token once, and a signed HttpOnly cookie covers the app and the event stream.
+- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts beyond that operator session (the existing token gates stay; spending is kept low).
 
 ## 14. Open questions
 
-1. Who may read a run by its ID: the access rule for run IDs.
-2. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
+1. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
