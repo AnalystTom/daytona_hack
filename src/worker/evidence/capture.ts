@@ -51,6 +51,24 @@ async function sha256(bytes: Uint8Array) {
 export const recordingCapMs = 30_000;
 export { leftScope } from "../../shared/evidence";
 
+const noCodeExecution = "Anchor code execution is not enabled on this account";
+
+// The screenshot tool follows redirects unseen, so the scope guard checks where the URL lands first.
+async function landingUrl(url: string) {
+  try {
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(10_000),
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+    });
+    await response.body?.cancel();
+    return response.url || url;
+  } catch {
+    throw new anchor.AnchorError(
+      "the page's final URL could not be checked against the approved scope",
+    );
+  }
+}
+
 const signedInLimit =
   "Captured in the user's signed-in session; it may show account data.";
 const signedInSkipped =
@@ -173,6 +191,8 @@ export async function captureRun(
     items.push(record);
     return record.id;
   };
+  // Set on the first refusal and kept for the run, so execute-code is not retried per page.
+  let fallback = false;
   // Final URLs of pages that left the scope; the session recording shows them too.
   const outOfScope: string[] = [];
   const notObserved = (expected: Expected, reason: string) =>
@@ -221,16 +241,29 @@ export async function captureRun(
     };
 
     try {
-      const facts = await anchor.runSnippet<anchor.PageFacts>(
-        key,
-        sessionId,
-        anchor.navigateSnippet(url, scope.origin, full),
-      );
+      let facts: anchor.PageFacts | undefined;
+      if (!fallback) {
+        try {
+          facts = await anchor.runSnippet<anchor.PageFacts>(
+            key,
+            sessionId,
+            anchor.navigateSnippet(url, scope.origin, full),
+          );
+        } catch (error) {
+          // A signed-in session only works through code execution, so it fails as before.
+          if (!(error instanceof anchor.CodeExecutionRefused) || signedIn)
+            throw error;
+          fallback = true;
+        }
+      }
+      const finalUrl = facts?.finalUrl ?? (await landingUrl(url));
       deps.signal?.throwIfAborted();
-      if (!inScope(facts.finalUrl, pageScope)) {
-        leave("Redirected to", facts.finalUrl);
+      if (!inScope(finalUrl, pageScope)) {
+        leave("Redirected to", finalUrl);
       } else {
-        if (full) {
+        if (full && !facts) {
+          for (let n = 0; n < 4; n++) await skip(noCodeExecution);
+        } else if (full && facts) {
           if (signedIn) await skip(signedInSkipped);
           else
             await take("text/html", encoder.encode(facts.html ?? ""), [
@@ -252,6 +285,17 @@ export async function captureRun(
         }
         for (const [, viewport] of shots) {
           deps.signal?.throwIfAborted();
+          const limit =
+            "Full-page capture after load; lazy-loaded or animated content may differ.";
+          if (fallback) {
+            const png = await anchor.screenshotTool(key, url, viewport);
+            deps.signal?.throwIfAborted();
+            await take("image/png", png, [
+              limit,
+              "Taken with Anchor's screenshot tool: the page's DOM, tokens and requests were not read.",
+            ]);
+            continue;
+          }
           const shot = await anchor.runSnippet<{
             finalUrl: string;
             png: string;
@@ -261,9 +305,7 @@ export async function captureRun(
             leave("Page moved to", shot.finalUrl);
             break;
           }
-          await take("image/png", fromBase64(shot.png), [
-            "Full-page capture after load; lazy-loaded or animated content may differ.",
-          ]);
+          await take("image/png", fromBase64(shot.png), [limit]);
         }
       }
     } catch (error) {
@@ -315,6 +357,8 @@ export async function captureRun(
         recording,
         "Recording is off in signed-in sessions so the user's sign-in is never recorded.",
       );
+    } else if (fallback) {
+      await notObserved(recording, noCodeExecution);
     } else if (capMissed) {
       await notObserved(
         recording,

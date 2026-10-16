@@ -19,7 +19,10 @@ import type { EvidenceStore, SignIn } from "./store";
 const scope = { origin: "https://example.com", paths: ["/", "/pricing"] };
 
 // Fixture Anchor API: answers each endpoint with the documented response shape.
-function fakeAnchor(finalUrls: Record<string, string> = {}) {
+function fakeAnchor(
+  finalUrls: Record<string, string> = {},
+  options: { refuseCode?: boolean } = {},
+) {
   const calls: { method: string; path: string; body?: unknown }[] = [];
   let current = "";
   vi.stubGlobal(
@@ -31,6 +34,10 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
       calls.push({ method, path: url.pathname, body });
       if (url.pathname === "/v1/sessions") return Response.json(fixtureSession);
       if (url.pathname === "/v1/tools/execute-code") {
+        if (options.refuseCode)
+          return new Response("code execution isn't enabled for this team", {
+            status: 403,
+          });
         const code: string = body.code;
         if (code.includes("page.goto")) {
           const target = JSON.parse(
@@ -42,6 +49,16 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
         return Response.json(
           executeCodeResponse({ finalUrl: current, png: fixturePngBase64 }),
         );
+      }
+      if (url.pathname === "/v1/tools/screenshot")
+        return new Response(Buffer.from(fixturePngBase64, "base64"));
+      if (url.host !== "api.anchorbrowser.io") {
+        // The plain fetch that finds where a page lands.
+        const page = new Response("<html></html>");
+        Object.defineProperty(page, "url", {
+          value: finalUrls[input] ?? input,
+        });
+        return page;
       }
       if (url.pathname.endsWith("/recordings"))
         return Response.json(recordingList);
@@ -463,6 +480,76 @@ describe("captureRun (fixture Anchor responses)", () => {
     await expect(
       captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
     ).rejects.toThrow(CaptureError);
+  });
+});
+
+describe("captureRun without Anchor code execution", () => {
+  it("falls back to the screenshot tool and labels what it could not observe", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => `${i.kind} ${i.label}`)).toEqual([
+      "dom not_observed",
+      "styles not_observed",
+      "assets not_observed",
+      "network not_observed",
+      "screenshot observed",
+      "screenshot observed",
+      "recording not_observed",
+    ]);
+    for (const item of items.filter((i) => i.label === "not_observed"))
+      expect(item.limitations).toEqual([
+        "Anchor code execution is not enabled on this account",
+      ]);
+    const shot = items.find((i) => i.kind === "screenshot");
+    expect(memory.content.get(shot?.id ?? "")?.length).toBeGreaterThan(0);
+    const tool = calls.filter((c) => c.path === "/v1/tools/screenshot");
+    expect(tool.map((c) => c.body)).toEqual([
+      expect.objectContaining({ url: "https://example.com/", width: 1440 }),
+      expect.objectContaining({ url: "https://example.com/", width: 390 }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+  });
+
+  it("tries code execution once per run, not once per page", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const { deps: d } = deps(memoryStore().store);
+
+    await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/execute-code"),
+    ).toHaveLength(1);
+    expect(calls.filter((c) => c.path === "/v1/tools/screenshot")).toHaveLength(
+      2,
+    );
+  });
+
+  it("still stops a page that lands outside the scope", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://login.example.net/" },
+      { refuseCode: true },
+    );
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
   });
 });
 
