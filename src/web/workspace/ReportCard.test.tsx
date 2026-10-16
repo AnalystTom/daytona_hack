@@ -1,5 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { ReportDissection } from "../../shared/report";
 import { reportContractExample } from "../../shared/report.test-data";
 import { runView } from "./orchestrator";
@@ -104,7 +104,9 @@ describe("report canvas data", () => {
         <ReportCard report={report} evidence={[]} />,
       );
       expect(html).toContain(label);
-      expect(html).toContain(report.figures[0].quote);
+      const figure = report.figures[0];
+      assert(figure);
+      expect(html).toContain(figure.quote);
       expect(html).toContain(quote);
     },
   );
