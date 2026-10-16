@@ -23,7 +23,7 @@ In development only (`npm run dev`), `/workspace?fixture=spec` shows labelled sa
 
 ## Workspace
 
-**Start a project** opens `/workspace`, which shows the saved example run when the browser history entry has no session. The example is always available at `/workspace/example` and through **Example run** in the session menu. **Start your own** opens an empty session. The header's session menu also offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run follows the [run access policy](#sign-in-with-cloudflare-access); an unavailable run shows recovery guidance and is not added to the session list.
+**Start a project** opens `/workspace`, which shows the saved example run when the browser history entry has no session. The example is always available at `/workspace/example` and through **Example run** in the session menu. **Start your own** opens an empty session. The header's session menu also offers **New session**, previously remembered runs, and **Open a run by ID**. A successful run creation changes the URL to `/workspace/<runId>`; bookmark that URL to reopen the run after a refresh. Opening an existing run follows the [run access policy](#who-can-use-runs); an unavailable run shows recovery guidance and is not added to the session list.
 
 Start a run by sending a website address and an optional goal, such as `Rebuild wikipedia.com, only the header.` Chat selects the first valid whitespace-separated address, strips trailing sentence punctuation, and uses the remaining text as the goal. An address alone defaults to “Rebuild this website.” If no address is recognized, chat asks for one instead of starting a run.
 
@@ -98,8 +98,9 @@ A run request whose `Origin` names another site gets 403, and so does a cookie-a
 
 ### Who can use runs
 
-Visitors need no token or sign-in. The first run a browser starts is answered with a signed `__Host-reversy_visitor` cookie (HttpOnly, Secure, SameSite=Strict, 30 days). Its HMAC is keyed by `OPERATOR_TOKEN` on the Worker, which never reaches the browser; rotating the token signs every visitor out. That anonymous session owns the runs it starts: only it can read, stream, message, approve, build, stop or override them, and every other session gets 404 for the run ID. A visitor who clears cookies loses their run history, and such a visitor still counts toward the network and global limits below.
-Operators can still send `Authorization: Bearer <OPERATOR_TOKEN>` to act on any run and to use `/api/v1/orchestrator/*`.
+Without Cloudflare Access configured, visitors need no token or sign-in. The first run a browser starts is answered with a signed `__Host-reversy_visitor` cookie (HttpOnly, Secure, SameSite=Strict, 30 days). Its HMAC is keyed by `OPERATOR_TOKEN` on the Worker, which never reaches the browser; rotating the token signs every visitor out. That anonymous session owns the runs it starts: it can read, stream, message, approve, build, stop or override them, while other visitor sessions get 404 for the run ID. A visitor who clears cookies loses their run history, and such a visitor still counts toward the network and global limits below.
+In this mode, operators can still send `Authorization: Bearer <OPERATOR_TOKEN>` to act on any run and to use `/api/v1/orchestrator/*`.
+The former `POST` / `DELETE /api/v1/session` endpoint is removed; old `__Host-reversy_session` cookies no longer grant run access.
 The saved example is public and read-only (`/api/v1/example`). Any visitor run, including future report-dissection runs, falls under the same limits.
 
 ### Sign-in with Cloudflare Access
@@ -112,12 +113,12 @@ A signed-in user (or, without Access, an anonymous visitor session) sees and act
 | `RUNS_PER_DAY` | `3` | Runs one user or visitor session may start per UTC day (`daily_run_limit`) |
 | `RUNS_PER_IP_DAY` | `6` | Runs one IPv4 address or IPv6 /64 (`CF-Connecting-IP`, stored only as a hash; missing addresses refuse starts) may start per UTC day (`ip_daily_limit`) |
 | `RUNS_PER_DAY_ALL` | `30` | New runs everyone together may start per UTC day (`global_daily_limit`) |
-| `ACTIVE_RUNS` | `1` | Active reservations per user, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
+| `ACTIVE_RUNS` | `1` | Active reservations per user or visitor session, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
 | `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: paid work is refused at the original admission deadline; expired slots require confirmed cancellation (or no stored run state) and successful storage cleanup |
 
 Existing orchestrator runs without a stored `startedAt` timestamp have no orchestrator lifetime deadline.
 
-Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so Access users also need the `SURREALDB_*` bindings; without them their run routes answer 503.
+Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `SURREALDB_*` bindings; without them their run routes answer 503.
 With both Access bindings configured, run routes require Access identity even if an operator bearer or visitor cookie is supplied, and the `/api/v1/orchestrator/*` proxy is disabled.
 With neither Access binding, run routes accept `Authorization: Bearer <OPERATOR_TOKEN>` or the anonymous visitor cookie. Setting only one of them answers 503 naming the other.
 
@@ -159,9 +160,9 @@ Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
 Without the SurrealDB bindings the store answers 503 naming the missing ones; without `ORCHESTRATOR` every run route does the same. Without Access, run routes also need `OPERATOR_TOKEN` to sign visitor sessions.
-A missing or wrong token answers 401.
+An operator bearer request with a missing or wrong token answers 401; visitors do not supply a token.
 
-See [the access policy](#sign-in-with-cloudflare-access) for run authentication and ownership; the separate evidence routes stay operator-only.
+See [the access policy](#who-can-use-runs) for run authentication and ownership; the separate evidence routes stay operator-only.
 
 The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
 
@@ -259,7 +260,7 @@ The orchestrator (`orchestrator/`) runs the same capture for its runs, with its 
 
 Artifact availability, fallback labels and redirect checks follow the [capture limits](docs/orchestrator/api.md#evidence-capture).
 Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
-These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. They have no per-run ownership check; the [run access policy](#sign-in-with-cloudflare-access) does not authenticate these separate endpoints.
+These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. They have no per-run ownership check; the [run access policy](#who-can-use-runs) does not authenticate these separate endpoints.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 

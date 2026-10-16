@@ -325,13 +325,13 @@ describe.skipIf(!surreal)("surreal run owners", () => {
 
   it("limits new runs per network and across all owners, charging each run once", async () => {
     const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
-    const ip = crypto.randomUUID().slice(0, 16);
+    const ip = crypto.randomUUID().replaceAll("-", "").slice(0, 14);
     const start = (owner: string, createdAt = Date.now()) => ({
       runId: crypto.randomUUID(),
       owner: `anon:${owner}`,
       createdAt,
     });
-    const shared = { ip, perIp: 2, perAll: 1_000_000 };
+    const shared = { ip: `${ip}00`, perIp: 2, perAll: 1_000_000 };
     const [a, b, c] = [start("a"), start("b"), start("c")];
     expect(await owners.reserve(a, 1, 3, [], shared)).toBeUndefined();
     // Re-reserving an existing run (a continuation) is not charged again.
@@ -342,11 +342,11 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.get(c.runId)).toBeNull();
     // Another network is not held back by it.
     expect(
-      await owners.reserve(c, 1, 3, [], { ...shared, ip: `${ip}x` }),
+      await owners.reserve(c, 1, 3, [], { ...shared, ip: `${ip}01` }),
     ).toBeUndefined();
     // A day nobody has used yet has no global count; the cap is per UTC day.
     const day = Date.UTC(2020, 0, 1);
-    const cap = { ip: `${ip}y`, perIp: 100, perAll: 1 };
+    const cap = { ip: `${ip}02`, perIp: 100, perAll: 1 };
     expect(
       await owners.reserve(start("d", day), 1, 3, [], cap),
     ).toBeUndefined();

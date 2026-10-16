@@ -177,12 +177,12 @@ A failed or stopped task stays on the board with its reason and next action.
 ## 8. Access and network
 
 - The orchestrator has no public access.
-  Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
+  Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#who-can-use-runs).
 - The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
   The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
 - Knowing a run ID is not enough to view or use a run.
-  Run authentication and workspace ownership follow the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
+  Run authentication and workspace ownership follow the [README's access policy](../../README.md#who-can-use-runs).
 
 ## 9. Verifier
 

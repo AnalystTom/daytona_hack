@@ -19,7 +19,7 @@ export default {
     if (request.method === "POST" && verify?.[1]) {
       return handleVerify(request, env, verify[1]);
     }
-    // The public, read-only example run; every other run route needs the operator.
+    // The saved example is public and read-only.
     const example = await handleExample(request, env);
     if (example) return example;
     const sandbox = await handleSandboxRoute(request, env);
