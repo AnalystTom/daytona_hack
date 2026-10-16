@@ -3,6 +3,18 @@ import { Daytona } from "./daytona";
 import { Run } from "./run";
 import { tracing } from "./services";
 import type { Env, Phase, Task } from "./types";
+import orchestrator from "./index";
+import {
+  handleOrchestrator,
+  type OrchestratorEnv,
+} from "../../src/worker/orchestrator/front";
+import {
+  AUD,
+  accessJwt,
+  certs,
+  TEAM,
+} from "../../src/worker/orchestrator/access-fixtures";
+import type { Owners, RunOwner } from "../../src/worker/orchestrator/owners";
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
@@ -113,6 +125,10 @@ async function setup(
     result: "",
   });
   vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+  vi.spyOn(Daytona.prototype, "get").mockResolvedValue({
+    id: "sb1",
+    state: "started",
+  });
   const startWorker = vi
     .spyOn(Daytona.prototype, "startAsync")
     .mockResolvedValue("cmd1");
@@ -144,6 +160,161 @@ afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   tracing.current = undefined;
+});
+
+function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
+  const original: RunOwner = {
+    runId: state.id,
+    owner: "ada@example.com",
+    createdAt: state.startedAt,
+    active: true,
+    busy: true,
+    revision: 1,
+  };
+  const records = [{ ...original }];
+  const owners: Owners = {
+    get: async (id) => records.find((r) => r.runId === id) ?? null,
+    list: async (owner) =>
+      records.filter((r) => r.owner === owner).map((r) => ({ ...r })),
+    finish: async (id, owner) => {
+      const record = records.find((r) => r.runId === id && r.owner === owner);
+      if (record) record.busy = false;
+    },
+    reserve: async (next, maxActive, _perDay, ended) => {
+      for (const record of records) {
+        if (
+          !record.busy &&
+          ended.some(
+            (old) =>
+              old.owner === record.owner &&
+              old.runId === record.runId &&
+              old.revision === record.revision,
+          )
+        )
+          record.active = false;
+      }
+      if (
+        records.filter((r) => r.owner === next.owner && r.active).length >=
+        maxActive
+      )
+        return "active_run_limit";
+      records.push({ ...next, active: true, busy: false });
+      return undefined;
+    },
+  };
+  const start = vi.fn(async (id: string) => ({ id, phase: "brief" }));
+  const backend = {
+    ...env,
+    RUNS: {
+      idFromName: (id: string) => id,
+      get: (id: string) => (id === state.id ? run : { start }),
+    },
+  } as unknown as Env;
+  const front: OrchestratorEnv = {
+    ACCESS_TEAM_DOMAIN: TEAM,
+    ACCESS_AUD: AUD,
+    ORCHESTRATOR: {
+      fetch: (input: string, init?: RequestInit) =>
+        orchestrator.fetch(new Request(input, init), backend),
+    } as unknown as Fetcher,
+  };
+  const send = async (path: string) =>
+    handleOrchestrator(
+      new Request(`https://reversy.test/api/v1/runs${path}`, {
+        method: "POST",
+        headers: {
+          origin: "https://reversy.test",
+          "cf-access-jwt-assertion": await accessJwt(),
+        },
+        body: JSON.stringify(
+          path ? {} : { url: "https://example.com", goal: "Rebuild" },
+        ),
+      }),
+      front,
+      { owners, fetcher: certs },
+    );
+  return { send, start, records, original };
+}
+
+describe("provider-confirmed run cancellation", () => {
+  it.each(
+    ["explicit", "deadline", "admission"].flatMap((mode) =>
+      [
+        "stopped",
+        "archived",
+        "deleted",
+        "started",
+        "stopping",
+        "starting",
+        "error",
+        "missing",
+        "read failure",
+        "command failure",
+      ].map((provider) => [mode, provider]),
+    ),
+  )("handles %s stop with provider %s", async (mode, provider) => {
+    const phase = mode === "admission" ? "done" : "building";
+    const context = await setup({
+      phase,
+      tasks: [task("building")],
+    });
+    const { run, state, data, calls, startWorker, expire } = context;
+    state.sandboxId = "sb1";
+    const get = vi.mocked(Daytona.prototype.get);
+    get.mockResolvedValue({
+      state: provider === "missing" ? undefined : provider,
+    });
+    if (provider === "read failure")
+      get.mockRejectedValue(new Error("provider read failed"));
+    if (provider === "command failure") {
+      get.mockResolvedValue({ state: "started" });
+      vi.mocked(Daytona.prototype.must).mockRejectedValue(
+        new Error("worker cancellation failed"),
+      );
+    }
+    const client = frontFor(context);
+    const confirmed = ["stopped", "archived", "deleted", "started"].includes(
+      provider,
+    );
+    if (mode !== "explicit") expire();
+    if (mode === "deadline") await run.alarm();
+    else
+      expect(
+        (await client.send(mode === "explicit" ? "/r1/stop" : ""))?.status,
+      ).toBe(confirmed ? (mode === "explicit" ? 200 : 201) : 502);
+    expect(get).toHaveBeenCalledWith("sb1");
+    expect(data.get("state")).toMatchObject({
+      phase: confirmed ? "stopped" : phase,
+      pending: confirmed ? undefined : "stop",
+      startedAt: client.original.createdAt,
+      tasks: [
+        expect.objectContaining({ status: confirmed ? "stopped" : "building" }),
+      ],
+    });
+    if (provider !== "started" && provider !== "command failure")
+      expect(Daytona.prototype.must).not.toHaveBeenCalled();
+    if (!confirmed) {
+      expect(client.records[0]).toMatchObject(client.original);
+      expect(client.start).not.toHaveBeenCalled();
+      await expect(run.message("continue")).rejects.toThrow(/stopping/);
+      expect((await client.send(""))?.status).toBe(
+        mode === "explicit" ? 429 : 502,
+      );
+      get.mockResolvedValue({ state: "stopped" });
+      if (mode === "explicit")
+        expect((await client.send("/r1/stop"))?.status).toBe(200);
+    }
+    if (mode !== "admission" || !confirmed)
+      expect((await client.send(""))?.status).toBe(201);
+    expect(client.records[0]).toMatchObject({
+      ...client.original,
+      active: false,
+      busy: false,
+    });
+    expect(client.start).toHaveBeenCalledOnce();
+    expect(calls).toEqual([]);
+    expect(startWorker).not.toHaveBeenCalled();
+  });
 });
 
 describe("run paid-work deadlines", () => {

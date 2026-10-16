@@ -434,10 +434,17 @@ export class Run extends DurableObject<Env> {
     await this.save();
     await this.ctx.storage.deleteAlarm();
     if (this.s.sandboxId) {
-      await this.daytona.must(
-        this.s.sandboxId,
-        `if pkill -9 -f '[c]odex exec'; then :; else [ "$?" -eq 1 ] || exit 1; fi; pgrep -f '[c]odex exec' >/dev/null; test "$?" -eq 1`,
-      );
+      const sandbox = await this.daytona.get(this.s.sandboxId);
+      if (sandbox.state === "started") {
+        await this.daytona.must(
+          this.s.sandboxId,
+          `if pkill -9 -f '[c]odex exec'; then :; else [ "$?" -eq 1 ] || exit 1; fi; pgrep -f '[c]odex exec' >/dev/null; test "$?" -eq 1`,
+        );
+      } else if (!["stopped", "archived", "deleted"].includes(sandbox.state)) {
+        throw new Error(
+          `Sandbox ${this.s.sandboxId} cancellation unconfirmed: ${sandbox.state ?? "unknown"}.`,
+        );
+      }
     }
     for (const t of this.s.tasks) {
       if (["queued", "building", "in_review"].includes(t.status)) {
