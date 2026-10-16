@@ -1,7 +1,7 @@
 import type { SpecCanvas } from "../../shared/workspace";
 import type { ChatEntry } from "./chat";
 
-// Fixture mode (/workspace?fixture=spec): sample data for design review, always shown under a banner.
+// Fixture mode (/workspace?fixture=spec, dev only): sample data for design review, always shown under a banner.
 
 const screenshotSvg = encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"><rect width="1280" height="800" fill="#1d1b22"/><text x="640" y="410" fill="#c4db9b" font-family="sans-serif" font-size="40" text-anchor="middle">Fixture screenshot</text></svg>`,
