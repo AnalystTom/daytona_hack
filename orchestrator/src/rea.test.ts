@@ -3,6 +3,7 @@ import { Daytona } from "./daytona";
 import type { Env } from "./types";
 import {
   fetchBundles,
+  fetchPageHtml,
   type ReaSandbox,
   type ReaScan,
   reaEvidence,
@@ -506,4 +507,50 @@ describe("REA sandbox ownership", () => {
       ).rejects.toThrow("Sandbox allocated cleanup unconfirmed");
     },
   );
+});
+
+describe("fetchPageHtml", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("returns the HTML and the final URL after same-origin redirects", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+      String(url) === "https://site.example/"
+        ? new Response(null, {
+            status: 302,
+            headers: { location: "/home" },
+          })
+        : new Response("<html></html>"),
+    );
+    expect(
+      await fetchPageHtml("https://site.example/", "https://site.example"),
+    ).toEqual({ html: "<html></html>", url: "https://site.example/home" });
+  });
+
+  it("refuses a redirect off the approved origin without requesting it", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, {
+        status: 302,
+        headers: { location: "https://login.example/sso" },
+      }),
+    );
+    await expect(
+      fetchPageHtml("https://site.example/", "https://site.example"),
+    ).rejects.toThrow("redirected outside the approved origin");
+    expect(spy).toHaveBeenCalledOnce();
+  });
+
+  it("rejects failed responses and bodies over the cap", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response("no", { status: 500 }),
+    );
+    await expect(
+      fetchPageHtml("https://site.example/", "https://site.example"),
+    ).rejects.toThrow("HTTP 500");
+    vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+      new Response(new Uint8Array(3_000_000)),
+    );
+    await expect(
+      fetchPageHtml("https://site.example/", "https://site.example"),
+    ).rejects.toThrow("over the size cap");
+  });
 });

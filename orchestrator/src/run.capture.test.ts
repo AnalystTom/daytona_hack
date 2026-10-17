@@ -614,9 +614,10 @@ describe("Run sign-in handoff", () => {
       expect(planEvidence).toContainEqual(
         expect.objectContaining({ routes: ["/api/public?id=1&lang=en"] }),
       );
+      // Once for backend inspection, once for REA's own read of the page HTML.
       expect(
         requests.filter((url) => url === "https://example.com/"),
-      ).toHaveLength(1);
+      ).toHaveLength(2);
       if (action === "resume") {
         expect(captureMock.mock.lastCall?.[2]).toMatchObject({
           signIn: "resume",
@@ -914,7 +915,8 @@ describe("Run sign-in handoff", () => {
         kind: "code",
         tool: "rea",
         status: "not_observed",
-        limits: "no approved page HTML was captured",
+        limits:
+          "no approved page HTML was captured, and fetching it failed: every approved page needs sign-in",
       }),
     );
     expect(JSON.stringify([state, ctx.events()])).not.toContain(live);

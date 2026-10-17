@@ -159,11 +159,18 @@ const MAX_REDIRECTS = 4;
  * One GET whose every redirect hop must pass the run URL checks (https, public host), and whose
  * body is read only up to `limit` bytes so a huge or endless response is never held in memory.
  */
-async function getBounded(url: string, limit: number, signal: AbortSignal) {
+async function getBounded(
+  url: string,
+  limit: number,
+  signal: AbortSignal,
+  origin?: string,
+) {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const checked = checkTargetUrl(current);
     if ("error" in checked) throw new Error(checked.error);
+    if (origin && new URL(checked.url).origin !== origin)
+      throw new Error("redirected outside the approved origin");
     const res = await fetch(checked.url, { redirect: "manual", signal });
     const location = res.headers.get("location");
     if (res.status >= 300 && res.status < 400 && location) {
@@ -199,10 +206,30 @@ async function getBounded(url: string, limit: number, signal: AbortSignal) {
       body.set(chunk, at);
       at += chunk.byteLength;
     }
-    return body.buffer;
+    return { body: body.buffer, url: checked.url };
   }
   throw new Error("too many redirects");
 }
+
+const MAX_HTML_BYTES = 2_000_000;
+
+/** Fetches a page's HTML server-side (not browser-rendered); every hop must stay on `origin`. */
+export async function fetchPageHtml(
+  url: string,
+  origin: string,
+  signal?: AbortSignal,
+) {
+  const { body, url: final } = await getBounded(
+    url,
+    MAX_HTML_BYTES,
+    AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
+    origin,
+  );
+  return { html: new TextDecoder().decode(body), url: final };
+}
+
+export const FETCHED_HTML_LIMIT =
+  "page HTML fetched server-side, not browser-rendered: scripts added by JavaScript are not listed";
 
 /** Downloads bundles within the byte caps; REA only parses .js/.mjs names, so each keeps one. */
 export async function fetchBundles(urls: string[], signal?: AbortSignal) {
@@ -213,7 +240,7 @@ export async function fetchBundles(urls: string[], signal?: AbortSignal) {
   for (const [i, url] of urls.entries()) {
     signal?.throwIfAborted();
     try {
-      const body = await getBounded(
+      const { body } = await getBounded(
         url,
         Math.min(MAX_BUNDLE_BYTES, MAX_TOTAL_BYTES - total),
         AbortSignal.any([

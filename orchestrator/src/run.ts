@@ -31,7 +31,12 @@ import {
   SCOPES,
   stackRule,
 } from "./scope";
-import { reaInspect, reaNotObserved } from "./rea";
+import {
+  FETCHED_HTML_LIMIT,
+  fetchPageHtml,
+  reaInspect,
+  reaNotObserved,
+} from "./rea";
 import { RunTracer } from "./tracing";
 import { isReportGoal } from "./report";
 import { ReportEdit, type ReportDissection } from "../../src/shared/report";
@@ -931,8 +936,29 @@ export class Run extends DurableObject<Env> {
 
   /** REA scans the first retained, observed document in approved scope (one throwaway sandbox). */
   private async inspectCode(signal: AbortSignal) {
-    const document = await this.originalDocument();
+    let document = await this.originalDocument();
     signal.throwIfAborted();
+    let fetchedNote = "";
+    let fetchFailure: string | undefined;
+    if (!document) {
+      // Anchor without code execution stores no HTML: read the first approved page directly,
+      // never one that needed sign-in (an anonymous fetch would only see its login page).
+      const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
+      const path = scope.paths.find((p) => !this.s.signInPaths?.includes(p));
+      try {
+        if (path === undefined)
+          throw new Error("every approved page needs sign-in");
+        document = await fetchPageHtml(
+          new URL(path, scope.origin).href,
+          scope.origin,
+          signal,
+        );
+        fetchedNote = FETCHED_HTML_LIMIT;
+      } catch (e) {
+        signal.throwIfAborted();
+        fetchFailure = `no approved page HTML was captured, and fetching it failed: ${String((e as Error)?.message ?? e).slice(0, 120)}`;
+      }
+    }
     this.reaInspection = document
       ? reaInspect(
           this.daytona,
@@ -949,7 +975,10 @@ export class Run extends DurableObject<Env> {
           signal,
         )
       : Promise.resolve([
-          reaNotObserved("no approved page HTML was captured", 0),
+          reaNotObserved(
+            fetchFailure ?? "no approved page HTML was captured",
+            0,
+          ),
         ]);
     const fields = await this.reaInspection;
     const source = new URL(document?.url ?? this.s.spec.url);
@@ -958,6 +987,9 @@ export class Run extends DurableObject<Env> {
     await this.storeEvidence(
       fields.map((f) => ({
         ...f,
+        ...(fetchedNote && {
+          limits: `${f.limits}; ${fetchedNote}`,
+        }),
         id: `ev_${String(n++).padStart(3, "0")}`,
         page,
         capturedAt: now(),

@@ -204,6 +204,77 @@ describe("run scope", () => {
       }),
     );
   });
+  it("fetches the page HTML itself when none was captured, then scans its bundles", async () => {
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+    const upload = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+      exitCode: 0,
+      result: JSON.stringify({
+        findings: [
+          {
+            kind: "api",
+            value: "/api/x",
+            file: "0.js",
+            sha256: "ab".repeat(32),
+            locator: "0.js:1:0",
+            state: "observed",
+          },
+        ],
+        omitted: 0,
+        truncated: false,
+        limitations: [],
+      }),
+    });
+    const { state } = await plannedRun("frontend", "Frontend only", [], {
+      "https://site.example/static/app.js": "fetch('/api/x')",
+    });
+    expect(state.evidence.some((e) => e.kind === "html")).toBe(false);
+    expect(upload).toHaveBeenCalledOnce();
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        status: "observed",
+        page: "/insights/article",
+        limits: expect.stringContaining(
+          "fetched server-side, not browser-rendered",
+        ),
+      }),
+    );
+  });
+
+  it("keeps a not_observed code item with the reason when the page fetch fails", async () => {
+    stubFetch({
+      orchestrator_turn: [turn("frontend", false), turn("frontend", true)],
+      plan: [{ tasks: [] }],
+      review: [{ verdict: "approve", reason: "ok", findings: [] }],
+    });
+    const stub = globalThis.fetch;
+    const ctx = context();
+    const run = new Run(
+      ctx as unknown as DurableObjectState,
+      { ORCHESTRATOR_MODEL: "m" } as Env,
+    );
+    await ctx.ready;
+    await run.start("run-1", SITE, "Frontend only");
+    await run.message("Yes, go ahead.");
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) =>
+      String(input).startsWith(SITE)
+        ? Promise.resolve(new Response("down", { status: 503 }))
+        : stub(input, init),
+    );
+    await run.alarm();
+    expect((await run.getState()).evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        tool: "rea",
+        status: "not_observed",
+        limits:
+          "no approved page HTML was captured, and fetching it failed: HTTP 503",
+      }),
+    );
+  });
+
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",
     async (scope) => {
@@ -437,13 +508,13 @@ describe("run scope", () => {
     expect(plan?.instructions).toContain("sections/NAME.html");
     expect(plan?.instructions).not.toContain("server/routes");
     expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02"]);
-    // REA reads the page's bundles for frontend runs too; this page ships none
+    // REA reads the page's bundles for frontend runs too, from HTML it fetched itself
     expect(state.evidence).toContainEqual(
       expect.objectContaining({
         kind: "code",
         tool: "rea",
         status: "not_observed",
-        limits: "no approved page HTML was captured",
+        limits: expect.stringContaining("page HTML fetched server-side"),
       }),
     );
   });
