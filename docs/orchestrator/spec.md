@@ -121,6 +121,7 @@ An optional action deploys it live.
 Evidence is the contract between the original site and the rebuild.
 Workers build from it, reviewers judge against it, and the verifier checks claims against it.
 Anchor captures browser evidence, through our evidence capture, and SurrealDB stores it. The demo's backend inspection uses fetch, as described below.
+Server-side page, REA bundle, robots.txt, sitemap.xml and report-source fetches send the shared [`USER_AGENT`](../../orchestrator/src/types.ts) identity, including redirect requests and report-capture fallback.
 
 **What the evidence pack holds, per page or state:**
 
