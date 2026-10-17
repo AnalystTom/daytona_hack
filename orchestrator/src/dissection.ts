@@ -28,7 +28,12 @@ function reportContent(html: string) {
     withEndIndices: true,
   });
   const main = DomUtils.findOne(
-    (node) => node.name === "main" || node.attribs.role === "main",
+    (node) =>
+      node.name === "main" ||
+      node.attribs.role === "main" ||
+      (node.attribs.class ?? "")
+        .split(/\s+/)
+        .some((name) => name.endsWith("--root-grid-main")),
     document.children,
   );
   const articles = DomUtils.findAll(

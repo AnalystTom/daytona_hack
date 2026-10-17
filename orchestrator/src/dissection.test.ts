@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   cleanText,
   dissect,
@@ -33,6 +34,51 @@ _Flourish_visualisation_id = 29875854;</script>`;
 const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 
 describe("observed report figures", () => {
+  it("extracts the captured Goldman Sachs page before researching its sources", async () => {
+    const captured = readFileSync(
+      new URL("./fixtures/goldman-report.html", import.meta.url),
+      "utf8",
+    );
+    expect(extractFigures(captured).map((figure) => figure.value)).toContain(
+      "$1 trillion",
+    );
+    const fetcher = vi.fn().mockResolvedValue(new Response(chart));
+    vi.stubGlobal("fetch", fetcher);
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      const input = JSON.parse(opts.input as string);
+      expect(input.article).toContain("$581 billion");
+      expect(input.article).not.toContain("Three New Stock Themes");
+      expect(input.article).not.toContain("All rights reserved");
+      opts.onSearchCalls?.(1);
+      return { sources: [], traces: [] };
+    });
+    const report = await dissect(env, "run", {
+      html: captured,
+      url: "https://www.goldmansachs.com/insights/articles/global-investment-is-forecast-to-exceed-1-trillion-in-2026",
+      capturedAt: "2026-10-17T04:18:32.733Z",
+      hash: "capture-hash",
+    });
+    expect(fetcher).toHaveBeenCalledExactlyOnceWith(
+      "https://www.goldmansachs.com/infographics/v4/flourish/ai-companies-investment-estimate/index.html?auto=1",
+      expect.any(Object),
+    );
+    expect(report.sources[0].title).toBe(
+      "Global AI Investment Is Forecast to Exceed $1 Trillion in 2026",
+    );
+    expect(
+      report.figures.some((figure) => figure.value === "$581 billion"),
+    ).toBe(true);
+    expect(
+      report.figures.filter((figure) => figure.group === "investment_breakdown"),
+    ).toHaveLength(6);
+    for (const figure of report.figures.filter(
+      (figure) => figure.sourceId === "article",
+    )) {
+      expect(
+        cleanText(captured.slice(figure.location.start, figure.location.end)),
+      ).toBe(figure.quote);
+    }
+  });
   it.each([...uncertainQuantityExamples, ...incompleteQuantityExamples])(
     "keeps unsupported currency notation whole: $quote",
     ({ quote }) => {
