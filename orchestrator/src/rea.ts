@@ -1,6 +1,7 @@
 // REA code evidence: turns sandbox/rea-scan.mjs output into evidence items. Each finding keeps
 // its bundle's SHA-256 and a source locator; static findings never prove runtime behaviour.
 import { redactQuery } from "../../src/shared/evidence";
+import { checkTargetUrl } from "../../src/worker/runs/url";
 import type { Evidence } from "./types";
 
 export interface ReaFinding {
@@ -131,6 +132,57 @@ export function scriptUrls(html: string, base: string, max = MAX_BUNDLES) {
   return [...urls];
 }
 
+const MAX_REDIRECTS = 4;
+
+/**
+ * One GET whose every redirect hop must pass the run URL checks (https, public host), and whose
+ * body is read only up to `limit` bytes so a huge or endless response is never held in memory.
+ */
+async function getBounded(url: string, limit: number, signal: AbortSignal) {
+  let current = url;
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const checked = checkTargetUrl(current);
+    if ("error" in checked) throw new Error(checked.error);
+    const res = await fetch(checked.url, { redirect: "manual", signal });
+    const location = res.headers.get("location");
+    if (res.status >= 300 && res.status < 400 && location) {
+      await res.body?.cancel();
+      current = new URL(location, checked.url).href;
+      continue;
+    }
+    if (!res.ok || !res.body) {
+      await res.body?.cancel();
+      throw new Error(`HTTP ${res.status}`);
+    }
+    if (Number(res.headers.get("content-length")) > limit) {
+      await res.body.cancel();
+      throw new Error("over the size cap");
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    const reader = res.body.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        size += value.byteLength;
+        if (size > limit) throw new Error("over the size cap");
+        chunks.push(value);
+      }
+    } finally {
+      await reader.cancel().catch(() => {});
+    }
+    const body = new Uint8Array(size);
+    let at = 0;
+    for (const chunk of chunks) {
+      body.set(chunk, at);
+      at += chunk.byteLength;
+    }
+    return body.buffer;
+  }
+  throw new Error("too many redirects");
+}
+
 /** Downloads bundles within the byte caps; REA only parses .js/.mjs names, so each keeps one. */
 export async function fetchBundles(urls: string[], signal?: AbortSignal) {
   const files: Record<string, string> = {};
@@ -140,28 +192,23 @@ export async function fetchBundles(urls: string[], signal?: AbortSignal) {
   for (const [i, url] of urls.entries()) {
     signal?.throwIfAborted();
     try {
-      const res = await fetch(url, {
-        signal: AbortSignal.any([
+      const body = await getBounded(
+        url,
+        Math.min(MAX_BUNDLE_BYTES, MAX_TOTAL_BYTES - total),
+        AbortSignal.any([
           AbortSignal.timeout(15_000),
           ...(signal ? [signal] : []),
         ]),
-      });
-      const body = res.ok ? await res.arrayBuffer() : undefined;
-      if (!body) skipped.push(`${redactQuery(url)} (HTTP ${res.status})`);
-      else if (
-        body.byteLength > MAX_BUNDLE_BYTES ||
-        total + body.byteLength > MAX_TOTAL_BYTES
-      )
-        skipped.push(`${redactQuery(url)} (over the size cap)`);
-      else {
-        total += body.byteLength;
-        const name = `${i}${new URL(url).pathname.endsWith(".mjs") ? ".mjs" : ".js"}`;
-        files[name] = url;
-        contents[name] = body;
-      }
+      );
+      total += body.byteLength;
+      const name = `${i}${new URL(url).pathname.endsWith(".mjs") ? ".mjs" : ".js"}`;
+      files[name] = url;
+      contents[name] = body;
     } catch (e) {
       signal?.throwIfAborted();
-      skipped.push(`${redactQuery(url)} (${String(e).slice(0, 80)})`);
+      skipped.push(
+        `${redactQuery(url)} (${String((e as Error)?.message ?? e).slice(0, 80)})`,
+      );
     }
   }
   return { files, contents, skipped };
@@ -171,6 +218,8 @@ export interface ReaSandbox {
   create(opts: {
     snapshot?: string;
     labels?: Record<string, string>;
+    autoStopInterval?: number;
+    autoDeleteInterval?: number;
   }): Promise<{ id: string }>;
   remove(id: string): Promise<void>;
   writeFile(id: string, path: string, content: ArrayBuffer): Promise<void>;
@@ -202,7 +251,15 @@ export async function reaInspect(
     return [reaNotObserved(`no script bundle could be fetched.${note}`, 0)];
   let id: string | undefined;
   try {
-    id = (await daytona.create(opts)).id;
+    // No env is passed, so the sandbox holds no secrets. If this worker dies before the finally
+    // below, Daytona stops the idle sandbox after 5 minutes and deletes it on stop.
+    id = (
+      await daytona.create({
+        ...opts,
+        autoStopInterval: 5,
+        autoDeleteInterval: 0,
+      })
+    ).id;
     for (const [name, body] of Object.entries(contents)) {
       signal?.throwIfAborted();
       await daytona.writeFile(id, `${REA_DIR}/${name}`, body);

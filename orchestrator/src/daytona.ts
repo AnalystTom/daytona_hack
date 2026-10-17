@@ -30,6 +30,8 @@ export class Daytona {
     env?: Record<string, string>;
     snapshot?: string;
     labels?: Record<string, string>;
+    autoStopInterval?: number; // minutes idle before stopping
+    autoDeleteInterval?: number; // minutes stopped before deleting; 0 deletes on stop
   }) {
     const sb = await this.call(`${this.env.DAYTONA_API_URL}/sandbox`, {
       method: "POST",
@@ -39,7 +41,10 @@ export class Daytona {
         snapshot: opts.snapshot,
         labels: opts.labels || {},
         public: false, // the preview is reached only through short-lived signed links
-        autoStopInterval: 60,
+        autoStopInterval: opts.autoStopInterval ?? 60,
+        ...(opts.autoDeleteInterval !== undefined && {
+          autoDeleteInterval: opts.autoDeleteInterval,
+        }),
       }),
     });
     for (let i = 0; i < 60; i++) {

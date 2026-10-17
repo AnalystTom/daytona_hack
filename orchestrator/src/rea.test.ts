@@ -206,4 +206,61 @@ describe("reaInspect", () => {
       "https://site.example/big.js (over the size cap)",
     ]);
   });
+  it("refuses private hosts and private redirect hops, and stays inside the byte cap while streaming", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) => {
+        const u = String(url);
+        if (u.endsWith("/hop.js"))
+          return new Response(null, {
+            status: 302,
+            headers: { location: "https://169.254.169.254/latest" },
+          });
+        if (u.endsWith("/ok.js")) return new Response("fetch('/api/x')");
+        return new Response(new Uint8Array(5_000_000)); // no content-length
+      });
+    const { files, skipped } = await fetchBundles([
+      "https://10.0.0.1/a.js",
+      "http://site.example/b.js",
+      "https://site.example/hop.js",
+      "https://site.example/ok.js",
+      "https://site.example/endless.js",
+    ]);
+    expect(Object.values(files)).toEqual(["https://site.example/ok.js"]);
+    expect(skipped).toEqual([
+      "https://10.0.0.1/a.js (The URL must point to a public host.)",
+      "http://site.example/b.js (The URL must use https.)",
+      "https://site.example/hop.js (The URL must point to a public host.)",
+      "https://site.example/endless.js (over the size cap)",
+    ]);
+    expect(
+      spy.mock.calls.every(([, init]) => init?.redirect === "manual"),
+    ).toBe(true);
+    expect(spy.mock.calls.map(([u]) => String(u))).not.toContain(
+      "https://169.254.169.254/latest",
+    );
+  });
+
+  it("removes the sandbox when writing or scanning fails", async () => {
+    serve();
+    const sb = sandbox("");
+    sb.exec = async () => {
+      throw new Error("toolbox down");
+    };
+    const [item] = await reaInspect(sb, html, "https://site.example/", {});
+    expect(item).toMatchObject({ status: "not_observed" });
+    expect(sb.removed).toEqual(["sb1"]);
+  });
+
+  it("creates the sandbox with no env and a short auto-delete backstop", async () => {
+    serve();
+    const sb = sandbox('{"findings":[],"omitted":0,"truncated":false}');
+    const create = vi.spyOn(sb, "create");
+    await reaInspect(sb, html, "https://site.example/", { snapshot: "s" });
+    expect(create).toHaveBeenCalledWith({
+      snapshot: "s",
+      autoStopInterval: 5,
+      autoDeleteInterval: 0,
+    });
+  });
 });
