@@ -17,6 +17,11 @@ export const ReportLocation = z.object({
     })
     .optional(),
 });
+export const ReportMention = z.object({
+  quote: z.string().min(1),
+  location: ReportLocation,
+  quantityStart: z.int().nonnegative().optional(),
+});
 export const ReportFigure = z.object({
   id: z.string().min(1),
   value: z.string(),
@@ -28,6 +33,15 @@ export const ReportFigure = z.object({
   status: z.enum(["observed", "inferred", "not_observed"]),
   reason: z.string(),
   group: z.enum(["key_figures", "investment_breakdown", "not_observed"]),
+  /** Year or span the source ties the figure to; context, never a figure of its own. */
+  period: z.string().optional(),
+  quantityStart: z.int().nonnegative().optional(),
+  /** Further places the same value and meaning appears; `location` is the first. */
+  mentions: z.array(ReportMention).optional(),
+  /** Row and series of a chart cell, so the dashboard can group the breakdown. */
+  breakdown: z
+    .object({ row: z.string().min(1), column: z.string().min(1) })
+    .optional(),
 });
 export type ReportFigure = z.infer<typeof ReportFigure>;
 
@@ -49,13 +63,79 @@ const currencyContext = (token: string) => {
   );
 };
 
-export function reportQuantities(quote: string) {
+type Groups = Record<string, string | undefined>;
+
+const interpret = (g: Groups | undefined) => {
+  const prefix = g?.prefix?.toUpperCase();
+  const suffix = g?.suffix?.toUpperCase();
+  const symbol = g?.symbol;
+  const currency = prefix ?? suffix ?? (symbol === "€" ? "EUR" : "");
+  const observed =
+    !!g &&
+    !(g.sign && g.innerSign) &&
+    !(prefix && suffix && prefix !== suffix) &&
+    (!symbol ||
+      !currency ||
+      (symbol === "€"
+        ? currency === "EUR"
+        : symbol === "£"
+          ? currency === "GBP"
+          : /^(USD|CAD|AUD|NZD|HKD|SGD)$/.test(currency)));
+  return {
+    observed,
+    unit: [symbol ?? prefix ?? suffix, g?.scale ?? "number"]
+      .filter(Boolean)
+      .join(" "),
+    currency: observed && !/^(%|bps)$/i.test(g?.scale ?? "") ? currency : "",
+  };
+};
+
+/** "2%-5%" or "$5-10 billion": both ends must be supported scalars with compatible units. */
+function rangeGroups(value: string): Groups | undefined {
+  for (let i = 1; i < value.length; i++) {
+    if (!"-–—".includes(value.charAt(i))) continue;
+    const lo = scalar.exec(value.slice(0, i).trim())?.groups;
+    const hi = scalar.exec(value.slice(i + 1).trim())?.groups;
+    if (!lo || !hi || (lo.sign && lo.innerSign) || (hi.sign && hi.innerSign))
+      continue;
+    const merged: Groups = {};
+    let clash = false;
+    for (const key of ["prefix", "symbol", "suffix", "scale"]) {
+      const [a, b] = [lo[key], hi[key]];
+      clash ||= !!a && !!b && a.toLowerCase() !== b.toLowerCase();
+      merged[key] = a ?? b;
+    }
+    if (!clash) return merged;
+  }
+}
+
+/** Trailing sentence punctuation, closing quotes and unmatched closing brackets are not part of a quantity. */
+function trimQuantity(raw: string) {
+  let value = raw.replace(/^[“‘"']+/, "");
+  for (;;) {
+    const next = value.replace(/[.,;:!?”’"']+$/, "");
+    const unmatched =
+      next.endsWith(")") &&
+      (next.match(/\)/g)?.length ?? 0) > (next.match(/\(/g)?.length ?? 0);
+    if (!unmatched && next === value) break;
+    value = unmatched ? next.slice(0, -1) : next;
+  }
+  // "(1.3% globally)" opens a parenthetical; "(1.3%)" stays accounting-style and unsupported.
+  const open = value.startsWith("(") && !value.includes(")");
+  return open ? value.slice(1) : value;
+}
+
+/** Quantities with their text and offsets in `quote`; `reportQuantities` is the matcher-facing view. */
+export function reportQuantityTokens(quote: string) {
   const tokens = [...quote.matchAll(/\S+/gu)];
   const quantities: {
     value: string;
     unit: string;
     currency: string;
     status: "observed" | "not_observed";
+    text: string;
+    start: number;
+    end: number;
   }[] = [];
   for (let i = 0; i < tokens.length; i++) {
     if (!/\d/.test(tokens[i]![0])) continue;
@@ -80,39 +160,31 @@ export function reportQuantities(quote: string) {
       else break;
     }
     const end = tokens[last]!;
-    const value = quote
-      .slice(tokens[first]!.index, end.index + end[0].length)
-      .replace(/[.,;:!?]+$/, "");
-    const parsed = scalar.exec(value)?.groups;
-    const prefix = parsed?.prefix?.toUpperCase();
-    const suffix = parsed?.suffix?.toUpperCase();
-    const symbol = parsed?.symbol;
-    const currency = prefix ?? suffix ?? (symbol === "€" ? "EUR" : "");
-    const observed =
-      !!parsed &&
-      !(parsed.sign && parsed.innerSign) &&
-      !(prefix && suffix && prefix !== suffix) &&
-      (!symbol ||
-        !currency ||
-        (symbol === "€"
-          ? currency === "EUR"
-          : symbol === "£"
-            ? currency === "GBP"
-            : /^(USD|CAD|AUD|NZD|HKD|SGD)$/.test(currency)));
-    const unit = [symbol ?? prefix ?? suffix, parsed?.scale ?? "number"]
-      .filter(Boolean)
-      .join(" ");
+    const raw = quote.slice(tokens[first]!.index, end.index + end[0].length);
+    const value = trimQuantity(raw);
+    const start = tokens[first]!.index + raw.indexOf(value);
+    const single = scalar.exec(value)?.groups;
+    const { observed, unit, currency } = interpret(
+      single ?? rangeGroups(value),
+    );
     quantities.push({
       value: observed ? value : "",
       unit: observed ? unit : "",
-      currency:
-        observed && !/^(%|bps)$/i.test(parsed?.scale ?? "") ? currency : "",
+      currency: observed ? currency : "",
       status: observed ? "observed" : "not_observed",
+      text: value,
+      start,
+      end: start + value.length,
     });
     i = last;
   }
   return quantities;
 }
+
+export const reportQuantities = (quote: string) =>
+  reportQuantityTokens(quote).map(
+    ({ text: _text, start: _start, end: _end, ...quantity }) => quantity,
+  );
 
 export function exactQuoteEvidence(
   figure: ReportFigure,
@@ -132,6 +204,8 @@ export function exactQuoteEvidence(
     const passage = text(quote);
     const start = passage.indexOf(value);
     if (start < 0 || passage.indexOf(value, start + 1) !== -1) return [];
+    // An opening bracket directly before the value may be an accounting-style negative.
+    if (passage[start - 1] === "(") return [];
     const tail = passage.slice(start + value.length);
     if (!/^[.!?]*$/.test(tail)) return [];
     return reportQuantities(passage).filter(
@@ -140,7 +214,7 @@ export function exactQuoteEvidence(
         !!quantity.currency &&
         quantity.value === value &&
         quantity.unit === figure.unit &&
-        !/[-−–]/.test(quantity.value),
+        !/[-−–—]/.test(quantity.value),
     );
   };
   const article = evidence(figure.quote);

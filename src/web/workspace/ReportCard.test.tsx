@@ -1,3 +1,4 @@
+import { DomUtils, parseDocument } from "htmlparser2";
 import { renderToStaticMarkup } from "react-dom/server";
 import { assert, describe, expect, it } from "vitest";
 import { ReportDissection } from "../../shared/report";
@@ -210,4 +211,106 @@ describe("report canvas data", () => {
       expect(html).toContain(quote);
     },
   );
+  it("renders the dashboard: summary, grouped breakdown, periods and every place a figure appears", () => {
+    const [base] = reportContractExample.figures;
+    const location = {
+      kind: "html",
+      start: 1,
+      end: 9,
+      path: "HTML characters 1–9",
+    };
+    const chartLocation = { ...location, kind: "chart_data" };
+    const cell = (id: string, row: string, column: string, value: string) => ({
+      ...base,
+      id,
+      value,
+      unit: "$ billions",
+      label: `${row}: ${column}`,
+      sourceId: "chart1",
+      location: chartLocation,
+      group: "investment_breakdown",
+      breakdown: { row, column },
+    });
+    const report = ReportDissection.parse({
+      ...reportContractExample,
+      figures: [
+        {
+          ...base,
+          label: "Global AI investment, 2026",
+          period: "2026",
+          mentions: [{ quote: "Restated in the body", location }],
+        },
+        cell("c1", "US", "US public", "530"),
+        cell("c2", "US", "US private", "35"),
+        cell("c3", "Global ex-US", "US public", "234"),
+        {
+          ...cell("c4", "US", "US public", "777"),
+          sourceId: "chart2",
+          unit: "EUR millions",
+        },
+        {
+          ...base,
+          id: "n1",
+          value: "",
+          label: "Unreadable quantity: 1e3",
+          status: "not_observed",
+          group: "not_observed",
+        },
+      ],
+      sources: [
+        ...reportContractExample.sources,
+        {
+          ...reportContractExample.sources[0],
+          id: "chart1",
+          title: "Embedded investment chart",
+          url: "https://charts.example/flourish",
+          quoteUrl: "https://charts.example/flourish",
+        },
+        {
+          ...reportContractExample.sources[0],
+          id: "chart2",
+          title: "Second chart",
+          url: "https://charts.example/second",
+          quoteUrl: "https://charts.example/second",
+        },
+      ],
+      edits: { c1: { label: "My revised investment estimate", value: "999" } },
+    });
+    const html = renderToStaticMarkup(
+      <ReportCard report={report} evidence={[]} />,
+    );
+    expect(html).toContain("Global AI investment, 2026");
+    expect(html).toContain("Period 2026");
+    expect(html).toContain("2 places");
+    expect(html).toContain("Where invested");
+    expect(html).toContain("US private");
+    expect(html).toMatch(/<th[^>]*scope="row"[^>]*>Global ex-US<\/th>/);
+    expect(html).toContain("Not observed");
+    expect(html).toContain("3 figures read from this source");
+    expect(html).toContain("Open chart source");
+    const tables = DomUtils.findAll(
+      (node) =>
+        node.name === "table" &&
+        (node.attribs.class ?? "").includes("report-breakdown"),
+      parseDocument(html).children,
+    );
+    expect(tables).toHaveLength(2);
+    const first = DomUtils.textContent(tables[0]!);
+    const second = DomUtils.textContent(tables[1]!);
+    expect(first).toContain("999");
+    expect(first).toContain("My revised investment estimate");
+    expect(first).toContain("Edited; original retained");
+    expect(first).toContain("$ billions");
+    expect(first).not.toContain("777");
+    expect(first).not.toContain("kept as published");
+    expect(first).toContain("User edits are marked");
+    expect(second).toContain("777");
+    expect(second).toContain("EUR millions");
+    expect(second).not.toContain("999");
+    const link = (table: (typeof tables)[number]) =>
+      DomUtils.findOne((node) => node.name === "a", table.children)?.attribs
+        .href;
+    expect(link(tables[0]!)).toBe("https://charts.example/flourish");
+    expect(link(tables[1]!)).toBe("https://charts.example/second");
+  });
 });
