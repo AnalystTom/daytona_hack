@@ -257,7 +257,7 @@ export class Run extends DurableObject<Env> {
       spec: {
         url,
         goal,
-        scope: "frontend", // the first chat turn sets it from the brief
+        scope: isReportGoal(goal) ? "report" : "frontend", // the first chat turn refines website scope
         pages: [{ path: new URL(url).pathname, confirmed: false }],
         flows: [],
         openQuestions: [],
@@ -806,7 +806,8 @@ export class Run extends DurableObject<Env> {
     });
     signal?.throwIfAborted();
     await this.beforeWork();
-    if (this.s.spec.approved) out.spec.scope = this.s.spec.scope; // a running plan keeps its scope
+    if (this.s.spec.approved || isReportGoal(this.s.spec.goal))
+      out.spec.scope = this.s.spec.scope; // a running plan keeps its scope; a report stays a report
     Object.assign(this.s.spec, out.spec);
     set({ "output.value": out.reply });
     await this.emit("spec", this.s.spec, signal);

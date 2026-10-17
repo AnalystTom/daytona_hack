@@ -1,6 +1,7 @@
 // Per-run scope: what the prompts ask for depends on the run's own brief, never on a fixed demo target.
 import type { Scope, Task } from "./types";
 
+// "report" is set by the run for a report-dissection brief, never chosen by the model.
 export const SCOPES: Scope[] = ["frontend", "backend", "both"];
 
 const SERVER = "server/server.js";
