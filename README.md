@@ -49,6 +49,7 @@ In a live session, **Preview** becomes available after the run emits a preview e
 The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
 
 Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
+A saved report also exposes its figures and source provenance for inspection; editing is disabled.
 
 Save or replace it with one command, after the Worker is deployed:
 
@@ -63,7 +64,7 @@ Media URLs and cache entries include the source run ID and are cached for a year
 ## Report dissection
 
 At `/start` or in an empty `/workspace`, type a report's address with an instruction such as `Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.` Answer the question round and approve the plan; nothing is approved automatically.
-Creating runs currently requires the operator token or a valid signed session cookie; enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
+Run creation and ownership follow the [run access policy](#who-can-use-runs). After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
 Reopen saved runs using the [workspace session controls](#workspace).
 See [financial report dissection](docs/spec.md#financial-report-dissection) for scope and evidence labels, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
@@ -108,7 +109,7 @@ A run request whose `Origin` names another site gets 403, and so does a cookie-a
 Without Cloudflare Access configured, visitors need no token or sign-in. The first run a browser starts is answered with a signed `__Host-reversy_visitor` cookie (HttpOnly, Secure, SameSite=Strict, 30 days). Its HMAC is keyed by `OPERATOR_TOKEN` on the Worker, which never reaches the browser; rotating the token signs every visitor out. That anonymous session owns the runs it starts: it can read, stream, message, approve, build, stop or override them, while other visitor sessions get 404 for the run ID. A visitor who clears cookies loses their run history, and such a visitor still counts toward the network and global limits below.
 In this mode, operators can still send `Authorization: Bearer <OPERATOR_TOKEN>` to act on any run and to use `/api/v1/orchestrator/*`.
 The former `POST` / `DELETE /api/v1/session` endpoint is removed; old `__Host-reversy_session` cookies no longer grant run access.
-The saved example is public and read-only (`/api/v1/example`). Any visitor run, including future report-dissection runs, falls under the same limits.
+The saved example is public and read-only (`/api/v1/example`). Any visitor run, including report-dissection runs, falls under the same limits.
 
 ### Sign-in with Cloudflare Access
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchEvidence } from "./runClient";
 
-// Run evidence needs the operator token, so it is fetched and shown from a blob URL.
+// Keep authenticated evidence requests on the run client's access and error path.
 export function useEvidenceSrc(src: string) {
   const fromRun = src.startsWith("/api/");
   const [blobUrl, setBlobUrl] = useState<string>();
