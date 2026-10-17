@@ -23,7 +23,7 @@ import { resolveStore } from "../../src/worker/store";
 import { decodeXML } from "entities";
 import { Parser } from "htmlparser2";
 import { sha256 } from "./services";
-import type { Env, Evidence } from "./types";
+import { type Env, type Evidence, USER_AGENT } from "./types";
 
 export interface Capture {
   evidence: Evidence[];
@@ -81,7 +81,7 @@ export async function resolveRedirects(
         redirect: "manual",
         // A hanging site must not hold up the first look.
         signal: AbortSignal.timeout(10_000),
-        headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+        headers: { "User-Agent": USER_AGENT },
       });
       await res.body?.cancel();
       const location = res.headers.get("location");
@@ -353,7 +353,7 @@ export async function inspectBackend(
   let html = "";
   try {
     const res = await fetch(url, {
-      headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+      headers: { "User-Agent": USER_AGENT },
       redirect: "manual",
       signal,
     });
@@ -433,7 +433,11 @@ export async function inspectBackend(
   for (const file of ["/robots.txt", "/sitemap.xml"]) {
     signal?.throwIfAborted();
     try {
-      const res = await fetch(origin + file, { redirect: "manual", signal });
+      const res = await fetch(origin + file, {
+        headers: { "User-Agent": USER_AGENT },
+        redirect: "manual",
+        signal,
+      });
       signal?.throwIfAborted();
       const body = res.ok ? (await res.text()).slice(0, 200_000) : "";
       signal?.throwIfAborted();

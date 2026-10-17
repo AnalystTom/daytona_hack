@@ -8,7 +8,7 @@ import {
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { Parser } from "htmlparser2";
 import { SandboxCleanupError } from "./daytona";
-import type { Evidence } from "./types";
+import { type Evidence, USER_AGENT } from "./types";
 
 export interface ReaFinding {
   kind: "api" | "route" | "endpoint" | "storage" | "module";
@@ -175,7 +175,11 @@ async function getBounded(
     if ("error" in checked) throw new Error(checked.error);
     if (scope && !inScope(checked.url, scope))
       throw new Error("page URL outside the approved scope");
-    const res = await fetch(checked.url, { redirect: "manual", signal });
+    const res = await fetch(checked.url, {
+      headers: { "User-Agent": USER_AGENT },
+      redirect: "manual",
+      signal,
+    });
     const location = res.headers.get("location");
     if (res.status >= 300 && res.status < 400 && location) {
       await res.body?.cancel();
