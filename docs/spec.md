@@ -97,7 +97,7 @@ A message that changes the approved spec becomes a proposed change; applying it 
 
 ## 5. Run scope and first demo target
 
-Each run takes its scope from the user's brief and chat, with at most one round of short clarification questions: **frontend** (pages and interactions), **backend** (routes, APIs, response shapes and content delivery), or **both**.
+Website runs take their scope from the user's brief and chat, with at most one round of short clarification questions: **frontend** (pages and interactions), **backend** (routes, APIs, response shapes and content delivery), or **both**. Report briefs use the separate [report scope](#financial-report-dissection).
 A backend-only run does not copy or build the frontend. Any site can be the target; the first demo does not limit other runs.
 The agent system's [evidence rules](orchestrator/spec.md#6-evidence) describe what inspection can currently observe and its limits.
 
@@ -121,6 +121,7 @@ At the end of a run, the user gets the rebuild as a live preview inside the app,
 ### Financial report dissection
 
 A user types a report's address with an instruction such as “Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.” That brief is routed to report dissection like any other brief: one question round in chat, then the user approves the plan. Nothing is hard-coded to one report; the Goldman Sachs article on global AI investment is the reference example.
+The draft spec starts with **report** scope and retains it through clarification, even if the chat model proposes a website scope.
 It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
 The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
 Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.

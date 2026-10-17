@@ -257,7 +257,7 @@ export class Run extends DurableObject<Env> {
       spec: {
         url,
         goal,
-        scope: isReportGoal(goal) ? "report" : "frontend", // the first chat turn sets it from the brief
+        scope: isReportGoal(goal) ? "report" : "frontend", // the first chat turn refines website scope
         pages: [{ path: new URL(url).pathname, confirmed: false }],
         flows: [],
         openQuestions: [],

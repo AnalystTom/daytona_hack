@@ -18,7 +18,7 @@ type Box = Omit<Region, "evidenceId" | "pageWidth" | "pageHeight"> & {
   iframe: boolean;
 };
 
-/** The screenshot and locations come from the same isolated Anchor page. */
+/** Source regions require HTML, screenshot and DOM boxes from the same Anchor capture. */
 export async function captureReport(
   env: Env,
   url: string,
