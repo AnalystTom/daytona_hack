@@ -243,37 +243,83 @@ describe("run scope", () => {
     );
   });
 
-  it("keeps a not_observed code item with the reason when the page fetch fails", async () => {
-    stubFetch({
-      orchestrator_turn: [turn("frontend", false), turn("frontend", true)],
-      plan: [{ tasks: [] }],
-      review: [{ verdict: "approve", reason: "ok", findings: [] }],
-    });
-    const stub = globalThis.fetch;
-    const ctx = context();
-    const run = new Run(
-      ctx as unknown as DurableObjectState,
-      { ORCHESTRATOR_MODEL: "m" } as Env,
-    );
-    await ctx.ready;
-    await run.start("run-1", SITE, "Frontend only");
-    await run.message("Yes, go ahead.");
-    vi.stubGlobal("fetch", (input: string, init?: RequestInit) =>
-      String(input).startsWith(SITE)
-        ? Promise.resolve(new Response("down", { status: 503 }))
-        : stub(input, init),
-    );
-    await run.alarm();
-    expect((await run.getState()).evidence).toContainEqual(
-      expect.objectContaining({
-        kind: "code",
-        tool: "rea",
-        status: "not_observed",
-        limits:
-          "no approved page HTML was captured, and fetching it failed: HTTP 503",
-      }),
-    );
-  });
+  it.each([
+    {
+      scope: "frontend",
+      status: 503,
+      headers: new Headers(),
+      reason: "HTTP 503",
+    },
+    {
+      scope: "backend",
+      status: 302,
+      headers: new Headers({ location: "/login" }),
+      reason: "page URL outside the approved scope",
+    },
+    {
+      scope: "backend",
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      reason: "page response is not HTML",
+    },
+  ])(
+    "records not_observed without scanning when $scope fetch fails: $reason",
+    async ({ scope, status, headers, reason }) => {
+      const create = vi.spyOn(Daytona.prototype, "create");
+      stubFetch({
+        orchestrator_turn: [turn(scope, false), turn(scope, true)],
+        plan: [{ tasks: [] }],
+        review: [{ verdict: "approve", reason: "ok", findings: [] }],
+      });
+      const stub = globalThis.fetch;
+      const ctx = context();
+      const run = new Run(
+        ctx as unknown as DurableObjectState,
+        { ORCHESTRATOR_MODEL: "m" } as Env,
+      );
+      await ctx.ready;
+      await run.start("run-1", SITE, `${scope} only`);
+      await run.message("Yes, go ahead.");
+      const requests: string[] = [];
+      vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+        requests.push(String(input));
+        return String(input).startsWith(SITE)
+          ? Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  content: '<script src="/preview.js"></script>',
+                }),
+                { status, headers },
+              ),
+            )
+          : stub(input, init);
+      });
+      await run.alarm();
+      const state = await run.getState();
+      expect(state.phase).toBe("planned");
+      expect(create).not.toHaveBeenCalled();
+      expect(
+        requests.filter((url) => url.startsWith("https://site.example/")),
+      ).toEqual(
+        scope === "backend"
+          ? [
+              SITE,
+              "https://site.example/robots.txt",
+              "https://site.example/sitemap.xml",
+              SITE,
+            ]
+          : [SITE],
+      );
+      expect(state.evidence).toContainEqual(
+        expect.objectContaining({
+          kind: "code",
+          tool: "rea",
+          status: "not_observed",
+          limits: `no approved page HTML was captured, and fetching it failed: ${reason}`,
+        }),
+      );
+    },
+  );
 
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",

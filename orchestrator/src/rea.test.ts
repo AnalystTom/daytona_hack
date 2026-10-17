@@ -511,46 +511,125 @@ describe("REA sandbox ownership", () => {
 
 describe("fetchPageHtml", () => {
   afterEach(() => vi.restoreAllMocks());
+  const scope = { origin: "https://site.example", paths: ["/", "/home"] };
 
-  it("returns the HTML and the final URL after same-origin redirects", async () => {
+  it("returns the HTML and the final URL after approved redirects", async () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
       String(url) === "https://site.example/"
         ? new Response(null, {
             status: 302,
             headers: { location: "/home" },
           })
-        : new Response("<html></html>"),
+        : new Response("<html></html>", {
+            headers: { "content-type": "text/html" },
+          }),
     );
-    expect(
-      await fetchPageHtml("https://site.example/", "https://site.example"),
-    ).toEqual({ html: "<html></html>", url: "https://site.example/home" });
+    expect(await fetchPageHtml("https://site.example/", scope)).toEqual({
+      html: "<html></html>",
+      url: "https://site.example/home",
+    });
   });
 
-  it("refuses a redirect off the approved origin without requesting it", async () => {
-    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      new Response(null, {
-        status: 302,
-        headers: { location: "https://login.example/sso" },
-      }),
-    );
+  it.each([
+    "https://login.example/sso",
+    "/login",
+    "/account?view=private",
+    "/account",
+  ])(
+    "refuses an out-of-scope redirect to %s without requesting it",
+    async (location) => {
+      const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(null, {
+          status: 302,
+          headers: { location },
+        }),
+      );
+      await expect(
+        fetchPageHtml("https://site.example/account?view=public", {
+          origin: scope.origin,
+          paths: ["/account?view=public"],
+        }),
+      ).rejects.toThrow("outside the approved scope");
+      expect(spy).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("refuses an unapproved initial URL without requesting it", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
     await expect(
-      fetchPageHtml("https://site.example/", "https://site.example"),
-    ).rejects.toThrow("redirected outside the approved origin");
-    expect(spy).toHaveBeenCalledOnce();
+      fetchPageHtml("https://site.example/login", scope),
+    ).rejects.toThrow("outside the approved scope");
+    expect(spy).not.toHaveBeenCalled();
   });
+
+  it("accepts a trailing-slash redirect preserving an approved query", async () => {
+    vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: "/account/?view=public" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("<html></html>", {
+          headers: { "content-type": "text/html" },
+        }),
+      );
+    expect(
+      await fetchPageHtml("https://site.example/account?view=public", {
+        origin: scope.origin,
+        paths: ["/account?view=public"],
+      }),
+    ).toEqual({
+      html: "<html></html>",
+      url: "https://site.example/account/?view=public",
+    });
+  });
+
+  it.each(["text/html; charset=utf-8", "Application/XHTML+XML; charset=UTF-8"])(
+    "accepts HTML with media type %s",
+    async (contentType) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("<html></html>", {
+          headers: { "content-type": contentType },
+        }),
+      );
+      expect(await fetchPageHtml("https://site.example/", scope)).toEqual({
+        html: "<html></html>",
+        url: "https://site.example/",
+      });
+    },
+  );
+
+  it.each(["application/json", "text/plain", "text/html-unknown", null])(
+    "rejects a non-HTML response with media type %s",
+    async (contentType) => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response(
+          new TextEncoder().encode('<script src="/preview.js"></script>'),
+          {
+            headers: contentType ? { "content-type": contentType } : {},
+          },
+        ),
+      );
+      await expect(
+        fetchPageHtml("https://site.example/", scope),
+      ).rejects.toThrow("page response is not HTML");
+    },
+  );
 
   it("rejects failed responses and bodies over the cap", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response("no", { status: 500 }),
     );
-    await expect(
-      fetchPageHtml("https://site.example/", "https://site.example"),
-    ).rejects.toThrow("HTTP 500");
+    await expect(fetchPageHtml("https://site.example/", scope)).rejects.toThrow(
+      "HTTP 500",
+    );
     vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
       new Response(new Uint8Array(3_000_000)),
     );
-    await expect(
-      fetchPageHtml("https://site.example/", "https://site.example"),
-    ).rejects.toThrow("over the size cap");
+    await expect(fetchPageHtml("https://site.example/", scope)).rejects.toThrow(
+      "over the size cap",
+    );
   });
 });

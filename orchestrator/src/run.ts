@@ -950,7 +950,7 @@ export class Run extends DurableObject<Env> {
           throw new Error("every approved page needs sign-in");
         document = await fetchPageHtml(
           new URL(path, scope.origin).href,
-          scope.origin,
+          scope,
           signal,
         );
         fetchedNote = FETCHED_HTML_LIMIT;

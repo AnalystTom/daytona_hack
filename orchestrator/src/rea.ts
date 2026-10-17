@@ -1,6 +1,10 @@
 // REA code evidence: turns sandbox/rea-scan.mjs output into evidence items. Each finding keeps
 // its bundle's SHA-256 and a source locator; static findings never prove runtime behaviour.
-import { redactQuery } from "../../src/shared/evidence";
+import {
+  type CaptureScope,
+  inScope,
+  redactQuery,
+} from "../../src/shared/evidence";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { Parser } from "htmlparser2";
 import { SandboxCleanupError } from "./daytona";
@@ -163,14 +167,14 @@ async function getBounded(
   url: string,
   limit: number,
   signal: AbortSignal,
-  origin?: string,
+  scope?: CaptureScope,
 ) {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const checked = checkTargetUrl(current);
     if ("error" in checked) throw new Error(checked.error);
-    if (origin && new URL(checked.url).origin !== origin)
-      throw new Error("redirected outside the approved origin");
+    if (scope && !inScope(checked.url, scope))
+      throw new Error("page URL outside the approved scope");
     const res = await fetch(checked.url, { redirect: "manual", signal });
     const location = res.headers.get("location");
     if (res.status >= 300 && res.status < 400 && location) {
@@ -206,25 +210,36 @@ async function getBounded(
       body.set(chunk, at);
       at += chunk.byteLength;
     }
-    return { body: body.buffer, url: checked.url };
+    return {
+      body: body.buffer,
+      url: checked.url,
+      contentType: res.headers.get("content-type"),
+    };
   }
   throw new Error("too many redirects");
 }
 
 const MAX_HTML_BYTES = 2_000_000;
 
-/** Fetches a page's HTML server-side (not browser-rendered); every hop must stay on `origin`. */
+/** Fetches a page's HTML server-side (not browser-rendered); every hop must stay in `scope`. */
 export async function fetchPageHtml(
   url: string,
-  origin: string,
+  scope: CaptureScope,
   signal?: AbortSignal,
 ) {
-  const { body, url: final } = await getBounded(
+  const {
+    body,
+    url: final,
+    contentType,
+  } = await getBounded(
     url,
     MAX_HTML_BYTES,
     AbortSignal.any([AbortSignal.timeout(15_000), ...(signal ? [signal] : [])]),
-    origin,
+    scope,
   );
+  const mediaType = contentType?.split(";")[0]?.trim().toLowerCase();
+  if (mediaType !== "text/html" && mediaType !== "application/xhtml+xml")
+    throw new Error("page response is not HTML");
   return { html: new TextDecoder().decode(body), url: final };
 }
 
