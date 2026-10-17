@@ -325,7 +325,7 @@ describe("observed report figures", () => {
     expect(figures.map((f) => [f.value, f.period])).toEqual([
       ["$1 Trillion", "2026"],
       ["$1 trillion", "2026"],
-      ["$581 billion", "2026"],
+      ["$581 billion", ""],
       ["1.8%", "2026"],
       ["0.9%", "2026"],
       ["2.5%", "2027"],
@@ -350,6 +350,78 @@ describe("observed report figures", () => {
       }
       expect(figure.location.path).toBeTruthy();
     }
+  });
+  it.each([
+    "Investment in 2026 is $5 billion, while investment in 2027 is $6 billion.",
+    "Investment is $5 billion in 2026, while investment is $6 billion in 2027.",
+    "Investment in 2026 is $5 billion; investment in 2027 is $6 billion.",
+    "Investment in 2026 is $5 billion and investment in 2027 is $6 billion.",
+    "Investment is $5 billion in 2026 whereas investment is $6 billion in 2027.",
+    "Investment in 2026 is $5 billion but investment is $6 billion in 2027.",
+    "Investment in 2026 is $5 billion, investment in 2027 is $6 billion.",
+    "Investment is $5 billion in 2026 to $6 billion in 2027.",
+  ])("keeps measurement periods within their own clauses: %s", (quote) => {
+    const article = extractFigures(`<p>${quote}</p>`);
+    for (const heading of ["title", "subtitle"]) {
+      const headlines = extractChart(
+        chart
+          .replace("layout.title", `layout.${heading}`)
+          .replace(
+            "Goldman Sachs Research estimates companies will invest $1.019 trillion globally in AI this year",
+            quote,
+          ),
+        "chart1",
+      ).filter((f) => f.group === "key_figures");
+      for (const figures of [article, headlines]) {
+        expect(figures.map((f) => [f.value, f.period])).toEqual([
+          ["$5 billion", "2026"],
+          ["$6 billion", "2027"],
+        ]);
+        expect(figures[0]?.label).not.toContain("2027");
+        expect(figures[1]?.label).not.toContain("2026");
+      }
+    }
+  });
+  it.each([
+    ["Investment in 2026 and 2027 is $5 billion.", ""],
+    ["Investment in 2026 for 2027 is $5 billion.", ""],
+    ["Investment is $5 billion for 2026 by 2027.", ""],
+    ["Investment is $5 billion, while revenue in 2027 is $6 billion.", ""],
+    ["Revenue in 2027 is $6 billion, while investment is $5 billion.", ""],
+    ["Investment in 2026 is $5 billion.", "2026"],
+    ["Investment is $5 billion in 2026.", "2026"],
+  ])("retains only an unambiguous period for %s", (quote, period) => {
+    expect(
+      extractFigures(`<p>${quote}</p>`).find((f) => f.value === "$5 billion")
+        ?.period,
+    ).toBe(period);
+  });
+  it("passes clause periods into naming and rejects labels from another clause", async () => {
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      const input = JSON.parse(opts.input as string);
+      expect(input.naming.map((f: { period: string }) => f.period)).toEqual([
+        "2026",
+        "2027",
+      ]);
+      opts.onSearchCalls?.(1);
+      return {
+        sources: [],
+        traces: [],
+        labels: input.naming.map((f: { id: string }, i: number) => ({
+          figureId: f.id,
+          label: `Investment, ${i === 0 ? "2027" : "2026"}`,
+        })),
+      };
+    });
+    const report = await dissect(env, "run", {
+      html: "<p>Investment in 2026 is $5 billion, while investment in 2027 is $6 billion.</p>",
+      url: "https://publisher.example/report",
+      capturedAt: "2026-10-17T04:18:32.733Z",
+      hash: "capture-hash",
+    });
+    expect(report.figures.map((f) => f.period)).toEqual(["2026", "2027"]);
+    expect(report.figures[0]?.label).not.toContain("2027");
+    expect(report.figures[1]?.label).not.toContain("2026");
   });
   it.each([
     "Since 2022 cumulative AI investment will total $1.8 trillion by the end of this year.",

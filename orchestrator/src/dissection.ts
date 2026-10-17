@@ -133,13 +133,14 @@ export function figureQuantities(quote: string) {
       (y) =>
         y.start >= sentence.from &&
         y.end <= sentence.to &&
-        /\b(?:in|for|by|during)\s*$/i.test(quote.slice(sentence.from, y.start)),
+        /\b(?:in|for|by|during)\s*$/i.test(
+          quote.slice(sentence.from, y.start),
+        ) &&
+        !/[,;:]|\b(?:and|but|while|whereas|to)\b/i.test(
+          quote.slice(Math.min(q.end, y.end), Math.max(q.start, y.start)),
+        ),
     );
-    const period =
-      (
-        near.find((y) => y.start >= q.end) ??
-        near.filter((y) => y.end <= q.start).at(-1)
-      )?.value ?? "";
+    const period = near.length === 1 ? near[0]!.value : "";
     return [
       { ...q, period, sentence: sentence.text, sentenceStart: sentence.from },
     ];
