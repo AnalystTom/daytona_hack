@@ -60,7 +60,7 @@ The verifier has its own instructions and runs outside the sandbox, so it stays 
 
 ### Report dissection
 
-The [report demo](../spec.md#financial-report-demo) branches from the website workflow below. Only the exact URL and goal in [`src/shared/report.ts`](../../src/shared/report.ts) auto-approve scope. Other goals explicitly asking to reconstruct, rebuild or dissect a report require approval in chat or through the approve route, then use report dissection instead of website planning. A bare `report` keyword does not select report dissection.
+[Report dissection](../spec.md#financial-report-dissection) branches from the website workflow below. A brief that explicitly asks to reconstruct, rebuild or dissect a report (for example the article address plus “Reconstruct this report: …”) follows the normal brief: one question round in chat, then approval in chat or through the approve route, and then uses report dissection instead of website planning. No address or wording auto-approves scope. A bare `report` keyword does not select report dissection.
 
 The report path runs `brief` → `inspecting` → `done` (or `failed` / `stopped`). It captures the article, parses available embedded Flourish chart data without executing source JavaScript, researches original sources, confirms persistence and emits a `report` event. The product spec owns its output and replay behavior.
 
@@ -246,7 +246,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
 - Run access: see section 8.
-- Report demo: see the [product scope](../spec.md#financial-report-demo) and [report workflow](#report-dissection).
+- Report dissection: see the [product scope](../spec.md#financial-report-dissection) and [report workflow](#report-dissection).
 
 ## 14. Open questions
 

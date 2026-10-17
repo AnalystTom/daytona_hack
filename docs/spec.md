@@ -11,7 +11,7 @@ That board revision replaces the earlier confirmation form, six-stage stepper an
 
 ## 1. Public landing page and app entry
 
-Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). Website runs move through the Spec canvas to Build and review; the [financial report demo](#financial-report-demo) stays in Spec.
+Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). Website runs move through the Spec canvas to Build and review; the [financial report dissection](#financial-report-dissection) stays in Spec.
 
 ### Public landing page
 
@@ -37,7 +37,7 @@ Rules:
 ![Entry A: chat start with the beaver and starter prompts](screens/board-entry-a.png)
 
 - A centred greeting ("What would you like to make yours?", "Share a website and a goal. We'll refine the rest in chat."), one composer and the beaver.
-- Four starters, which are prompt suggestions rather than past projects: Goldman Sachs report, Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Inspect a website.
+- Three starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Inspect a website.
 - A starter fills an editable draft; Send carries the same brief into the workspace chat.
 - Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
 
@@ -47,7 +47,6 @@ Rules:
 
 - An empty session shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
 - No questionnaire or input form, and no spec, capture or task card until it actually exists.
-- The empty Spec canvas also offers the report starter described in the [README](../README.md#report-demo).
 - A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
 
 ## 2. Session workspaces: canvas on the left, chat on the right
@@ -119,16 +118,14 @@ The user can promote an alternative; building then continues from that alternati
 
 At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
 
-### Financial report demo
+### Financial report dissection
 
-The current demo target is Goldman Sachs' global AI investment article:
-`https://www.goldmansachs.com/insights/articles/global-investment-is-forecast-to-exceed-1-trillion-in-2026`.
-The Goldman Sachs starter fixes and approves its report-only scope and research plan automatically.
+A user types a report's address with an instruction such as “Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.” That brief is routed to report dissection like any other brief: one question round in chat, then the user approves the plan. Nothing is hard-coded to one report; the Goldman Sachs article on global AI investment is the reference example.
 It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
 The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
 Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.
 "Observed" means read from the article or its embedded chart; it does not establish independent verification. "Exact source quote match" requires the [bounded quote-evidence rule](orchestrator/spec.md#report-dissection); uncertain comparisons show "Unverified online" with both available quotations retained.
-Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. A failed live demo can replay only the most recent successful demo run and labels its original run ID, completion time and live failure reason; without one, the run fails explicitly.
+Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. If the live run fails, it can replay only the most recent successful dissection of the same address and labels its original run ID, completion time and live failure reason; without one, the run fails explicitly.
 This path starts no build workers or variants; REA and changes to login or account management are out of scope. The website workflow remains available separately.
 A figure Reversy could not read is marked "not observed", never filled in.
 
@@ -174,7 +171,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
 - Run authentication and workspace ownership follow the [README's access policy](../README.md#who-can-use-runs).
-- Report scope and exclusions: see [Financial report dissection](#financial-report-demo). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
+- Report scope and exclusions: see [Financial report dissection](#financial-report-dissection). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
 - Run scope and the first demo target: see section 5.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

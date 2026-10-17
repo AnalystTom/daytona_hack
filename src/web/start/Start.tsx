@@ -16,7 +16,6 @@ import {
 import "./start.css";
 
 const starterButtons: { starter: Starter; icon: IconName; tone: string }[] = [
-  { starter: starters.goldman, icon: "search", tone: "pistachio" },
   { starter: starters.daytona, icon: "link", tone: "pistachio" },
   { starter: starters.interaction, icon: "click", tone: "persimmon" },
   { starter: starters.inspect, icon: "search", tone: "pistachio" },

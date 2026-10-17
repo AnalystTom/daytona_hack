@@ -1,13 +1,5 @@
 import { z } from "zod";
 
-export const GOLDMAN_URL =
-  "https://www.goldmansachs.com/insights/articles/global-investment-is-forecast-to-exceed-1-trillion-in-2026";
-export const GOLDMAN_GOAL =
-  "Goldman Sachs demo: Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed. Search online for the original reports and datasets behind every figure. Fixed scope: this report dissection only. Approve this scope and its research plan automatically; no website rebuild, REA, variants, or build workers.";
-export const GOLDMAN_BRIEF = `${GOLDMAN_URL}\n${GOLDMAN_GOAL}`;
-export const isGoldmanDemo = (url: string, goal: string) =>
-  url === GOLDMAN_URL && goal === GOLDMAN_GOAL;
-
 export const ReportLocation = z.object({
   kind: z.enum(["html", "chart_data", "screenshot"]),
   start: z.int().nonnegative(),

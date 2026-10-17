@@ -371,7 +371,7 @@ it("validates and forwards report edits behind the existing operator gate", asyn
   const { env, seen } = setup();
   const path = "/api/v1/runs/report-run/report-edit";
   const json = { figureId: "f1", edit: { label: "User label", value: "580" } };
-  expect((await call(path, { method: "POST", json }, env))?.status).toBe(401);
+  expect((await call(path, { method: "POST", json }, env))?.status).toBe(403);
   expect(seen).toHaveLength(0);
   expect(
     (await call(path, { method: "POST", headers: operator, json }, env))

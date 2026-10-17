@@ -60,12 +60,12 @@ OPERATOR_TOKEN=... npm run example:save -- [runId]
 
 Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
 
-## Report demo
+## Report dissection
 
-At `/start`, choose **Goldman Sachs report** and send its draft unchanged, or use the same button in an empty `/workspace` to submit it immediately.
+At `/start` or in an empty `/workspace`, type a report's address with an instruction such as `Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.` Answer the question round and approve the plan; nothing is approved automatically.
 Creating runs currently requires the operator token or a valid signed session cookie; enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
 Reopen saved runs using the [workspace session controls](#workspace).
-See the [financial report demo](docs/spec.md#financial-report-demo) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
+See [financial report dissection](docs/spec.md#financial-report-dissection) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
 

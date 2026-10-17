@@ -86,8 +86,6 @@ function ScreenshotCard({ item }: { item: CanvasEvidence }) {
         <p className="muted">{notObservedReason(item.limitations.join(" "))}</p>
       ) : error ? (
         <p role="status">Source screenshot unavailable.</p>
-      ) : !src ? (
-        <p role="status">Loading screenshot…</p>
       ) : (
         <img
           className="evidence-media"

@@ -8,9 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { afterEach, assert, expect, it, vi } from "vitest";
-import { GOLDMAN_GOAL, GOLDMAN_URL } from "../../shared/report";
 import { Canvas } from "./Canvas";
-import { Workspace } from "./Workspace";
 
 vi.mock("react", async (original) => ({
   ...(await original<typeof import("react")>()),
@@ -76,38 +74,4 @@ it("still starts a pan on empty canvas space", () => {
   const capture = vi.fn();
   surface().onPointerDown?.(pointer([], capture));
   expect(capture).toHaveBeenCalledExactlyOnceWith(7);
-});
-
-it("clicking the workspace Goldman starter submits its brief without pointer capture", () => {
-  const fetcher = vi
-    .fn()
-    .mockResolvedValue(
-      Response.json({ message: "Run service unavailable" }, { status: 501 }),
-    );
-  vi.stubGlobal("fetch", fetcher);
-  const canvas = elements(Workspace({})).find((node) => node.type === Canvas);
-  assert(canvas);
-  const starter = elements(canvas.props.children).find(
-    (node) =>
-      node.type === "button" && node.props.children === "Goldman Sachs report",
-  );
-  assert(starter);
-  const capture = vi.fn();
-  const event = pointer(["button"], capture);
-  const handlers = surface(canvas.props.children);
-  handlers.onPointerDown?.(event);
-  handlers.onPointerUp?.(event);
-  expect(capture).not.toHaveBeenCalled();
-  const click = (starter as ReactElement<ComponentProps<"button">>).props
-    .onClick;
-  assert(click);
-  click({} as MouseEvent<HTMLButtonElement>);
-  expect(fetcher).toHaveBeenCalledExactlyOnceWith(
-    "/api/v1/runs",
-    expect.objectContaining({ method: "POST" }),
-  );
-  expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({
-    url: GOLDMAN_URL,
-    goal: GOLDMAN_GOAL,
-  });
 });

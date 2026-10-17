@@ -1,4 +1,4 @@
-import { GOLDMAN_URL, ReportDissection } from "../../src/shared/report";
+import { ReportDissection } from "../../src/shared/report";
 import { SurrealRunStore } from "../../src/worker/store/surreal";
 import type { Env, Evidence } from "./types";
 
@@ -18,13 +18,13 @@ function store(env: Env) {
   return new SurrealRunStore({ url, namespace, database, user, password });
 }
 
-export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
+export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
   const { report } = snapshot;
   // JSON literals preserve strings that SurrealDB's RPC variables coerce into record IDs.
   await store(env).query(
     `BEGIN TRANSACTION;
     UPSERT type::record('report_run', $id) CONTENT {
-      runId: $id, target: $target, demo: $demo, successful: $successful,
+      runId: $id, target: $target, successful: $successful,
       completedAt: $completedAt, snapshot: $snapshot
     };
     FOR $figure IN ${JSON.stringify(report.figures)} {
@@ -40,10 +40,7 @@ export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
     COMMIT TRANSACTION;`,
     {
       id: report.runId,
-      target: demo
-        ? GOLDMAN_URL
-        : (report.sources.find((source) => source.id === "article")?.url ?? ""),
-      demo,
+      target,
       successful: !report.replay,
       completedAt: report.completedAt,
       snapshot: JSON.stringify(snapshot),
@@ -63,10 +60,13 @@ export async function saveReport(env: Env, snapshot: Snapshot, demo: boolean) {
     throw new Error("Report persistence could not be confirmed");
 }
 
-export async function latestReport(env: Env): Promise<Snapshot | undefined> {
+export async function latestReport(
+  env: Env,
+  target: string,
+): Promise<Snapshot | undefined> {
   const [rows] = await store(env).query(
-    `SELECT snapshot, completedAt FROM report_run WHERE demo = true AND successful = true AND target = $target ORDER BY completedAt DESC LIMIT 1`,
-    { target: GOLDMAN_URL },
+    `SELECT snapshot, completedAt FROM report_run WHERE successful = true AND target = $target ORDER BY completedAt DESC LIMIT 1`,
+    { target },
   );
   const row = (rows as { snapshot: string }[])[0];
   if (!row) return undefined;

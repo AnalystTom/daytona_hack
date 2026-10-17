@@ -1,10 +1,9 @@
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
+import { ReportDissection } from "../../src/shared/report";
 import {
-  GOLDMAN_GOAL,
   GOLDMAN_URL,
-  ReportDissection,
-} from "../../src/shared/report";
-import { reportContractExample } from "../../src/shared/report.test-data";
+  reportContractExample,
+} from "../../src/shared/report.test-data";
 import {
   createSession,
   endSession,
@@ -107,6 +106,28 @@ function createRun(env: Partial<Env> = {}) {
 }
 const report = () => ReportDissection.parse(reportContractExample);
 
+// A typed report-dissection brief: the user answers the one question round, then approves the plan.
+const REPORT_GOAL =
+  "Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.";
+async function startReport(
+  run: Run,
+  id: string,
+  url = GOLDMAN_URL,
+  goal = REPORT_GOAL,
+) {
+  // The entered address has no redirects; nothing here reaches the network.
+  vi.stubGlobal("fetch", async () => new Response("", { status: 200 }));
+  vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
+  vi.mocked(llmJson).mockResolvedValueOnce({
+    reply: "Review the report scope",
+    spec: {},
+    userApproved: false,
+  });
+  const brief = structuredClone(await run.start(id, url, goal));
+  await run.approveSpec();
+  return brief;
+}
+
 it.each([false, true])(
   "replays only originating capture evidence after research fails, prior screenshot=%s",
   async (hasScreen) => {
@@ -160,7 +181,7 @@ it.each([false, true])(
       makeCapture("prior capture", hasScreen),
     );
     vi.mocked(dissect).mockResolvedValueOnce(priorReport);
-    await previous.run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await startReport(previous.run, "test-run");
     await previous.run.alarm();
     const priorState = await previous.run.getState();
     const runs = {
@@ -178,7 +199,7 @@ it.each([false, true])(
       report: priorReport,
       evidence: priorState.evidence,
     });
-    await current.run.start("new-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await startReport(current.run, "new-run");
     await current.run.alarm();
     const state = await current.run.getState();
     expect(state.report).toMatchObject({
@@ -285,8 +306,8 @@ it.each([false, true])(
   },
 );
 
-describe("bounded Goldman Sachs demo", () => {
-  it("approves the fixed scope and research plan then persists a dashboard without a build worker", async () => {
+describe("report dissection run", () => {
+  it("waits for the user to approve the scope, then persists a dashboard without a build worker", async () => {
     const { run, data } = createRun();
     vi.mocked(captureReport).mockResolvedValue({
       article: {
@@ -302,18 +323,23 @@ describe("bounded Goldman Sachs demo", () => {
       pageHeight: 900,
     });
     vi.mocked(dissect).mockResolvedValue(report());
-    const start = await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    const start = await startReport(run, "test-run");
     expect(start).toMatchObject({
+      phase: "brief",
+      spec: { approved: false },
+    });
+    expect(captureReport).not.toHaveBeenCalled();
+    expect(await run.getState()).toMatchObject({
       phase: "inspecting",
-      demo: true,
-      spec: { approved: true, flows: [], openQuestions: [] },
+      pending: "report",
+      spec: { approved: true },
     });
     expect(start.sandboxId).toBeUndefined();
     await run.alarm();
     expect(saveReport).toHaveBeenCalledWith(
       expect.anything(),
       { report: report(), evidence: [] },
-      true,
+      GOLDMAN_URL,
     );
     expect(await run.getState()).toMatchObject({
       phase: "done",
@@ -330,6 +356,36 @@ describe("bounded Goldman Sachs demo", () => {
     );
     expect(await run.getState()).not.toHaveProperty("sandboxId");
   });
+  it("dissects any report address and saves it under that address", async () => {
+    const { run } = createRun();
+    const address = "https://example.org/research/annual-report";
+    vi.mocked(captureReport).mockResolvedValue({
+      article: {
+        html: "captured",
+        url: address,
+        capturedAt: report().completedAt,
+        hash: "hash",
+      },
+      evidence: [],
+      blobs: {},
+      boxes: [],
+      pageWidth: 1440,
+      pageHeight: 900,
+    });
+    vi.mocked(dissect).mockResolvedValue(report());
+    await startReport(run, "any-run", address);
+    await run.alarm();
+    expect(captureReport).toHaveBeenCalledWith(
+      expect.anything(),
+      address,
+      expect.anything(),
+    );
+    expect(saveReport).toHaveBeenCalledWith(
+      expect.anything(),
+      { report: report(), evidence: [] },
+      address,
+    );
+  });
   it("labels replay with its original run and timestamp when live capture fails", async () => {
     const { run } = createRun();
     vi.mocked(captureReport).mockRejectedValue(
@@ -339,8 +395,9 @@ describe("bounded Goldman Sachs demo", () => {
       report: report(),
       evidence: [],
     });
-    await run.start("new-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await startReport(run, "new-run");
     await run.alarm();
+    expect(latestReport).toHaveBeenCalledWith(expect.anything(), GOLDMAN_URL);
     const state = await run.getState();
     expect(state.report).toMatchObject({
       runId: "new-run",
@@ -356,7 +413,7 @@ describe("bounded Goldman Sachs demo", () => {
     const { run } = createRun();
     vi.mocked(captureReport).mockRejectedValue(new Error("Capture failed"));
     vi.mocked(latestReport).mockResolvedValue(undefined);
-    await run.start("new-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await startReport(run, "new-run");
     await run.alarm();
     expect(await run.getState()).toMatchObject({
       phase: "failed",
@@ -380,7 +437,7 @@ describe("bounded Goldman Sachs demo", () => {
       pageHeight: 900,
     });
     vi.mocked(dissect).mockResolvedValue(report());
-    await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+    await startReport(run, "test-run");
     await run.alarm();
     const edited = await run.editReport("f1", {
       label: "Edited",
@@ -424,10 +481,10 @@ it("closes the report Anchor session on stop before capture finishes", async () 
         started();
       }),
   );
+  const { run, data } = createRun({ ANCHORBROWSER_API_KEY: "test" });
+  await startReport(run, "test-run");
   const fetcher = vi.fn();
   vi.stubGlobal("fetch", fetcher);
-  const { run, data } = createRun({ ANCHORBROWSER_API_KEY: "test" });
-  await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
   const alarm = run.alarm();
   await capturing;
   await run.stop();
@@ -466,6 +523,10 @@ it("stops report research without starting source requests or replay", async () 
   const researching = new Promise<void>((resolve) => {
     started = resolve;
   });
+  const { run } = createRun();
+  await startReport(run, "test-run");
+  const fetcher = vi.fn();
+  vi.stubGlobal("fetch", fetcher);
   vi.mocked(llmJson).mockImplementationOnce(
     () =>
       new Promise((resolve) => {
@@ -473,10 +534,6 @@ it("stops report research without starting source requests or replay", async () 
         started();
       }),
   );
-  const fetcher = vi.fn();
-  vi.stubGlobal("fetch", fetcher);
-  const { run } = createRun();
-  await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
   const alarm = run.alarm();
   await researching;
   await run.stop();
@@ -510,7 +567,7 @@ it("keeps a stopped report stopped when its in-flight capture later finishes", a
         finish = resolve;
       }),
   );
-  await run.start("test-run", GOLDMAN_URL, GOLDMAN_GOAL);
+  await startReport(run, "test-run");
   const alarm = run.alarm();
   await run.stop();
   finish({
@@ -604,7 +661,7 @@ it.each([
     expect(saveReport).toHaveBeenCalledWith(
       expect.anything(),
       { report: report(), evidence: [] },
-      false,
+      GOLDMAN_URL,
     );
     await expect(run.startBuild()).rejects.toThrow(
       "does not start build workers",

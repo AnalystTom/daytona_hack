@@ -33,11 +33,7 @@ import {
 } from "./scope";
 import { RunTracer } from "./tracing";
 import { isReportGoal } from "./report";
-import {
-  isGoldmanDemo,
-  ReportEdit,
-  type ReportDissection,
-} from "../../src/shared/report";
+import { ReportEdit, type ReportDissection } from "../../src/shared/report";
 import { dissect } from "./dissection";
 import { attachRegions, captureReport } from "./report-capture";
 import { latestReport, saveEdit, saveReport } from "./report-store";
@@ -79,7 +75,6 @@ interface State {
     | "report";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
   report?: ReportDissection;
-  demo?: boolean;
   error?: string;
   startedAt?: number; // epoch ms; runs from before this field have no time limit
 }
@@ -281,26 +276,6 @@ export class Run extends DurableObject<Env> {
     await this.emit("phase", { phase: "brief" }, signal);
     await this.addChat("user", `${url}\n${goal}`, signal);
     await this.beforeWork();
-    if (isGoldmanDemo(url, goal)) {
-      this.s.demo = true;
-      this.s.spec.approved = true;
-      this.s.spec.pages[0].confirmed = true;
-      this.s.spec.pages[0].notes =
-        "Report figures, editable investment breakdown, source locations and bounded online source research";
-      this.s.spec.flows = [];
-      this.s.phase = "inspecting";
-      this.s.pending = "report";
-      await this.emit("spec", this.s.spec, signal);
-      await this.emit("phase", { phase: this.s.phase }, signal);
-      await this.addChat(
-        "assistant",
-        "Goldman Sachs demo scope and research plan approved: capture the live report and investment chart, extract every observed number, search online for original sources, then save the editable dissection. No build workers are needed.",
-        signal,
-      );
-      await this.save(signal);
-      await this.ctx.storage.setAlarm(Date.now() + 100);
-      return this.s;
-    }
     // The entered URL's redirects (wikipedia.com to wikipedia.org) decide the approved origin.
     const site = await resolveRedirects(entered);
     if (signal.aborted) return this.s;
@@ -428,14 +403,13 @@ export class Run extends DurableObject<Env> {
       await saveReport(
         this.env,
         { report, evidence: this.s.evidence },
-        this.s.demo === true,
+        this.s.spec.url,
       );
       if (this.reportStopped()) return;
       this.s.report = report;
     } catch (error) {
       if (this.reportStopped()) return;
-      if (!this.s.demo) throw error;
-      const previous = await latestReport(this.env);
+      const previous = await latestReport(this.env, this.s.spec.url);
       if (this.reportStopped()) return;
       if (!previous || previous.report.runId === this.s.id)
         throw new Error(
@@ -468,7 +442,7 @@ export class Run extends DurableObject<Env> {
       await saveReport(
         this.env,
         { report: this.s.report, evidence: this.s.evidence },
-        true,
+        this.s.spec.url,
       );
     }
     if (this.reportStopped()) return;

@@ -62,8 +62,10 @@ describe.skipIf(!config.url)("report persistence in real SurrealDB", () => {
     ].map((label, i) => ({ ...report.figures[0], id: `f${i}`, label }));
     report.sources[0].title = 'US: source "quoted"; RETURN "data"; € 🌍';
     const snapshot = { report, evidence: [] };
-    await saveReport(env, snapshot, true);
-    expect(await latestReport(env)).toEqual(snapshot);
+    await saveReport(env, snapshot, report.sources[0].url ?? "");
+    expect(await latestReport(env, report.sources[0].url ?? "")).toEqual(
+      snapshot,
+    );
     const [figures] = await db.query("SELECT original FROM report_figure");
     const originals = (figures as { original: { id: string } }[])
       .map((row) => row.original)
@@ -92,6 +94,8 @@ describe.skipIf(!config.url)("report persistence in real SurrealDB", () => {
       "SELECT label, value FROM report_edit WHERE run = type::record('report_run', 'other-run')",
     );
     expect(other).toEqual([{ label: "US: US private", value: "" }]);
-    expect(await latestReport(env)).toEqual(snapshot);
+    expect(await latestReport(env, report.sources[0].url ?? "")).toEqual(
+      snapshot,
+    );
   });
 });

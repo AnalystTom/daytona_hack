@@ -13,7 +13,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 
 | Method and path | Body | Does |
 |---|---|---|
-| `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run and returns state with the first chat reply; website briefs take a first look, while the exact report starter schedules dissection automatically (see [workflow](spec.md#report-dissection)) |
+| `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run and returns state with the first chat reply; website briefs take a first look, while a brief that explicitly asks to reconstruct or dissect a report schedules dissection once approved (see [workflow](spec.md#report-dissection)) |
 | `GET /runs/:id` | | Full run state (`State` in [`run.ts`](../../orchestrator/src/run.ts)), including an optional report defined by [`ReportDissection`](../../src/shared/report.ts) |
 | `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |

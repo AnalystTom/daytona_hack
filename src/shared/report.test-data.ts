@@ -1,4 +1,6 @@
-import { GOLDMAN_URL } from "./report";
+// The Goldman Sachs article is one real report used as a fixture; report dissection works for any report URL.
+export const GOLDMAN_URL =
+  "https://www.goldmansachs.com/insights/articles/global-investment-is-forecast-to-exceed-1-trillion-in-2026";
 
 export const repeatedQuantityExamples = [
   "Revenue was USD 35 billion per year; losses were -USD 35 billion.",

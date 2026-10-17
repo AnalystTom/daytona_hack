@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { GOLDMAN_BRIEF } from "../../shared/report";
 import type { SpecCanvas } from "../../shared/workspace";
 import type { Override } from "../build/BuildBoard";
 import { navigate } from "../router";
@@ -430,16 +429,6 @@ export function Workspace({
             >
               {view === "spec" ? (
                 <>
-                  {!runId && !fixture && (
-                    <button
-                      type="button"
-                      className="button report-starter"
-                      disabled={pending}
-                      onClick={() => onSend(GOLDMAN_BRIEF)}
-                    >
-                      Goldman Sachs report
-                    </button>
-                  )}
                   <SpecView
                     canvas={canvas}
                     onSaveReport={async (figureId, edit) => {
