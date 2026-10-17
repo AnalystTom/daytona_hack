@@ -444,15 +444,6 @@ export async function inspectBackend(
     }
   }
 
-  // shortcut: REA is not installed in the sandbox yet, so code-level evidence is recorded as not observed; capture it once REA runs there.
-  await add({
-    kind: "code",
-    tool: "rea",
-    status: "not_observed",
-    limits:
-      "REA analysis of shipped JavaScript bundles is not available in this build",
-    summary: `REA analysis of ${facts.scripts.length} script bundles not run`,
-  });
   signal?.throwIfAborted();
   return { evidence, blobs };
 }

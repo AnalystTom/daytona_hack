@@ -293,7 +293,7 @@ describe("run scope", () => {
     // a page path that leaves the run's site is never fetched
     expect(state.evidence.some((e: Evidence) => e.page === "/x")).toBe(false);
 
-    // evidence: network observations, with honest labels; REA stays not observed
+    // evidence: network observations, with honest labels; REA records why it did not run
     const after = state.evidence.slice(1) as Evidence[];
     expect(after.some((e) => e.kind === "screenshot")).toBe(false);
     expect(after).toContainEqual(
@@ -378,7 +378,15 @@ describe("run scope", () => {
     expect(plan?.instructions).toContain("sections/NAME.html");
     expect(plan?.instructions).not.toContain("server/routes");
     expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02"]);
-    expect(state.evidence.some((e: Evidence) => e.kind === "code")).toBe(false);
+    // REA reads the page's bundles for frontend runs too; this page ships none
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        tool: "rea",
+        status: "not_observed",
+        limits: "the page ships no external script bundles",
+      }),
+    );
   });
 
   it("emits unrestricted chat and plan prompts for a combined run", async () => {

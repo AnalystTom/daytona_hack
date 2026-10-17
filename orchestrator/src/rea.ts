@@ -108,3 +108,129 @@ export function reaEvidence(
     };
   });
 }
+
+// Per-run bounds: a few bundles, a few megabytes, one short-lived sandbox for at most REA_SECONDS.
+export const MAX_BUNDLES = 8;
+const MAX_BUNDLE_BYTES = 4_000_000;
+const MAX_TOTAL_BYTES = 12_000_000;
+const REA_SECONDS = 120;
+const REA_DIR = "/tmp/rea-bundles";
+
+/** Script bundle URLs a page ships (script src and module preloads), absolute, deduplicated. */
+export function scriptUrls(html: string, base: string, max = MAX_BUNDLES) {
+  const urls = new Set<string>();
+  const tags =
+    /<script\b[^>]*\bsrc\s*=\s*["']?([^"'\s>]+)|<link\b(?=[^>]*\brel\s*=\s*["']?modulepreload)[^>]*\bhref\s*=\s*["']?([^"'\s>]+)/gi;
+  for (const m of html.matchAll(tags)) {
+    try {
+      const u = new URL((m[1] ?? m[2]).replace(/&amp;/g, "&"), base);
+      if (u.protocol === "https:" || u.protocol === "http:") urls.add(u.href);
+    } catch {}
+    if (urls.size >= max) break;
+  }
+  return [...urls];
+}
+
+/** Downloads bundles within the byte caps; REA only parses .js/.mjs names, so each keeps one. */
+export async function fetchBundles(urls: string[], signal?: AbortSignal) {
+  const files: Record<string, string> = {};
+  const contents: Record<string, ArrayBuffer> = {};
+  const skipped: string[] = [];
+  let total = 0;
+  for (const [i, url] of urls.entries()) {
+    signal?.throwIfAborted();
+    try {
+      const res = await fetch(url, {
+        signal: AbortSignal.any([
+          AbortSignal.timeout(15_000),
+          ...(signal ? [signal] : []),
+        ]),
+      });
+      const body = res.ok ? await res.arrayBuffer() : undefined;
+      if (!body) skipped.push(`${redactQuery(url)} (HTTP ${res.status})`);
+      else if (
+        body.byteLength > MAX_BUNDLE_BYTES ||
+        total + body.byteLength > MAX_TOTAL_BYTES
+      )
+        skipped.push(`${redactQuery(url)} (over the size cap)`);
+      else {
+        total += body.byteLength;
+        const name = `${i}${new URL(url).pathname.endsWith(".mjs") ? ".mjs" : ".js"}`;
+        files[name] = url;
+        contents[name] = body;
+      }
+    } catch (e) {
+      signal?.throwIfAborted();
+      skipped.push(`${redactQuery(url)} (${String(e).slice(0, 80)})`);
+    }
+  }
+  return { files, contents, skipped };
+}
+
+export interface ReaSandbox {
+  create(opts: {
+    snapshot?: string;
+    labels?: Record<string, string>;
+  }): Promise<{ id: string }>;
+  remove(id: string): Promise<void>;
+  writeFile(id: string, path: string, content: ArrayBuffer): Promise<void>;
+  exec(
+    id: string,
+    command: string,
+    opts?: { timeout?: number },
+  ): Promise<{ exitCode: number; result: string }>;
+}
+
+/**
+ * Code evidence for a page: fetch its bundles here (the sandbox cannot reach the site), scan them
+ * with REA in a throwaway sandbox, then delete it. Never throws except on abort: any failure
+ * becomes one not_observed item with the reason.
+ */
+export async function reaInspect(
+  daytona: ReaSandbox,
+  html: string,
+  base: string,
+  opts: { snapshot?: string; labels?: Record<string, string> },
+  signal?: AbortSignal,
+): Promise<Fields[]> {
+  const urls = scriptUrls(html, base);
+  if (!urls.length)
+    return [reaNotObserved("the page ships no external script bundles", 0)];
+  const { files, contents, skipped } = await fetchBundles(urls, signal);
+  const note = skipped.length ? ` Skipped: ${skipped.join("; ")}.` : "";
+  if (!Object.keys(files).length)
+    return [reaNotObserved(`no script bundle could be fetched.${note}`, 0)];
+  let id: string | undefined;
+  try {
+    id = (await daytona.create(opts)).id;
+    for (const [name, body] of Object.entries(contents)) {
+      signal?.throwIfAborted();
+      await daytona.writeFile(id, `${REA_DIR}/${name}`, body);
+    }
+    signal?.throwIfAborted();
+    const r = await daytona.exec(
+      id,
+      `node /opt/reversy/sandbox/rea-scan.mjs ${REA_DIR} ${REA_SECONDS}`,
+      { timeout: REA_SECONDS + 30 },
+    );
+    let scan: unknown;
+    try {
+      scan = JSON.parse(r.result.trim().split("\n").at(-1) ?? "");
+    } catch {
+      scan = { error: `scan exited ${r.exitCode}: ${r.result.slice(-200)}` };
+    }
+    return reaEvidence(scan, files).map((e) =>
+      note ? { ...e, limits: `${e.limits};${note}`.slice(0, 600) } : e,
+    );
+  } catch (e) {
+    signal?.throwIfAborted();
+    return [
+      reaNotObserved(
+        `REA sandbox failed: ${String((e as Error)?.message ?? e)}`,
+        Object.keys(files).length,
+      ),
+    ];
+  } finally {
+    if (id) await daytona.remove(id).catch(() => {});
+  }
+}
