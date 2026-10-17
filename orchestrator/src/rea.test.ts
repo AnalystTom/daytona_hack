@@ -301,6 +301,108 @@ describe("REA sandbox ownership", () => {
       DAYTONA_API_KEY: "test",
     } as Env);
 
+  it("interrupts stalled allocation and reports unknown cleanup ownership", async () => {
+    const stop = new AbortController();
+    let allocated!: () => void;
+    const started = new Promise<void>((resolve) => {
+      allocated = resolve;
+    });
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url, init) => {
+        if (String(url) === "https://site.example/main.js")
+          return new Response("fetch('/api/x')");
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason),
+            { once: true },
+          );
+          allocated();
+        });
+      });
+    const result = reaInspect(
+      client(),
+      '<script src="main.js"></script>',
+      "https://site.example/",
+      {},
+      stop.signal,
+    );
+    const rejected = expect(result).rejects.toThrow(
+      "Sandbox allocation unconfirmed",
+    );
+    await started;
+    stop.abort();
+    await rejected;
+    expect(
+      fetcher.mock.calls.filter(([, init]) => init?.method === "DELETE"),
+    ).toHaveLength(0);
+  });
+
+  it("bounds allocation even without a cancellation signal", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      const controller = new AbortController();
+      setTimeout(
+        () => controller.abort(new DOMException("Timed out", "TimeoutError")),
+        ms,
+      );
+      return controller.signal;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(
+      async (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason),
+            { once: true },
+          );
+        }),
+    );
+    const result = client().create({});
+    const rejected = expect(result).rejects.toThrow(
+      "Sandbox allocation unconfirmed",
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+  });
+
+  it.each(["network", "missing ID", "server error"])(
+    "reports unconfirmed allocation after %s",
+    async (failure) => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        if (failure === "network") throw new TypeError("connection lost");
+        return failure === "server error"
+          ? new Response("error", { status: 503 })
+          : Response.json({});
+      });
+      await expect(client().create({})).rejects.toThrow(
+        "Sandbox allocation unconfirmed",
+      );
+    },
+  );
+
+  it("keeps a definitive allocation refusal as not observed", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+      String(url) === "https://site.example/main.js"
+        ? new Response("fetch('/api/x')")
+        : new Response("quota exceeded", { status: 429 }),
+    );
+    expect(
+      (
+        await reaInspect(
+          client(),
+          '<script src="main.js"></script>',
+          "https://site.example/",
+          {},
+        )
+      )[0],
+    ).toMatchObject({
+      status: "not_observed",
+      limits: expect.stringContaining("quota exceeded"),
+    });
+  });
+
   it.each(["error", "build_failed", "timeout"])(
     "deletes allocated sandboxes after startup %s",
     async (state) => {

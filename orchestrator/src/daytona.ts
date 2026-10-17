@@ -2,8 +2,20 @@
 import type { Env } from "./types";
 
 export class SandboxCleanupError extends Error {
-  constructor(id: string, cause: unknown) {
-    super(`Sandbox ${id} cleanup unconfirmed: ${String(cause)}`, { cause });
+  constructor(id: string | undefined, cause: unknown) {
+    super(
+      `${id ? `Sandbox ${id} cleanup` : "Sandbox allocation"} unconfirmed: ${String(cause)}`,
+      { cause },
+    );
+  }
+}
+
+class DaytonaResponseError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
   }
 }
 
@@ -26,7 +38,8 @@ export class Daytona {
     });
     const text = await res.text();
     if (!res.ok)
-      throw new Error(
+      throw new DaytonaResponseError(
+        res.status,
         `daytona ${init.method || "GET"} ${url.split("?")[0]} ${res.status}: ${text.slice(0, 300)}`,
       );
     return (text ? JSON.parse(text) : {}) as T;
@@ -43,20 +56,33 @@ export class Daytona {
     signal?: AbortSignal,
   ) {
     signal?.throwIfAborted();
-    const sb = await this.call(`${this.env.DAYTONA_API_URL}/sandbox`, {
-      method: "POST",
-      body: JSON.stringify({
-        target: this.env.DAYTONA_TARGET,
-        env: opts.env || {},
-        snapshot: opts.snapshot,
-        labels: opts.labels || {},
-        public: false, // the preview is reached only through short-lived signed links
-        autoStopInterval: opts.autoStopInterval ?? 60,
-        ...(opts.autoDeleteInterval !== undefined && {
-          autoDeleteInterval: opts.autoDeleteInterval,
+    let sb: { id: string };
+    try {
+      sb = await this.call(`${this.env.DAYTONA_API_URL}/sandbox`, {
+        method: "POST",
+        signal: AbortSignal.any([
+          AbortSignal.timeout(30_000),
+          ...(signal ? [signal] : []),
+        ]),
+        body: JSON.stringify({
+          target: this.env.DAYTONA_TARGET,
+          env: opts.env || {},
+          snapshot: opts.snapshot,
+          labels: opts.labels || {},
+          public: false,
+          autoStopInterval: opts.autoStopInterval ?? 60,
+          ...(opts.autoDeleteInterval !== undefined && {
+            autoDeleteInterval: opts.autoDeleteInterval,
+          }),
         }),
-      }),
-    });
+      });
+      if (typeof sb?.id !== "string" || !sb.id)
+        throw new Error("Daytona returned no sandbox ID");
+    } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status < 500)
+        throw error;
+      throw new SandboxCleanupError(undefined, error);
+    }
     try {
       for (let i = 0; i < 60; i++) {
         signal?.throwIfAborted();

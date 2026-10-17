@@ -952,7 +952,7 @@ export class Run extends DurableObject<Env> {
         ]);
     const fields = await this.reaInspection;
     const source = new URL(document?.url ?? this.s.spec.url);
-    const page = source.pathname + source.search;
+    const page = redactQuery(source.pathname + source.search);
     let n = this.s.evidence.length + 1;
     await this.storeEvidence(
       fields.map((f) => ({
