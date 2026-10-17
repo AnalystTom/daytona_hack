@@ -318,7 +318,7 @@ export function backendFacts(html: string, base: string) {
   };
 }
 
-/** Back-end evidence for one route: the response itself, the APIs it points at, crawl files, code analysis. */
+/** Back-end evidence for one route: response metadata, retained HTML, inferred API references and crawl files. */
 export async function inspectBackend(
   url: string,
   startId: number,

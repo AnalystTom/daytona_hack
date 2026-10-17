@@ -928,7 +928,7 @@ export class Run extends DurableObject<Env> {
     return (await this.originalDocument())?.html ?? "";
   }
 
-  /** REA decomposes the first captured page's script bundles into code evidence (one throwaway sandbox). */
+  /** REA scans the first retained, observed document in approved scope (one throwaway sandbox). */
   private async inspectCode(signal: AbortSignal) {
     const document = await this.originalDocument();
     signal.throwIfAborted();

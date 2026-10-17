@@ -112,7 +112,7 @@ export function reaEvidence(
   });
 }
 
-// Per-run bounds: a few bundles, a few megabytes, one short-lived sandbox for at most REA_SECONDS.
+// Per-run bounds: a few bundles, a few megabytes, and a scan of at most REA_SECONDS.
 export const MAX_BUNDLES = 8;
 const MAX_BUNDLE_BYTES = 4_000_000;
 const MAX_TOTAL_BYTES = 12_000_000;
@@ -260,7 +260,7 @@ export interface ReaSandbox {
 }
 
 /**
- * Code evidence for a page: fetch its bundles here (the sandbox cannot reach the site), scan them
+ * Code evidence for a page: fetch its bundles here under the URL and byte limits, scan them
  * with REA in a throwaway sandbox, then delete it.
  */
 export async function reaInspect(
