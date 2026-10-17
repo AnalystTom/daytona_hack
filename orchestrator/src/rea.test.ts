@@ -100,7 +100,8 @@ describe("scriptUrls", () => {
 
 describe("reaInspect", () => {
   afterEach(() => vi.restoreAllMocks());
-  const html = '<script src="/main.js"></script><script src="/gone.js"></script>';
+  const html =
+    '<script src="/main.js"></script><script src="/gone.js"></script>';
   const sandbox = (result: string, exitCode = 0) => {
     const writes: string[] = [];
     const sb: ReaSandbox & { writes: string[]; removed: string[] } = {
@@ -114,11 +115,13 @@ describe("reaInspect", () => {
     return sb;
   };
   const serve = () =>
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
-      String(url).endsWith("/main.js")
-        ? new Response("fetch('/api/x')")
-        : new Response("", { status: 404 }),
-    );
+    vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) =>
+        String(url).endsWith("/main.js")
+          ? new Response("fetch('/api/x')")
+          : new Response("", { status: 404 }),
+      );
 
   it("scans fetched bundles in a throwaway sandbox and removes it", async () => {
     serve();
@@ -153,7 +156,9 @@ describe("reaInspect", () => {
 
   it("records not_observed when there is nothing to scan or the sandbox fails", async () => {
     expect(
-      (await reaInspect(sandbox(""), "<p>hi</p>", "https://site.example/", {}))[0],
+      (
+        await reaInspect(sandbox(""), "<p>hi</p>", "https://site.example/", {})
+      )[0],
     ).toMatchObject({
       status: "not_observed",
       limits: "the page ships no external script bundles",
@@ -179,8 +184,12 @@ describe("reaInspect", () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(new Uint8Array(4_000_001)),
     );
-    const { files, skipped } = await fetchBundles(["https://site.example/big.js"]);
+    const { files, skipped } = await fetchBundles([
+      "https://site.example/big.js",
+    ]);
     expect(files).toEqual({});
-    expect(skipped).toEqual(["https://site.example/big.js (over the size cap)"]);
+    expect(skipped).toEqual([
+      "https://site.example/big.js (over the size cap)",
+    ]);
   });
 });

@@ -418,6 +418,26 @@
   color: var(--aubergine);
 }
 
+.code-findings {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.875rem;
+}
+
+.code-findings li {
+  display: grid;
+  gap: 0.15rem;
+  overflow-wrap: anywhere;
+}
+
+.code-locator {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
 /* Build view */
 
 .build-board {
