@@ -1,6 +1,6 @@
 // OpenAI (structured outputs), SurrealDB Agent Memory, page HTML — all over plain fetch.
 import type { RunTracer } from "./tracing";
-import type { Env } from "./types";
+import { type Env, USER_AGENT } from "./types";
 
 // Set by the Run that owns this isolate's current work, so every model call lands in its trace.
 export const tracing: { current?: RunTracer } = {};
@@ -198,7 +198,7 @@ export async function pageHtml(
   }
   await beforeWork?.();
   const res = await fetch(url, {
-    headers: { "User-Agent": "Mozilla/5.0 (Macintosh) Reversy-Inspector" },
+    headers: { "User-Agent": USER_AGENT },
   });
   return { html: await res.text(), tool: "fetch" };
 }

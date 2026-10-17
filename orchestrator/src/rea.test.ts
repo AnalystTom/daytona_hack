@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Daytona } from "./daytona";
-import type { Env } from "./types";
+import { type Env, USER_AGENT } from "./types";
 import {
   fetchBundles,
   fetchPageHtml,
@@ -215,6 +215,23 @@ describe("reaInspect", () => {
       reaInspect(sb, html, "https://site.example/", {}, stop.signal),
     ).rejects.toThrow("run stopped");
     expect(sb.removed).toEqual(["sb1"]);
+  });
+
+  it("sends the Reversy User-Agent on page and bundle fetches", async () => {
+    const spy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(
+        async () =>
+          new Response("ok", { headers: { "content-type": "text/html" } }),
+      );
+    await fetchPageHtml("https://site.example/", {
+      origin: "https://site.example",
+      paths: ["/"],
+    });
+    await fetchBundles(["https://site.example/a.js"]);
+    expect(spy).toHaveBeenCalledTimes(2);
+    for (const [, init] of spy.mock.calls)
+      expect(init?.headers).toEqual({ "User-Agent": USER_AGENT });
   });
 
   it("skips bundles over the size cap", async () => {

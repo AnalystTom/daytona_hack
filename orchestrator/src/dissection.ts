@@ -9,7 +9,7 @@ import { decodeHTML } from "entities";
 import { DomUtils, parseDocument } from "htmlparser2";
 import { articleText } from "./report";
 import { llmJson, sha256 } from "./services";
-import type { Env } from "./types";
+import { type Env, USER_AGENT } from "./types";
 
 export const cleanText = (text: string) =>
   decodeHTML(
@@ -206,6 +206,7 @@ export async function sourceFetch(url: string, signal?: AbortSignal) {
   for (let hop = 0; hop < 4; hop++) {
     signal?.throwIfAborted();
     const response = await fetch(checked.url, {
+      headers: { "User-Agent": USER_AGENT },
       redirect: "manual",
       signal: signal
         ? AbortSignal.any([signal, AbortSignal.timeout(20000)])

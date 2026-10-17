@@ -136,3 +136,6 @@ export interface ChatMessage {
   text: string;
   ts: string;
 }
+
+// Some sites (Wikipedia) reject requests with no User-Agent, so every fetch of a target page sends this.
+export const USER_AGENT = "Mozilla/5.0 (Macintosh) Reversy-Inspector";
