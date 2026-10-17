@@ -129,8 +129,8 @@ describe("observed report figures", () => {
     const label = (id: string) =>
       report.figures.find((f) => f.id === id)?.label;
     expect(label("article_f1")).toBe("Global AI investment, 2026");
-    expect(label("article_f2")).toBe("Amount");
-    expect(label("article_f3")).toBe("Amount, 2026");
+    expect(label("article_f2")).toBe(extractFigures(captured)[1]?.label);
+    expect(label("article_f3")).toBe(extractFigures(captured)[2]?.label);
     expect(label("chart1_f0_0")).toBe("US: US public");
   });
   it.each([...uncertainQuantityExamples, ...incompleteQuantityExamples])(
@@ -324,6 +324,7 @@ describe("observed report figures", () => {
     const figures = extractFigures(html);
     expect(figures.map((f) => [f.value, f.period])).toEqual([
       ["$1 Trillion", "2026"],
+      ["$1 trillion", "2026"],
       ["$581 billion", "2026"],
       ["1.8%", "2026"],
       ["0.9%", "2026"],
@@ -335,8 +336,7 @@ describe("observed report figures", () => {
     expect(figures.map((f) => f.id)).toEqual(
       figures.map((_, i) => `article_f${i + 1}`),
     );
-    // "$1 trillion" in the body is the title's figure restated, so it is a location of it.
-    expect(figures[0]?.mentions).toHaveLength(1);
+    expect(figures[0]?.mentions).toBeUndefined();
     for (const figure of figures) {
       expect(figure.status).toBe("observed");
       expect(figure.sourceId).toBe("article");
@@ -350,6 +350,97 @@ describe("observed report figures", () => {
       }
       expect(figure.location.path).toBeTruthy();
     }
+  });
+  it.each([
+    "Since 2022 cumulative AI investment will total $1.8 trillion by the end of this year.",
+    "Cumulative AI investment of $1.8 trillion since 2022 is forecast by the end of this year.",
+    "Investment since 2022 totals $1.8 trillion.",
+  ])(
+    "leaves cumulative start years unset in article and chart headlines: %s",
+    (quote) => {
+      const article = extractFigures(`<p>${quote}</p>`);
+      for (const heading of ["title", "subtitle"]) {
+        const headlines = extractChart(
+          chart
+            .replace("layout.title", `layout.${heading}`)
+            .replace(
+              "Goldman Sachs Research estimates companies will invest $1.019 trillion globally in AI this year",
+              quote,
+            ),
+          "chart1",
+        ).filter((f) => f.group === "key_figures");
+        for (const figures of [article, headlines]) {
+          expect(figures).toHaveLength(1);
+          expect(figures[0]).toMatchObject({
+            value: "$1.8 trillion",
+            period: "",
+          });
+          expect(figures[0]?.label).not.toContain("2022");
+        }
+      }
+    },
+  );
+  it("keeps distinct equal measures and supplies each occurrence's sentence for naming", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(chart)));
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      const input = JSON.parse(opts.input as string);
+      const amounts = input.naming.filter(
+        (f: { value: string }) => f.value === "$200 billion",
+      );
+      expect(amounts).toHaveLength(2);
+      expect(amounts[0].sentence).toContain("understates");
+      expect(amounts[0].sentence).not.toContain("overstates");
+      expect(amounts[1].sentence).toContain("overstates");
+      expect(amounts[1].sentence).not.toContain("understates");
+      const cumulative = input.naming.find(
+        (f: { value: string }) => f.value === "$1.8 trillion",
+      );
+      expect(cumulative.period).toBe("");
+      opts.onSearchCalls?.(1);
+      return {
+        sources: [],
+        traces: [],
+        labels: [
+          { figureId: amounts[0].id, label: "Understated global AI capex" },
+          { figureId: amounts[1].id, label: "Overstated US AI investment" },
+          { figureId: cumulative.id, label: "Cumulative AI investment, 2022" },
+        ],
+      };
+    });
+    const report = await dissect(env, "run", {
+      html: captured,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-17T04:18:32.733Z",
+      hash: "capture-hash",
+    });
+    const amounts = report.figures.filter((f) => f.value === "$200 billion");
+    expect(amounts.map((f) => f.label)).toEqual([
+      "Understated global AI capex",
+      "Overstated US AI investment",
+    ]);
+    for (const f of amounts) {
+      expect(
+        f.quote.slice(f.quantityStart, (f.quantityStart ?? 0) + f.value.length),
+      ).toBe(f.value);
+      expect(cleanText(captured.slice(f.location.start, f.location.end))).toBe(
+        f.quote,
+      );
+    }
+    expect(amounts[0]?.quantityStart).not.toBe(amounts[1]?.quantityStart);
+    expect(
+      report.figures.find((f) => f.value === "$1.8 trillion")?.label,
+    ).not.toContain("2022");
+  });
+  it("retains repeated measurement locations within and across paragraphs", () => {
+    const sentence = "Global capex reached $200 billion in 2026.";
+    const figures = extractFigures(
+      `<p>${sentence} ${sentence}</p><p>${sentence}</p>`,
+    );
+    expect(figures).toHaveLength(1);
+    expect(figures[0]?.mentions).toHaveLength(2);
+    expect(figures[0]?.mentions?.[0]?.quantityStart).not.toBe(
+      figures[0]?.quantityStart,
+    );
   });
   it("treats years and dates as context and skips site chrome", () => {
     const figures = extractFigures(captured);
@@ -371,12 +462,13 @@ describe("observed report figures", () => {
   });
   it("keeps one figure for a repeated value but every distinct place it appears", () => {
     const figures = extractFigures(
-      "<p>Capex reached $794 billion in 2026.</p><p>Analysts repeat $794 billion for 2026.</p><p>Without a year, $794 billion differs.</p><p>Revenue was $5 billion; assets were $5 billion.</p>",
+      "<p>Capex reached $794 billion in 2026.</p><p>Capex reached $794 billion in 2026.</p><p>Analysts repeat $794 billion for 2026.</p><p>Without a year, $794 billion differs.</p><p>Revenue was $5 billion; assets were $5 billion.</p>",
     );
     expect(
       figures.map((f) => [f.value, f.period, f.mentions?.length ?? 0]),
     ).toEqual([
       ["$794 billion", "2026", 1],
+      ["$794 billion", "2026", 0],
       ["$794 billion", "", 0],
       ["$5 billion", "", 0],
       ["$5 billion", "", 0],

@@ -20,6 +20,7 @@ export const ReportLocation = z.object({
 export const ReportMention = z.object({
   quote: z.string().min(1),
   location: ReportLocation,
+  quantityStart: z.int().nonnegative().optional(),
 });
 export const ReportFigure = z.object({
   id: z.string().min(1),
@@ -34,6 +35,7 @@ export const ReportFigure = z.object({
   group: z.enum(["key_figures", "investment_breakdown", "not_observed"]),
   /** Year or span the source ties the figure to; context, never a figure of its own. */
   period: z.string().optional(),
+  quantityStart: z.int().nonnegative().optional(),
   /** Further places the same value and meaning appears; `location` is the first. */
   mentions: z.array(ReportMention).optional(),
   /** Row and series of a chart cell, so the dashboard can group the breakdown. */

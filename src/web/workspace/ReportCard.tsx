@@ -118,16 +118,16 @@ export function ReportCard({
             group === "investment_breakdown" &&
             figures.every((f) => f.breakdown)
           )
-            return (
-              figures.length > 0 && (
+            return [...new Set(figures.map((f) => f.sourceId))].map(
+              (sourceId) => (
                 <BreakdownTable
-                  key={group}
+                  key={sourceId}
                   report={report}
-                  figures={figures}
+                  figures={figures.filter((f) => f.sourceId === sourceId)}
                   selected={selected}
                   onSelect={setSelected}
                 />
-              )
+              ),
             );
           return (
             figures.length > 0 && (
@@ -229,7 +229,7 @@ export function ReportCard({
                   <h4>Also appears in {figure.mentions.length} more</h4>
                   <ul>
                     {figure.mentions.map((m) => (
-                      <li key={m.location.start}>
+                      <li key={`${m.location.start}:${m.quantityStart ?? 0}`}>
                         <blockquote>{m.quote}</blockquote>
                         <small>
                           {m.location.path}
@@ -406,12 +406,12 @@ function BreakdownTable({
   const source = report.sources.find((s) => s.id === figures[0]?.sourceId);
   return (
     <section aria-label="Investment breakdown">
-      <h4>Investment breakdown</h4>
+      <h4>Investment breakdown{source && `: ${source.title}`}</h4>
       <div className="report-table-scroll">
         <table className="report-table report-breakdown">
           <caption>
-            Values from the chart's published data ({figures[0]?.unit}), kept as
-            published; no totals are added.
+            Values from the chart's published data ({figures[0]?.unit}). User
+            edits are marked; originals are retained. No totals are added.
             {source?.url && (
               <>
                 {" "}
@@ -451,12 +451,18 @@ function BreakdownTable({
                           type="button"
                           className="report-number"
                           onClick={() => onSelect(f.id)}
-                          aria-label={`Inspect ${f.value || "not observed"}: ${report.edits[f.id]?.label ?? f.label}`}
+                          aria-label={`Inspect ${shown(report, f)}: ${report.edits[f.id]?.label ?? f.label}`}
                         >
                           {shown(report, f)}
                         </button>
                       ) : (
                         "Not observed"
+                      )}
+                      {f && report.edits[f.id] && (
+                        <>
+                          <small>{report.edits[f.id].label}</small>
+                          <small>Edited; original retained</small>
+                        </>
                       )}
                     </td>
                   );

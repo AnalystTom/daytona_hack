@@ -1,3 +1,4 @@
+import { DomUtils, parseDocument } from "htmlparser2";
 import { renderToStaticMarkup } from "react-dom/server";
 import { assert, describe, expect, it } from "vitest";
 import { ReportDissection } from "../../shared/report";
@@ -243,6 +244,11 @@ describe("report canvas data", () => {
         cell("c2", "US", "US private", "35"),
         cell("c3", "Global ex-US", "US public", "234"),
         {
+          ...cell("c4", "US", "US public", "777"),
+          sourceId: "chart2",
+          unit: "EUR millions",
+        },
+        {
           ...base,
           id: "n1",
           value: "",
@@ -260,7 +266,15 @@ describe("report canvas data", () => {
           url: "https://charts.example/flourish",
           quoteUrl: "https://charts.example/flourish",
         },
+        {
+          ...reportContractExample.sources[0],
+          id: "chart2",
+          title: "Second chart",
+          url: "https://charts.example/second",
+          quoteUrl: "https://charts.example/second",
+        },
       ],
+      edits: { c1: { label: "My revised investment estimate", value: "999" } },
     });
     const html = renderToStaticMarkup(
       <ReportCard report={report} evidence={[]} />,
@@ -274,5 +288,29 @@ describe("report canvas data", () => {
     expect(html).toContain("Not observed");
     expect(html).toContain("3 figures read from this source");
     expect(html).toContain("Open chart source");
+    const tables = DomUtils.findAll(
+      (node) =>
+        node.name === "table" &&
+        (node.attribs.class ?? "").includes("report-breakdown"),
+      parseDocument(html).children,
+    );
+    expect(tables).toHaveLength(2);
+    const first = DomUtils.textContent(tables[0]!);
+    const second = DomUtils.textContent(tables[1]!);
+    expect(first).toContain("999");
+    expect(first).toContain("My revised investment estimate");
+    expect(first).toContain("Edited; original retained");
+    expect(first).toContain("$ billions");
+    expect(first).not.toContain("777");
+    expect(first).not.toContain("kept as published");
+    expect(first).toContain("User edits are marked");
+    expect(second).toContain("777");
+    expect(second).toContain("EUR millions");
+    expect(second).not.toContain("999");
+    const link = (table: (typeof tables)[number]) =>
+      DomUtils.findOne((node) => node.name === "a", table.children)?.attribs
+        .href;
+    expect(link(tables[0]!)).toBe("https://charts.example/flourish");
+    expect(link(tables[1]!)).toBe("https://charts.example/second");
   });
 });

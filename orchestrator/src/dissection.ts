@@ -130,7 +130,10 @@ export function figureQuantities(quote: string) {
       return [];
     const sentence = sentenceAround(quote, q.start, q.end);
     const near = years.filter(
-      (y) => y.start >= sentence.from && y.end <= sentence.to,
+      (y) =>
+        y.start >= sentence.from &&
+        y.end <= sentence.to &&
+        /\b(?:in|for|by|during)\s*$/i.test(quote.slice(sentence.from, y.start)),
     );
     const period =
       (
@@ -146,15 +149,15 @@ export function figureQuantities(quote: string) {
 const CONNECTOR =
   /^(?:of|in|on|for|to|by|from|than|per|at|about|around|including|and|with|a|an|the)$/i;
 const CLAUSE_END =
-  /,|;|:|\(|\s(?:in|for|by|from|according|writes|as|this|compared|than|with|while|and|to)\s/i;
+  /,|;|:|\(|\s(?:in|for|by|from|since|during|according|writes|as|this|compared|than|with|while|and|to)\s/i;
 
 /** Deterministic fallback when no model label is available: what follows the number, else its kind. */
 export function fallbackLabel(
   sentence: string,
-  quantity: { text: string; unit: string },
+  quantity: { text: string; unit: string; start: number },
   period: string,
 ) {
-  const at = sentence.indexOf(quantity.text);
+  const at = quantity.start;
   const after = sentence
     .slice(at + quantity.text.length)
     .split(CLAUSE_END)[0]!
@@ -163,14 +166,27 @@ export function fallbackLabel(
     .split(/\s+/)
     .filter(Boolean);
   while (after[0] && CONNECTOR.test(after[0])) after.shift();
+  const before = sentence
+    .slice(0, at)
+    .split(/[,;:]/)
+    .at(-1)!
+    .replace(/\S*\d\S*/g, "")
+    .replace(/[“”"()]/g, "")
+    .trim()
+    .split(/\s+/)
+    .slice(-7)
+    .join(" ")
+    .slice(0, 60);
   const name =
     after.length > 1
       ? after.join(" ").slice(0, 60)
-      : quantity.unit.includes("%")
-        ? "Percentage"
-        : /[$€£]|USD|EUR|GBP/.test(quantity.unit)
-          ? "Amount"
-          : "Count";
+      : before
+        ? before
+        : quantity.unit.includes("%")
+          ? "Percentage"
+          : /[$€£]|USD|EUR|GBP/.test(quantity.unit)
+            ? "Amount"
+            : "Count";
   return `${name[0]!.toUpperCase()}${name.slice(1)}${period && !name.includes(period) ? `, ${period}` : ""}`;
 }
 
@@ -181,7 +197,6 @@ export function extractFigures(
 ): ReportFigure[] {
   const content = reportContent(html);
   const found = new Map<string, ReportFigure>();
-  const sentences = new Map<string, Set<string>>();
   for (const block of content.matchAll(
     /<(h[1-6]|p|li|figcaption|td|th)\b[^>]*>([\s\S]*?)<\/\1>/gi,
   )) {
@@ -196,23 +211,31 @@ export function extractFigures(
     };
     for (const quantity of figureQuantities(quote)) {
       const observed = quantity.status === "observed";
-      // One figure per value and meaning: the same value, unit and period is one figure.
       const base = observed
         ? `${quantity.value.toLowerCase().replace(/\s+/g, "")}|${quantity.unit.toLowerCase()}|${quantity.period}`
         : `?${quantity.text}|${quantity.period}`;
-      // The same value twice in one sentence ("revenue was X; assets were X") differs in meaning.
-      const spot = `${offset}:${quantity.sentenceStart}`;
-      const places = sentences.get(base) ?? new Set<string>();
-      sentences.set(base, places);
-      const key = places.has(spot) ? `${base}@${spot}` : base;
-      places.add(spot);
+      const at = quantity.start - quantity.sentenceStart;
+      const measurement = (
+        quantity.sentence.slice(0, at) +
+        " [value] " +
+        quantity.sentence.slice(at + quantity.text.length)
+      )
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .trim();
+      const key = `${base}|${measurement}`;
       const first = found.get(key);
       if (first) {
         const seen = [first, ...(first.mentions ?? [])].some(
-          (m) => m.location.start === location.start,
+          (m) =>
+            m.location.start === location.start &&
+            m.quantityStart === quantity.start,
         );
         if (!seen)
-          first.mentions = [...(first.mentions ?? []), { quote, location }];
+          first.mentions = [
+            ...(first.mentions ?? []),
+            { quote, location, quantityStart: quantity.start },
+          ];
         continue;
       }
       found.set(key, {
@@ -220,7 +243,11 @@ export function extractFigures(
         value: quantity.value,
         unit: quantity.unit,
         label: observed
-          ? fallbackLabel(quantity.sentence, quantity, quantity.period)
+          ? fallbackLabel(
+              quantity.sentence,
+              { ...quantity, start: at },
+              quantity.period,
+            )
           : `Unreadable quantity: ${quantity.text}`.slice(0, 60),
         quote,
         sourceId,
@@ -231,6 +258,7 @@ export function extractFigures(
           : "Quantity notation is unsupported; no partial value is published.",
         group: observed ? "key_figures" : "not_observed",
         period: quantity.period,
+        quantityStart: quantity.start,
       });
     }
   }
@@ -309,7 +337,11 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
         value: quantity.value,
         unit: quantity.unit,
         label: observed
-          ? fallbackLabel(text, quantity, quantity.period)
+          ? fallbackLabel(
+              quantity.sentence,
+              { ...quantity, start: quantity.start - quantity.sentenceStart },
+              quantity.period,
+            )
           : `Unreadable quantity: ${quantity.text}`.slice(0, 60),
         quote: text,
         sourceId,
@@ -325,6 +357,7 @@ export function extractChart(html: string, sourceId: string): ReportFigure[] {
           : "Quantity notation is unsupported; no partial value is published.",
         group: observed ? "key_figures" : "not_observed",
         period: quantity.period,
+        quantityStart: quantity.start,
       });
     }
   }
@@ -612,14 +645,15 @@ Also return labels: for every entry of "naming" a concise name (at most eight wo
       })),
       naming: figures
         .filter((f) => f.group === "key_figures" && f.sourceId === "article")
-        .map(({ id, value, period, quote }) => ({
+        .map(({ id, value, period, quote, quantityStart, label }) => ({
           id,
           value,
           period,
+          label,
           sentence: sentenceAround(
             quote,
-            quote.indexOf(value),
-            quote.indexOf(value) + value.length,
+            quantityStart ?? 0,
+            (quantityStart ?? 0) + value.length,
           ).text,
         })),
     }),
