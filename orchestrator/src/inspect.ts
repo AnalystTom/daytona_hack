@@ -343,7 +343,9 @@ export async function inspectBackend(
       page,
       capturedAt: now(),
       hash: blob ? await sha256(blob) : "",
-      ...(blob ? { path: `evidence/${eid}.json` } : {}),
+      ...(blob
+        ? { path: `evidence/${eid}.${e.kind === "html" ? "html" : "json"}` }
+        : {}),
       ...e,
     });
   };
@@ -384,6 +386,21 @@ export async function inspectBackend(
         1,
       ),
     );
+    if (res.ok && headers["content-type"]?.includes("text/html")) {
+      const retained = new TextEncoder().encode(html).byteLength < 1_900_000;
+      await add(
+        {
+          kind: "html",
+          tool: "fetch",
+          status: retained ? "observed" : "not_observed",
+          limits: retained
+            ? "response HTML without a browser session"
+            : "response HTML exceeds the evidence storage cap",
+          summary: `HTML of ${page}`,
+        },
+        retained ? html : undefined,
+      );
+    }
   } catch (e) {
     signal?.throwIfAborted();
     await add({

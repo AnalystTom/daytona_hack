@@ -1,6 +1,12 @@
 // Daytona REST client: sandbox lifecycle + toolbox (exec, async sessions, files).
 import type { Env } from "./types";
 
+export class SandboxCleanupError extends Error {
+  constructor(id: string, cause: unknown) {
+    super(`Sandbox ${id} cleanup unconfirmed: ${String(cause)}`, { cause });
+  }
+}
+
 export class Daytona {
   private toolbox = new Map<string, string>();
   constructor(private env: Env) {}
@@ -26,13 +32,17 @@ export class Daytona {
     return (text ? JSON.parse(text) : {}) as T;
   }
 
-  async create(opts: {
-    env?: Record<string, string>;
-    snapshot?: string;
-    labels?: Record<string, string>;
-    autoStopInterval?: number; // minutes idle before stopping
-    autoDeleteInterval?: number; // minutes stopped before deleting; 0 deletes on stop
-  }) {
+  async create(
+    opts: {
+      env?: Record<string, string>;
+      snapshot?: string;
+      labels?: Record<string, string>;
+      autoStopInterval?: number; // minutes idle before stopping
+      autoDeleteInterval?: number; // minutes stopped before deleting; 0 deletes on stop
+    },
+    signal?: AbortSignal,
+  ) {
+    signal?.throwIfAborted();
     const sb = await this.call(`${this.env.DAYTONA_API_URL}/sandbox`, {
       method: "POST",
       body: JSON.stringify({
@@ -47,24 +57,36 @@ export class Daytona {
         }),
       }),
     });
-    for (let i = 0; i < 60; i++) {
-      const s = await this.get(sb.id);
-      if (s.state === "started") return s;
-      if (s.state === "error" || s.state === "build_failed")
-        throw new Error(`sandbox ${sb.id} ${s.state}`);
-      await sleep(2000);
+    try {
+      for (let i = 0; i < 60; i++) {
+        signal?.throwIfAborted();
+        const s = await this.get(sb.id, signal);
+        signal?.throwIfAborted();
+        if (s.state === "started") return s;
+        if (s.state === "error" || s.state === "build_failed")
+          throw new Error(`sandbox ${sb.id} ${s.state}`);
+        await sleep(2000, signal);
+      }
+      throw new Error(`sandbox ${sb.id} did not start`);
+    } catch (error) {
+      await this.remove(sb.id);
+      throw error;
     }
-    throw new Error(`sandbox ${sb.id} did not start`);
   }
 
-  get(id: string) {
-    return this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`);
+  get(id: string, signal?: AbortSignal) {
+    return this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, { signal });
   }
 
   async remove(id: string) {
-    await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, {
-      method: "DELETE",
-    });
+    try {
+      await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, {
+        method: "DELETE",
+        signal: AbortSignal.timeout(15_000),
+      });
+    } catch (error) {
+      throw new SandboxCleanupError(id, error);
+    }
   }
 
   async previewUrl(id: string, port: number): Promise<string> {
@@ -82,10 +104,11 @@ export class Daytona {
     return r.url;
   }
 
-  private async tb(id: string): Promise<string> {
+  private async tb(id: string, signal?: AbortSignal): Promise<string> {
     if (!this.toolbox.has(id)) {
       const r = await this.call(
         `${this.env.DAYTONA_API_URL}/sandbox/${id}/toolbox-proxy-url`,
+        { signal },
       );
       this.toolbox.set(id, `${r.url}/${id}`);
     }
@@ -96,12 +119,13 @@ export class Daytona {
   async exec(
     id: string,
     command: string,
-    opts: { cwd?: string; timeout?: number } = {},
+    opts: { cwd?: string; timeout?: number; signal?: AbortSignal } = {},
   ) {
     const r = await this.call<{ exitCode: number; result: string }>(
-      `${await this.tb(id)}/process/execute`,
+      `${await this.tb(id, opts.signal)}/process/execute`,
       {
         method: "POST",
+        signal: opts.signal,
         body: JSON.stringify({
           command: `bash -lc ${shq(command)}`,
           cwd: opts.cwd,
@@ -157,13 +181,15 @@ export class Daytona {
     id: string,
     path: string,
     content: string | ArrayBuffer | Uint8Array,
+    signal?: AbortSignal,
   ) {
     const form = new FormData();
     form.append("file", new Blob([content]), path.split("/").pop());
     const res = await fetch(
-      `${await this.tb(id)}/files/upload?path=${encodeURIComponent(path)}`,
+      `${await this.tb(id, signal)}/files/upload?path=${encodeURIComponent(path)}`,
       {
         method: "POST",
+        signal,
         headers: this.headers(false),
         body: form,
       },
@@ -176,4 +202,16 @@ export class Daytona {
 }
 
 export const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+export const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    signal?.throwIfAborted();
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", abort, { once: true });
+  });

@@ -204,6 +204,207 @@ function bindCapture(signIn: SignIn | null = null) {
 }
 
 describe("Run sign-in handoff", () => {
+  it("resolves bundles from a stored DOM document's URL", async () => {
+    const record: EvidenceRecord = {
+      ...redirected,
+      kind: "dom",
+      label: "observed",
+      url: "https://example.com/docs/",
+      pageOrState: "/docs/",
+      contentType: "text/html",
+    };
+    const { run } = await persistedRun(
+      [toEvidence(record)],
+      "awaiting_sign_in",
+    );
+    (await run.getState()).spec.pages.push({ path: "/docs/", confirmed: true });
+    vi.mocked(evidenceStore).mockReturnValue({
+      putEvidence: async () => {},
+      getEvidence: async () => record,
+      getContent: async () =>
+        new TextEncoder().encode('<script src="main.js"></script>'),
+      saveSignIn: async () => {},
+      takeSignIn: async () => null,
+    });
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) => {
+        expect(String(url)).toBe("https://example.com/docs/main.js");
+        return new Response("", { status: 404 });
+      });
+    await run.skipSignIn();
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("planned");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect((await run.getState()).evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        page: "/docs/",
+        status: "not_observed",
+        limits: expect.stringContaining("HTTP 404"),
+      }),
+    );
+  });
+
+  it.each(["skip", "resume"] as const)(
+    "scans only available approved document bundles on %s",
+    async (action) => {
+      const { run, ctx } = await persistedRun(
+        [
+          {
+            id: "ev_001",
+            page: "/unapproved/",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+          {
+            id: "ev_002",
+            page: "/docs/",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+        ],
+        "awaiting_sign_in",
+      );
+      await ctx.storage.put(
+        "blob:ev_001",
+        new TextEncoder().encode('<script src="wrong.js"></script>').buffer,
+      );
+      (await run.getState()).spec.pages.push({
+        path: "/docs/",
+        confirmed: true,
+      });
+      await ctx.storage.put(
+        "blob:ev_002",
+        new TextEncoder().encode(
+          '<base href="assets/"><script src="main.js"></script>',
+        ).buffer,
+      );
+      const fetcher = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (url) => {
+          expect(String(url)).toBe("https://example.com/docs/assets/main.js");
+          return new Response("fetch('/api/x')");
+        });
+      const create = vi
+        .spyOn(Daytona.prototype, "create")
+        .mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+      vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+        exitCode: 0,
+        result: JSON.stringify({
+          findings: [
+            {
+              kind: "api",
+              value: "/api/x",
+              file: "0.js",
+              sha256: "hash",
+              locator: "0.js:1:0",
+              state: "observed",
+            },
+          ],
+        }),
+      });
+      const remove = vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+      captureMock.mockResolvedValue({ status: "captured", items: [] });
+      if (action === "skip") await run.skipSignIn();
+      else await run.resumeSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("planned");
+      expect(vi.mocked(verifyPlan).mock.calls[0]?.[2]).toContainEqual(
+        expect.objectContaining({
+          kind: "code",
+          page: "/docs/",
+          summary: "API call /api/x in https://example.com/docs/assets/main.js",
+        }),
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledWith("rea");
+      if (action === "skip") expect(captureMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "stop awaits REA deletion and reports cleanup failure=%s",
+    async (fails) => {
+      const { run, ctx } = await persistedRun(
+        [
+          {
+            id: "ev_001",
+            page: "/account",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+        ],
+        "awaiting_sign_in",
+      );
+      await ctx.storage.put(
+        "blob:ev_001",
+        new TextEncoder().encode('<script src="main.js"></script>').buffer,
+      );
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("fetch('/api/x')"),
+      );
+      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+      const scanning = deferred<void>();
+      vi.spyOn(Daytona.prototype, "exec").mockImplementation(
+        (_id, _command, opts) =>
+          new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener(
+              "abort",
+              () => reject(opts.signal?.reason),
+              { once: true },
+            );
+            scanning.resolve();
+          }),
+      );
+      const deleting = deferred<void>();
+      const release = deferred<void>();
+      vi.spyOn(Daytona.prototype, "remove").mockImplementation(async () => {
+        deleting.resolve();
+        await release.promise;
+        if (fails) throw new Error("cleanup unconfirmed");
+      });
+      await run.skipSignIn();
+      const alarm = run.alarm();
+      await scanning.promise;
+      const stop = run.stop().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await deleting.promise;
+      expect((await run.getState()).phase).toBe("inspecting");
+      expect((await run.getState()).pending).toBe("stop");
+      release.resolve();
+      if (fails) {
+        expect(await stop).toEqual(new Error("cleanup unconfirmed"));
+        expect((await run.getState()).pending).toBe("stop");
+      } else {
+        expect(await stop).toBeUndefined();
+        expect((await run.getState()).phase).toBe("stopped");
+      }
+      await alarm;
+      expect(verifyPlan).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["skip", "resume", "expired"] as const)(
     "retains public backend evidence across a combined run's %s handoff",
     async (action) => {
@@ -585,6 +786,14 @@ describe("Run sign-in handoff", () => {
     state = await run.getState();
     expect(state.phase).toBe("planned");
     expect(state.signInPaths).toBeUndefined();
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        tool: "rea",
+        status: "not_observed",
+        limits: "no approved page HTML was captured",
+      }),
+    );
     expect(JSON.stringify([state, ctx.events()])).not.toContain(live);
   });
 

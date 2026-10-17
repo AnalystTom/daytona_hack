@@ -121,6 +121,24 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
 
 const SHOWN_FINDINGS = 12;
 
+function CodeFindings({ items }: { items: CanvasEvidence[] }) {
+  return (
+    <ul className="code-findings">
+      {items.map((item) => (
+        <li key={item.id}>
+          <span>{item.summary}</span>
+          <span className="code-locator" title={item.contentHash}>
+            {item.locator ?? item.contentHash}
+            {item.label === "inferred" && (
+              <span className="evidence-label"> Inferred</span>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // One card for REA's static reading of the shipped bundles: each finding with its locator and hash.
 function CodeCard({ items }: { items: CanvasEvidence[] }) {
   const found = items.filter((e) => e.label !== "not_observed");
@@ -133,19 +151,7 @@ function CodeCard({ items }: { items: CanvasEvidence[] }) {
         <h2 className="card-title">Code evidence</h2>
       </header>
       {shown.length ? (
-        <ul className="code-findings">
-          {shown.map((item) => (
-            <li key={item.id}>
-              <span>{item.summary}</span>
-              <span className="code-locator" title={item.contentHash}>
-                {item.locator ?? item.contentHash}
-                {item.label === "inferred" && (
-                  <span className="evidence-label"> Inferred</span>
-                )}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <CodeFindings items={shown} />
       ) : (
         <p className="muted">
           {missing?.summary ?? "No code evidence"}
@@ -153,9 +159,12 @@ function CodeCard({ items }: { items: CanvasEvidence[] }) {
         </p>
       )}
       {found.length > shown.length && (
-        <p className="muted">
-          {found.length - shown.length} more findings feed the plan.
-        </p>
+        <details>
+          <summary className="link-button">
+            Show all {found.length} findings
+          </summary>
+          <CodeFindings items={found.slice(SHOWN_FINDINGS)} />
+        </details>
       )}
       <p className="evidence-caption">
         <span>Static reading by {items[0]?.tool}, not executed</span>

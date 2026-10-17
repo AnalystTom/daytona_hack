@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { Daytona } from "./daytona";
+import type { Env } from "./types";
 import {
   fetchBundles,
   type ReaSandbox,
@@ -85,6 +87,26 @@ describe("reaEvidence", () => {
 });
 
 describe("scriptUrls", () => {
+  it.each(["&amp;", "&AMP;", "&#38;", "&#x26;"])(
+    "uses real attributes and the first base href, decoding %s once",
+    (entity) => {
+      expect(
+        scriptUrls(
+          `<!-- <script src="fake.js"></script><base href="/wrong/"> -->
+        <script src="main.js?x=1${entity}y=2" data-src="wrong.js"></script>
+        <link rel="MODULEPRELOAD alternate" href="extra.mjs" data-href="wrong.mjs">
+        <script data-src="unused.js"></script><link data-rel="modulepreload" href="unused.mjs">
+        <base data-href="/wrong/"><base href="../assets/"><base href="/wrong/">
+        <script src="once.js?x=1&amp;amp;y=2"></script>`,
+          "https://site.example/docs/",
+        ),
+      ).toEqual([
+        "https://site.example/assets/main.js?x=1&y=2",
+        "https://site.example/assets/extra.mjs",
+        "https://site.example/assets/once.js?x=1&amp;y=2",
+      ]);
+    },
+  );
   it("lists script and module preload bundles, absolute and deduplicated", () => {
     const html = `<script src="/a.js"></script><script type="module" src='https://cdn.example/b.mjs?x=1&amp;y=2'></script>
 <script>inline()</script><script src="/a.js"></script><link rel="modulepreload" href="c.mjs"><link rel="stylesheet" href="s.css">
@@ -184,9 +206,9 @@ describe("reaInspect", () => {
     serve();
     const sb = sandbox("");
     const stop = new AbortController();
-    sb.exec = () => {
+    sb.exec = async () => {
       stop.abort(new Error("run stopped"));
-      return new Promise(() => {}); // a scan that would run to its bound
+      throw stop.signal.reason;
     };
     await expect(
       reaInspect(sb, html, "https://site.example/", {}, stop.signal),
@@ -257,10 +279,129 @@ describe("reaInspect", () => {
     const sb = sandbox('{"findings":[],"omitted":0,"truncated":false}');
     const create = vi.spyOn(sb, "create");
     await reaInspect(sb, html, "https://site.example/", { snapshot: "s" });
-    expect(create).toHaveBeenCalledWith({
-      snapshot: "s",
-      autoStopInterval: 5,
-      autoDeleteInterval: 0,
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        snapshot: "s",
+        autoStopInterval: 5,
+        autoDeleteInterval: 0,
+      },
+      undefined,
+    );
   });
+});
+
+describe("REA sandbox ownership", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+  const client = () =>
+    new Daytona({
+      DAYTONA_API_URL: "https://daytona.example",
+      DAYTONA_API_KEY: "test",
+    } as Env);
+
+  it.each(["error", "build_failed", "timeout"])(
+    "deletes allocated sandboxes after startup %s",
+    async (state) => {
+      vi.useFakeTimers();
+      const calls: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        calls.push(`${init?.method ?? "GET"} ${url}`);
+        if (init?.method === "POST") return Response.json({ id: "allocated" });
+        if (init?.method === "DELETE") return new Response("");
+        return Response.json({ id: "allocated", state });
+      });
+      const result = client()
+        .create({})
+        .catch((error: Error) => error);
+      await vi.runAllTimersAsync();
+      expect(await result).toBeInstanceOf(Error);
+      expect(calls.at(-1)).toBe(
+        "DELETE https://daytona.example/sandbox/allocated",
+      );
+    },
+  );
+
+  it.each(["allocation", "poll", "upload", "scan"])(
+    "cancels during %s and confirms deletion",
+    async (stage) => {
+      const stop = new AbortController();
+      const reason = new Error("stopped");
+      const calls: string[] = [];
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const path = String(url);
+        calls.push(`${init?.method ?? "GET"} ${path}`);
+        if (path === "https://site.example/main.js")
+          return new Response("fetch('/api/x')");
+        if (init?.method === "DELETE") return new Response("");
+        if (path === "https://daytona.example/sandbox") {
+          if (stage === "allocation") stop.abort(reason);
+          return Response.json({ id: "allocated" });
+        }
+        if (path.endsWith("toolbox-proxy-url"))
+          return Response.json({ url: "https://toolbox.example" });
+        const blocked =
+          (stage === "poll" && path.endsWith("/sandbox/allocated")) ||
+          (stage === "upload" && path.includes("/files/upload")) ||
+          (stage === "scan" && path.endsWith("/process/execute"));
+        if (blocked) {
+          expect(init?.signal).toBe(stop.signal);
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(init.signal?.reason),
+              { once: true },
+            );
+            stop.abort(reason);
+          });
+        }
+        return Response.json({ id: "allocated", state: "started" });
+      });
+      await expect(
+        reaInspect(
+          client(),
+          '<script src="main.js"></script>',
+          "https://site.example/",
+          {},
+          stop.signal,
+        ),
+      ).rejects.toBe(reason);
+      expect(calls.at(-1)).toBe(
+        "DELETE https://daytona.example/sandbox/allocated",
+      );
+      expect(calls.filter((call) => call.startsWith("DELETE"))).toHaveLength(1);
+    },
+  );
+
+  it.each(["startup", "scan"])(
+    "propagates unconfirmed cleanup after %s",
+    async (stage) => {
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+        const path = String(url);
+        if (path === "https://site.example/main.js")
+          return new Response("fetch('/api/x')");
+        if (init?.method === "DELETE")
+          return new Response("unavailable", { status: 503 });
+        if (path === "https://daytona.example/sandbox")
+          return Response.json({ id: "allocated" });
+        if (path.endsWith("toolbox-proxy-url"))
+          return Response.json({ url: "https://toolbox.example" });
+        if (path.endsWith("/process/execute"))
+          return Response.json({ exitCode: 0, result: '{"findings":[]}' });
+        return Response.json({
+          id: "allocated",
+          state: stage === "startup" ? "error" : "started",
+        });
+      });
+      await expect(
+        reaInspect(
+          client(),
+          '<script src="main.js"></script>',
+          "https://site.example/",
+          {},
+        ),
+      ).rejects.toThrow("Sandbox allocated cleanup unconfirmed");
+    },
+  );
 });

@@ -2,6 +2,8 @@
 // its bundle's SHA-256 and a source locator; static findings never prove runtime behaviour.
 import { redactQuery } from "../../src/shared/evidence";
 import { checkTargetUrl } from "../../src/worker/runs/url";
+import { Parser } from "htmlparser2";
+import { SandboxCleanupError } from "./daytona";
 import type { Evidence } from "./types";
 
 export interface ReaFinding {
@@ -120,15 +122,34 @@ const REA_DIR = "/tmp/rea-bundles";
 /** Script bundle URLs a page ships (script src and module preloads), absolute, deduplicated. */
 export function scriptUrls(html: string, base: string, max = MAX_BUNDLES) {
   const urls = new Set<string>();
-  const tags =
-    /<script\b[^>]*\bsrc\s*=\s*["']?([^"'\s>]+)|<link\b(?=[^>]*\brel\s*=\s*["']?modulepreload)[^>]*\bhref\s*=\s*["']?([^"'\s>]+)/gi;
-  for (const m of html.matchAll(tags)) {
-    try {
-      const u = new URL((m[1] ?? m[2]).replace(/&amp;/g, "&"), base);
-      if (u.protocol === "https:" || u.protocol === "http:") urls.add(u.href);
-    } catch {}
-    if (urls.size >= max) break;
-  }
+  let documentBase = base;
+  let hasBase = false;
+  new Parser({
+    onopentag(name, attrs) {
+      if (name !== "base" || attrs.href === undefined || hasBase) return;
+      hasBase = true;
+      try {
+        documentBase = new URL(attrs.href, base).href;
+      } catch {}
+    },
+  }).end(html);
+  new Parser({
+    onopentag(name, attrs) {
+      if (urls.size >= max) return;
+      const src =
+        name === "script"
+          ? attrs.src
+          : name === "link" &&
+              attrs.rel?.toLowerCase().split(/\s+/).includes("modulepreload")
+            ? attrs.href
+            : undefined;
+      if (src === undefined) return;
+      try {
+        const u = new URL(src, documentBase);
+        if (u.protocol === "https:" || u.protocol === "http:") urls.add(u.href);
+      } catch {}
+    },
+  }).end(html);
   return [...urls];
 }
 
@@ -215,25 +236,32 @@ export async function fetchBundles(urls: string[], signal?: AbortSignal) {
 }
 
 export interface ReaSandbox {
-  create(opts: {
-    snapshot?: string;
-    labels?: Record<string, string>;
-    autoStopInterval?: number;
-    autoDeleteInterval?: number;
-  }): Promise<{ id: string }>;
+  create(
+    opts: {
+      snapshot?: string;
+      labels?: Record<string, string>;
+      autoStopInterval?: number;
+      autoDeleteInterval?: number;
+    },
+    signal?: AbortSignal,
+  ): Promise<{ id: string }>;
   remove(id: string): Promise<void>;
-  writeFile(id: string, path: string, content: ArrayBuffer): Promise<void>;
+  writeFile(
+    id: string,
+    path: string,
+    content: ArrayBuffer,
+    signal?: AbortSignal,
+  ): Promise<void>;
   exec(
     id: string,
     command: string,
-    opts?: { timeout?: number },
+    opts?: { timeout?: number; signal?: AbortSignal },
   ): Promise<{ exitCode: number; result: string }>;
 }
 
 /**
  * Code evidence for a page: fetch its bundles here (the sandbox cannot reach the site), scan them
- * with REA in a throwaway sandbox, then delete it. Never throws except on abort: any failure
- * becomes one not_observed item with the reason.
+ * with REA in a throwaway sandbox, then delete it.
  */
 export async function reaInspect(
   daytona: ReaSandbox,
@@ -254,30 +282,26 @@ export async function reaInspect(
     // No env is passed, so the sandbox holds no secrets. If this worker dies before the finally
     // below, Daytona stops the idle sandbox after 5 minutes and deletes it on stop.
     id = (
-      await daytona.create({
-        ...opts,
-        autoStopInterval: 5,
-        autoDeleteInterval: 0,
-      })
+      await daytona.create(
+        {
+          ...opts,
+          autoStopInterval: 5,
+          autoDeleteInterval: 0,
+        },
+        signal,
+      )
     ).id;
     for (const [name, body] of Object.entries(contents)) {
       signal?.throwIfAborted();
-      await daytona.writeFile(id, `${REA_DIR}/${name}`, body);
+      await daytona.writeFile(id, `${REA_DIR}/${name}`, body, signal);
     }
     signal?.throwIfAborted();
-    // Stopping the run must not wait out the scan: race it against abort so finally removes the sandbox now.
-    const r = await Promise.race([
-      new Promise<never>((_, reject) => {
-        signal?.addEventListener("abort", () => reject(signal.reason), {
-          once: true,
-        });
-      }),
-      daytona.exec(
-        id,
-        `node /opt/reversy/sandbox/rea-scan.mjs ${REA_DIR} ${REA_SECONDS}`,
-        { timeout: REA_SECONDS + 30 },
-      ),
-    ]);
+    const r = await daytona.exec(
+      id,
+      `node /opt/reversy/sandbox/rea-scan.mjs ${REA_DIR} ${REA_SECONDS}`,
+      { timeout: REA_SECONDS + 30, signal },
+    );
+    signal?.throwIfAborted();
     let scan: unknown;
     try {
       scan = JSON.parse(r.result.trim().split("\n").at(-1) ?? "");
@@ -288,6 +312,7 @@ export async function reaInspect(
       note ? { ...e, limits: `${e.limits};${note}`.slice(0, 600) } : e,
     );
   } catch (e) {
+    if (e instanceof SandboxCleanupError) throw e;
     signal?.throwIfAborted();
     return [
       reaNotObserved(
@@ -296,6 +321,6 @@ export async function reaInspect(
       ),
     ];
   } finally {
-    if (id) await daytona.remove(id).catch(() => {});
+    if (id) await daytona.remove(id);
   }
 }
