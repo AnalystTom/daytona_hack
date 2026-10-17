@@ -460,7 +460,7 @@ function BreakdownTable({
                       )}
                       {f && report.edits[f.id] && (
                         <>
-                          <small>{report.edits[f.id].label}</small>
+                          <small>{report.edits[f.id]?.label}</small>
                           <small>Edited; original retained</small>
                         </>
                       )}
