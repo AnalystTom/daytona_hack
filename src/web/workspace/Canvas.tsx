@@ -22,7 +22,7 @@ const STEP = 1.25;
 const KEY_MOVE = 20;
 // A press that moves less than this is a click, not a drag.
 const DRAG_SLOP = 4;
-const INTERACTIVE = "a, button, input, textarea, select, video, label";
+const INTERACTIVE = "a, button, input, textarea, select, video, label, summary";
 
 const clampZoom = (zoom: number) =>
   Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, zoom));
@@ -161,7 +161,11 @@ export function Canvas({
   const pan = useRef<{ id: number; x: number; y: number }>(undefined);
   const onPointerDown = (event: PointerEvent<HTMLDivElement>) => {
     const target = event.target as Element;
-    if (event.button !== 0 || target.closest(`.cv-item, .cv-tools`)) return;
+    if (
+      event.button !== 0 ||
+      target.closest(`.cv-item, .cv-tools, ${INTERACTIVE}`)
+    )
+      return;
     event.currentTarget.setPointerCapture(event.pointerId);
     pan.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
     setEasing(false);

@@ -113,6 +113,8 @@ export default {
         if (parts[3] === "resume") return json(await run.resumeSignIn());
         if (parts[3] === "skip") return json(await run.skipSignIn());
       }
+      if (req.method === "POST" && action === "report-edit")
+        return json(await run.editReport(body.figureId, body.edit));
       if (req.method === "POST" && action === "messages")
         return json(await run.message(body.text));
       if (req.method === "POST" && action === "approve")

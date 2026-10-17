@@ -4,6 +4,11 @@ import type { StoreEnv } from "../../src/worker/store";
 // SURREALDB_* (StoreEnv) hold evidence records and files.
 export interface Env extends StoreEnv {
   RUNS: DurableObjectNamespace;
+  SURREALDB_URL?: string;
+  SURREALDB_NAMESPACE?: string;
+  SURREALDB_DATABASE?: string;
+  SURREALDB_USER?: string;
+  SURREALDB_PASSWORD?: string;
   DAYTONA_API_URL: string;
   DAYTONA_TARGET: string;
   DAYTONA_API_KEY: string;
@@ -12,6 +17,7 @@ export interface Env extends StoreEnv {
   ORCHESTRATOR_MODEL: string;
   VERIFIER_MODEL?: string;
   WORKER_MODEL: string;
+  WORKER_EFFORT?: string;
   MAX_WORKERS: string;
   RUN_MAX_MINUTES?: string; // a run is stopped this long after it started (default 120)
   SPECTRON_URL?: string;
@@ -110,6 +116,7 @@ export interface RunEvent {
   seq: number;
   ts: string;
   type:
+    | "report"
     | "chat"
     | "spec"
     | "evidence"

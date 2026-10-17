@@ -25,6 +25,7 @@ const MediaEvidence = z.object({
   id: z.string().regex(EXAMPLE_ID),
   kind: z.enum(["screenshot", "recording"]),
   url: z.string(),
+  status: z.string().optional(),
 });
 
 export const Snapshot = z.object({
@@ -116,14 +117,21 @@ export async function exportRun(
   events = JSON.parse(json);
 
   const files = new Map<string, MediaFile>();
+  const evidence = new Map<string, z.infer<typeof MediaEvidence>>();
   for (const event of events) {
+    if (event.type !== "evidence") continue;
+    const identity = z.object({ id: z.string() }).safeParse(event.data);
+    if (identity.success) evidence.delete(identity.data.id);
     const media = MediaEvidence.safeParse(event.data);
-    if (event.type !== "evidence" || !media.success) continue;
-    const response = await get(`/evidence/${media.data.id}`);
-    files.set(media.data.id, {
+    if (media.success && media.data.status !== "not_observed")
+      evidence.set(media.data.id, media.data);
+  }
+  for (const media of evidence.values()) {
+    const response = await get(`/evidence/${media.id}`);
+    files.set(media.id, {
       contentType:
         response.headers.get("content-type") ??
-        (media.data.kind === "screenshot" ? "image/png" : "video/mp4"),
+        (media.kind === "screenshot" ? "image/png" : "video/mp4"),
       bytes: new Uint8Array(await response.arrayBuffer()),
     });
   }

@@ -1,9 +1,9 @@
 # Reversy
 
-Reversy takes a site apart and rebuilds it with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
+Reversy takes sites and reports apart with agents. The product spec is in `docs/spec.md` and the agent system in `docs/orchestrator/spec.md`.
 Start with a URL and goal; the [run scope and data policy](docs/spec.md#5-run-scope-and-first-demo-target) apply to each brief.
 
-This repository is one TypeScript project deployed as a single Cloudflare Worker named `reversy`:
+The web app is deployed as a Cloudflare Worker named `reversy`, backed by the private `reversy-orchestrator` Worker:
 
 - `src/web/`: React front end, built with Vite and served as Workers static assets.
 - `src/worker/`: the Worker, which handles `/api/*` (for example `GET /api/health`).
@@ -49,6 +49,7 @@ In a live session, **Preview** becomes available after the run emits a preview e
 The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
 
 Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
+A saved report also exposes its figures and source provenance for inspection; editing is disabled.
 
 Save or replace it with one command, after the Worker is deployed:
 
@@ -59,6 +60,13 @@ OPERATOR_TOKEN=... npm run example:save -- [runId]
 `runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Only runs in `done`, `stopped` or `failed` phase can be saved. An optional second argument selects the site; its default is in the script. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it. Saving requires `ORCHESTRATOR`, `OPERATOR_TOKEN` and the `SURREALDB_*` bindings below; public reads require only the SurrealDB bindings.
 
 Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
+
+## Report dissection
+
+At `/start` or in an empty `/workspace`, type a report's address with an instruction such as `Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.` Answer the question round and approve the plan; nothing is approved automatically.
+Run creation and ownership follow the [run access policy](#who-can-use-runs). After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
+Reopen saved runs using the [workspace session controls](#workspace).
+See [financial report dissection](docs/spec.md#financial-report-dissection) for scope and evidence labels, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
 
@@ -101,7 +109,7 @@ A run request whose `Origin` names another site gets 403, and so does a cookie-a
 Without Cloudflare Access configured, visitors need no token or sign-in. The first run a browser starts is answered with a signed `__Host-reversy_visitor` cookie (HttpOnly, Secure, SameSite=Strict, 30 days). Its HMAC is keyed by `OPERATOR_TOKEN` on the Worker, which never reaches the browser; rotating the token signs every visitor out. That anonymous session owns the runs it starts: it can read, stream, message, approve, build, stop or override them, while other visitor sessions get 404 for the run ID. A visitor who clears cookies loses their run history, and such a visitor still counts toward the network and global limits below.
 In this mode, operators can still send `Authorization: Bearer <OPERATOR_TOKEN>` to act on any run and to use `/api/v1/orchestrator/*`.
 The former `POST` / `DELETE /api/v1/session` endpoint is removed; old `__Host-reversy_session` cookies no longer grant run access.
-The saved example is public and read-only (`/api/v1/example`). Any visitor run, including future report-dissection runs, falls under the same limits.
+The saved example is public and read-only (`/api/v1/example`). Any visitor run, including report-dissection runs, falls under the same limits.
 
 ### Sign-in with Cloudflare Access
 
@@ -180,7 +188,7 @@ Without them the deploy job fails, so a merge to `main` that did not deploy show
 
 ## Run sandbox (Daytona)
 
-Each run gets one Daytona sandbox that holds the agent system (the second engine, `docs/orchestrator/spec.md` section 11): Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+In the second engine (`docs/orchestrator/spec.md` section 11), each run gets one Daytona sandbox that holds Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
 The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
 
 - `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).
@@ -250,7 +258,7 @@ Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandb
 `src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
 It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `POST /v1/tools/screenshot`, `POST /v1/sessions/{id}/recordings/pause`, `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
 Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
-The orchestrator (`orchestrator/`) runs the same capture for its runs, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls.
+For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
 
 | Endpoint | What it does |
 |---|---|

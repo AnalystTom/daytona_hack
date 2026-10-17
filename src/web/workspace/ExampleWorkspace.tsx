@@ -161,7 +161,11 @@ export function ExampleRun({ example }: { example: Example }) {
             >
               {view === "spec" ? (
                 <SpecView
-                  canvas={{ draftSpec: run.draftSpec, evidence: run.evidence }}
+                  canvas={{
+                    draftSpec: run.draftSpec,
+                    evidence: run.evidence,
+                    report: run.report,
+                  }}
                 />
               ) : (
                 <BuildView draftSpec={run.draftSpec} events={run.board} />

@@ -22,6 +22,7 @@ import {
   type RunCallError,
   type RunCallResult,
   runAction,
+  saveReportEdit,
   startSignIn,
 } from "./runClient";
 import { SessionSwitcher } from "./SessionSwitcher";
@@ -96,6 +97,7 @@ export function Workspace({
   phase.current = run.phase;
   const canvas: SpecCanvas = fixture?.canvas ?? {
     draftSpec: run.draftSpec,
+    report: run.report,
     evidence: run.evidence,
   };
   const canBuild = runId !== undefined && run.phase === "planned" && !starting;
@@ -426,7 +428,19 @@ export function Workspace({
               onLayout={onLayout}
             >
               {view === "spec" ? (
-                <SpecView canvas={canvas} />
+                <SpecView
+                  canvas={canvas}
+                  onSaveReport={async (figureId, edit) => {
+                    if (!runId) return false;
+                    const result = await saveReportEdit(runId, figureId, edit);
+                    if (!result.ok) {
+                      addNotice(result);
+                      return false;
+                    }
+                    pollSoon.current?.();
+                    return true;
+                  }}
+                />
               ) : (
                 <BuildView
                   draftSpec={canvas.draftSpec}

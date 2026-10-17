@@ -132,6 +132,56 @@ const save = (headers: Record<string, string> = {}, runId = RUN) =>
 afterEach(() => vi.unstubAllGlobals());
 
 describe("example snapshot", () => {
+  it("exports only effective media after replacements", async () => {
+    for (const kind of ["screenshot", "recording", "not_observed"]) {
+      const effective = {
+        seq: 8,
+        ts: events[0]!.ts,
+        type: "evidence",
+        data: {
+          id: "ev_001",
+          kind: kind === "not_observed" ? "screenshot" : kind,
+          status: kind === "not_observed" ? "not_observed" : "observed",
+          url:
+            kind === "not_observed"
+              ? undefined
+              : `/runs/${RUN}/evidence/ev_001`,
+        },
+      };
+      const updatedEvents = [...events, effective];
+      const seen: string[] = [];
+      const bytes = new Uint8Array([7, 8, 9]);
+      const fetcher = {
+        fetch: async (url: string) => {
+          const path = new URL(url).pathname;
+          seen.push(path);
+          if (path === `/runs/${RUN}`) return Response.json(state());
+          if (path === `/runs/${RUN}/events`)
+            return Response.json(updatedEvents);
+          if (
+            path === `/runs/${RUN}/evidence/ev_001` &&
+            kind !== "not_observed"
+          )
+            return new Response(bytes, {
+              headers: {
+                "content-type":
+                  kind === "recording" ? "video/mp4" : "image/png",
+              },
+            });
+          return new Response("not found", { status: 404 });
+        },
+      } as unknown as Fetcher;
+      const { snapshot, files } = await exportRun(fetcher, RUN);
+      expect(snapshot.media).toEqual(kind === "not_observed" ? [] : ["ev_001"]);
+      expect(seen.filter((path) => path.includes("/evidence/"))).toEqual(
+        kind === "not_observed" ? [] : [`/runs/${RUN}/evidence/ev_001`],
+      );
+      const store = memoryStore();
+      await saveSnapshot(store, snapshot, files);
+      const file = await loadMedia(store, RUN, "ev_001");
+      expect(file?.bytes).toEqual(kind === "not_observed" ? undefined : bytes);
+    }
+  });
   it("round-trips a finished run's events and media, without the sandbox", async () => {
     const { fetcher } = fakeOrchestrator();
     const { snapshot, files } = await exportRun(

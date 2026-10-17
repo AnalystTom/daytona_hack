@@ -75,11 +75,12 @@ export async function runSnippet<T>(
   apiKey: string,
   sessionId: string,
   code: string,
+  signal?: AbortSignal,
 ): Promise<T> {
   const response = await call(
     apiKey,
     `/v1/tools/execute-code?sessionId=${encodeURIComponent(sessionId)}`,
-    { method: "POST", body: JSON.stringify({ code }) },
+    { method: "POST", body: JSON.stringify({ code }), signal },
   ).catch((error) => {
     if (
       error instanceof AnchorError &&

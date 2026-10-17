@@ -4,6 +4,7 @@ import { workspaceRoute } from "../App";
 import { Landing } from "../landing/Landing";
 import { ExampleRun } from "./ExampleWorkspace";
 import { type Example, exampleView, fetchExample } from "./example";
+import { reportContractExample } from "../../shared/report.test-data";
 
 const RUN = "03b191c5-e0dc-4f8b-aa97-2e8da09db3f0";
 const task = (id: string, status: string) => ({
@@ -159,6 +160,26 @@ describe("exampleView", () => {
 });
 
 describe("ExampleRun", () => {
+  it("renders a saved report and its provenance without a draft or screenshot", () => {
+    const savedReport: Example = {
+      ...example,
+      events: [
+        {
+          seq: 1,
+          ts: example.savedAt,
+          type: "report",
+          data: reportContractExample,
+        },
+      ],
+    };
+    const html = renderToStaticMarkup(<ExampleRun example={savedReport} />);
+    expect(html).toContain("Report dissection");
+    expect(html).toContain("$581 billion");
+    expect(html).toContain("including $581 billion in the US");
+    expect(html).toContain("report_run");
+    expect(html).not.toContain("Your work starts here");
+    expect(html).not.toContain("Save changes");
+  });
   const html = renderToStaticMarkup(<ExampleRun example={example} />);
 
   it("labels the run as a saved example with its date and run id", () => {

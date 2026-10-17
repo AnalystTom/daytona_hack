@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportDissection } from "../../shared/report";
 import type { BuildEvent } from "../../shared/build";
 import type { CanvasEvidence, DraftSpec } from "../../shared/workspace";
 import type { ChatEntry } from "./chat";
@@ -77,6 +78,7 @@ const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 export type RunView = {
   phase?: string;
+  report?: ReportDissection;
   hasPreview: boolean;
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
@@ -143,6 +145,11 @@ export function runView(
   for (const event of events) {
     const { data } = event;
     switch (event.type) {
+      case "report": {
+        const report = ReportDissection.safeParse(data);
+        if (report.success) view.report = report.data;
+        break;
+      }
       case "spec": {
         const spec = Spec.safeParse(data);
         if (spec.success) view.draftSpec = draftSpec(spec.data);
@@ -157,8 +164,8 @@ export function runView(
         // A screenshot that was not observed still gets a card saying why.
         const missing = e.status === "not_observed" && kind === "screenshot";
         if (e.kind !== kind) break;
-        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
         view.evidence = view.evidence.filter((x) => x.id !== e.id);
+        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
         view.evidence.push({
           id: e.id,
           kind,

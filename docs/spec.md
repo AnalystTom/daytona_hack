@@ -1,7 +1,7 @@
 # Reversy: product spec
 
 Reversy ("Take it apart. Make it yours.") is a reverse-engineering assistant.
-The user gives a site and a goal in chat, refines the scope in conversation, and watches agents inspect the site and rebuild it on a shared canvas.
+The user gives a URL and a goal in chat, refines the scope in conversation, and watches agents work on a shared canvas.
 Daytona HackSprint, New York, 16 October 2026.
 
 This file and [`orchestrator/spec.md`](orchestrator/spec.md) sit alongside *Reversy implementation specification, Revision 2* (the detailed handoff: routes, schemas, limits, security and acceptance tests).
@@ -11,7 +11,7 @@ That board revision replaces the earlier confirmation form, six-stage stepper an
 
 ## 1. Public landing page and app entry
 
-Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). After the user sends a brief, the work moves through the Spec canvas to Build and review.
+Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). Website runs move through the Spec canvas to Build and review; the [financial report dissection](#financial-report-dissection) stays in Spec.
 
 ### Public landing page
 
@@ -37,7 +37,7 @@ Rules:
 ![Entry A: chat start with the beaver and starter prompts](screens/board-entry-a.png)
 
 - A centred greeting ("What would you like to make yours?", "Share a website and a goal. We'll refine the rest in chat."), one composer and the beaver.
-- Four starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Work from screenshots, Inspect a website.
+- Three starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Inspect a website.
 - A starter fills an editable draft; Send carries the same brief into the workspace chat.
 - Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
 
@@ -106,7 +106,7 @@ A known response shape or inferred route does not establish content values. Miss
 This applies throughout chat, planning, implementation, review and verification, including deliberate changes. Test fakes stay in tests, and capture must not expand to collect private values.
 The [agent evidence rules](orchestrator/spec.md#6-evidence) define the API response for unavailable data.
 
-First demo target: `https://www.daytona.io/` (Daytona has agreed).
+First website demo target: `https://www.daytona.io/` (Daytona has agreed).
 Its two pieces of work are each split into tasks on the kanban:
 
 1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown on the canvas, of how it changes the page and the visitor's path through it.
@@ -118,12 +118,15 @@ The user can promote an alternative; building then continues from that alternati
 
 At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
 
-### Financial reports (not in the demo)
+### Financial report dissection
 
-Financial reports are left out of the demo for now.
-Later, Reversy can reconstruct financial reports as well as websites.
-Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
-It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
+A user types a report's address with an instruction such as “Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.” That brief is routed to report dissection like any other brief: one question round in chat, then the user approves the plan. Nothing is hard-coded to one report; the Goldman Sachs article on global AI investment is the reference example.
+It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
+The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
+Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.
+"Observed" means read from the article or its embedded chart; it does not establish independent verification. "Exact source quote match" requires the [bounded quote-evidence rule](orchestrator/spec.md#report-dissection); uncertain comparisons show "Unverified online" with both available quotations retained.
+Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. If capture, research or persistence fails, the run fails explicitly with its real error so the user can retry. Report captures are never borrowed from another run.
+This path starts no build workers or variants; REA and changes to login or account management are out of scope. The website workflow remains available separately.
 A figure Reversy could not read is marked "not observed", never filled in.
 
 ## 6. Mascot
@@ -168,7 +171,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
 - Run authentication and workspace ownership follow the [README's access policy](../README.md#who-can-use-runs).
-- Out of the demo for now: financial reports. REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
+- Report scope and exclusions: see [Financial report dissection](#financial-report-dissection). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
 - Run scope and the first demo target: see section 5.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

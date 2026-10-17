@@ -1,4 +1,4 @@
-// One Durable Object per run: brief → inspect → plan → build/review, driven by alarms.
+// One Durable Object per run: website builds or report dissection, driven by alarms.
 import { DurableObject } from "cloudflare:workers";
 import {
   type CaptureRequest,
@@ -32,6 +32,11 @@ import {
   stackRule,
 } from "./scope";
 import { RunTracer } from "./tracing";
+import { isReportGoal } from "./report";
+import { ReportEdit, type ReportDissection } from "../../src/shared/report";
+import { dissect } from "./dissection";
+import { attachRegions, captureReport } from "./report-capture";
+import { saveEdit, saveReport } from "./report-store";
 import type {
   ChatMessage,
   Env,
@@ -61,8 +66,15 @@ interface State {
   tasks: Task[];
   sandboxId?: string;
   previewUrl?: string;
-  pending?: "inspect" | "resume_sign_in" | "plan" | "build_setup" | "stop";
+  pending?:
+    | "inspect"
+    | "resume_sign_in"
+    | "plan"
+    | "build_setup"
+    | "stop"
+    | "report";
   signInPaths?: string[]; // pages that left the scope, waiting for sign-in or skip
+  report?: ReportDissection;
   error?: string;
   startedAt?: number; // epoch ms; runs from before this field have no time limit
 }
@@ -167,8 +179,9 @@ export class Run extends DurableObject<Env> {
     return [...m.values()];
   }
 
-  /** Reads only this run's evidence, from SurrealDB or legacy Durable Object blobs. */
-  async evidenceFile(id: string) {
+  async evidenceFile(
+    id: string,
+  ): Promise<{ contentType: string; content: Uint8Array } | null> {
     const evidence = this.s?.evidence.find((e) => e.id === id);
     if (!evidence) return null;
     if (!isStoredEvidenceId(id)) {
@@ -348,7 +361,75 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  /** Chat: the orchestrator refines the spec with the user. */
+  private reportStopped() {
+    return this.inspection.signal.aborted || this.s.phase === "stopped";
+  }
+
+  private async reportAnalysis() {
+    const signal = this.inspection.signal;
+    let closeSession: (() => Promise<void>) | undefined;
+    try {
+      const capture = await captureReport(this.env, this.s.spec.url, {
+        signal,
+        onSession: (close) => {
+          closeSession = close;
+          this.captureSessions.add(close);
+        },
+      }).finally(() => {
+        if (closeSession) this.captureSessions.delete(closeSession);
+      });
+      if (this.reportStopped()) return;
+      await this.storeEvidence(capture.evidence, capture.blobs);
+      if (this.reportStopped()) return;
+      const report = await dissect(
+        this.env,
+        this.s.id,
+        capture.article,
+        signal,
+        this.beforeWork,
+      );
+      if (this.reportStopped()) return;
+      attachRegions(
+        report.figures,
+        capture,
+        new Map(report.sources.flatMap((s) => (s.url ? [[s.id, s.url]] : []))),
+      );
+      await saveReport(
+        this.env,
+        { report, evidence: this.s.evidence },
+        this.s.spec.url,
+      );
+      if (this.reportStopped()) return;
+      this.s.report = report;
+    } catch (error) {
+      if (this.reportStopped()) return;
+      throw error;
+    }
+    if (this.reportStopped()) return;
+    await this.emit("report", this.s.report);
+    this.s.phase = "done";
+    await this.emit("phase", { phase: "done" });
+    await this.addChat(
+      "assistant",
+      `Report dissection saved: ${this.s.report.figures.length} figure records and ${this.s.report.sources.length} sources. Select a number on the canvas to inspect its quotation and source. Edits keep the original.`,
+    );
+    await this.save();
+  }
+
+  async editReport(figureId: string, input: unknown) {
+    if (!this.s.report || this.s.phase !== "done")
+      throw new Error("No completed report to edit");
+    if (!this.s.report.figures.some((f) => f.id === figureId))
+      throw new Error("Unknown report figure");
+    const edit = ReportEdit.parse(input);
+    await saveEdit(this.env, this.s.id, figureId, edit);
+    this.s.report.edits[figureId] = edit;
+    await this.save();
+    await this.emit("report", this.s.report);
+    return this.s.report;
+  }
+
+  /** Chat: the user is the captain; the orchestrator refines the spec. */
   async message(text: string) {
     await this.beforeWork();
     await this.addChat("user", text);
@@ -356,7 +437,7 @@ export class Run extends DurableObject<Env> {
     return this.s;
   }
 
-  /** User approved the spec in chat or via button: inspect fully, then plan. */
+  /** Approval schedules report dissection or website inspection and planning. */
   async approveSpec() {
     await this.beforeWork();
     const signal = this.inspection.signal;
@@ -366,7 +447,7 @@ export class Run extends DurableObject<Env> {
     this.s.spec.approved = true;
     this.s.spec.revision += 1;
     this.s.phase = "inspecting";
-    this.s.pending = "inspect";
+    this.s.pending = isReportGoal(this.s.spec.goal) ? "report" : "inspect";
     await this.save(signal);
     await this.emit("spec", this.s.spec, signal);
     await this.emit("phase", { phase: "inspecting" }, signal);
@@ -428,6 +509,8 @@ export class Run extends DurableObject<Env> {
   /** Start build: needs an approved spec and a plan. */
   async startBuild() {
     await this.beforeWork();
+    if (isReportGoal(this.s.spec.goal))
+      throw new Error("Report dissection does not start build workers");
     if (this.s.phase !== "planned")
       throw new Error(
         "No build started: tasks appear after the spec is approved.",
@@ -555,7 +638,15 @@ export class Run extends DurableObject<Env> {
     try {
       await this.beforeWork();
       const pending = this.s.pending;
-      if (
+      if (this.s.pending === "report") {
+        this.s.pending = undefined;
+        await this.traced(
+          "phase.report_analysis",
+          "CHAIN",
+          this.s.spec.url,
+          () => this.reportAnalysis(),
+        );
+      } else if (
         pending === "inspect" ||
         pending === "resume_sign_in" ||
         pending === "plan"
@@ -600,8 +691,10 @@ export class Run extends DurableObject<Env> {
       if (
         this.s.pending !== "stop" &&
         (this.s.phase === "inspecting" || this.s.phase === "planning")
-      )
+      ) {
         this.s.phase = "failed";
+        await this.emit("phase", { phase: "failed" });
+      }
       if (this.s.pending !== "stop" && this.s.phase === "building")
         await this.ctx.storage.setAlarm(Date.now() + TICK_MS); // keep the loop alive
     }
@@ -781,6 +874,8 @@ export class Run extends DurableObject<Env> {
           typeof b === "string" ? new TextEncoder().encode(b).buffer : b,
         );
         signal.throwIfAborted();
+        if (e.kind === "screenshot")
+          e.url = `/runs/${this.s.id}/evidence/${e.id}`;
       }
       this.s.evidence.push(e);
       await this.emit("evidence", e, signal);
@@ -1221,7 +1316,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .slice(0, 2)
       .map((e) => `-i /home/daytona/${e.path}`)
       .join(" ");
-    const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=high "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
+    const cmd = `cd ${dir} && timeout 900 codex exec ${images} --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m ${this.env.WORKER_MODEL} -c model_reasoning_effort=${this.env.WORKER_EFFORT || "high"} "$(cat ${LOGS}/${t.id}.prompt.md)" < /dev/null > ${LOGS}/${t.id}.log 2>&1; echo $? > ${LOGS}/${t.id}.exit`;
     await this.beforeWork();
     t.cmdId = await this.ctx.blockConcurrencyWhile(() =>
       this.daytona.startAsync(
@@ -1259,10 +1354,12 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
         `cd ${APP} && git diff --stat main...${t.branch}`,
       )
     ).result.trim();
+    // Every changed file gets its own bounded slice, so a big file cannot hide the rest of the change.
     const diff = (
       await this.daytona.exec(
         id,
-        `cd ${APP} && git diff main...${t.branch} | head -c 30000`,
+        `cd ${APP} && for f in $(git diff --name-only main...${t.branch}); do git diff main...${t.branch} -- "$f" | head -c 5000; echo; done | head -c 70000`,
+        { timeout: 120 },
       )
     ).result;
     const outside = (
@@ -1274,10 +1371,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
       .trim()
       .split("\n")
       .filter(Boolean)
-      .filter(
-        (f) =>
-          !t.owns.some((o) => f === o || f.startsWith(o.replace(/\*.*$/, ""))),
-      );
+      .filter((f) => !t.owns.some((o) => ownedBy(f, o)));
 
     let verdict: Task["review"];
     if (exitCode !== 0 || !diff.trim()) {
@@ -1294,6 +1388,7 @@ ${stackRule(this.s.spec.scope)} Finish within 10 minutes.`;
         beforeCall: this.beforeWork,
         name: "review",
         instructions: `You review one Reversy task submission against its task, acceptance criteria and evidence. Approve only if every acceptance criterion is met by the diff and it stays within the files the task owns. Be specific.
+Each file's diff is capped at 5 KB to fit; a capped file is not a defect. Reject only for problems you can point to in the diff, the file list or the log.
 ${DATA_INSTRUCTIONS}`,
         input: JSON.stringify({
           task: { ...t, review: undefined },
@@ -1385,4 +1480,14 @@ ${DATA_INSTRUCTIONS}`,
       ),
     );
   }
+}
+
+/** Plans name owned files as repo paths, absolute app paths or globs; git reports repo-relative paths. */
+function ownedBy(file: string, owned: string) {
+  const o = owned.replace(new RegExp(`^${APP}/`), "").replace(/^\.\//, "");
+  if (o === file) return true;
+  const prefix = o.replace(/\*.*$/, "");
+  return o.includes("*")
+    ? file.startsWith(prefix)
+    : file.startsWith(`${o.replace(/\/$/, "")}/`);
 }

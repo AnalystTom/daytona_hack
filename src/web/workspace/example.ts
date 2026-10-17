@@ -63,13 +63,11 @@ export type ExampleView = {
 export function exampleView(example: Example): ExampleView {
   const run = runView(example.runId, example.events);
   // Screenshots come from the saved copy, not from the run.
-  const runEvidence = `/api/v1/runs/${example.runId}/evidence/`;
   run.evidence = run.evidence.map((item) => ({
     ...item,
-    src: item.src?.replace(
-      runEvidence,
-      `/api/v1/example/${example.runId}/evidence/`,
-    ),
+    src: item.src
+      ? `/api/v1/example/${example.runId}/evidence/${item.id}`
+      : undefined,
   }));
   const counts = new Map<string, number>();
   for (const task of deriveBoard(run.board).tasks) {

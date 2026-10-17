@@ -286,4 +286,22 @@ describe("runView", () => {
     ]);
     expect(odd).toEqual({ hasPreview: false, evidence: [], board: [] });
   });
+  it("shows unavailable replacements as not observed", () => {
+    const screenshot = events.find((e) => e.type === "evidence");
+    expect(screenshot).toBeDefined();
+    if (!screenshot) throw new Error("Missing screenshot event");
+    const replaced = runView("r1", [
+      screenshot,
+      ev("evidence", {
+        ...(screenshot.data as Record<string, unknown>),
+        status: "not_observed",
+        url: undefined,
+      }),
+    ]).evidence;
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toMatchObject({
+      label: "not_observed",
+      src: undefined,
+    });
+  });
 });
