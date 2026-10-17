@@ -129,10 +129,13 @@ it.each([
 });
 
 it.each([
-  "https://example.com/article",
-  "http://www.goldmansachs.com/article",
-  "https://www.goldmansachs.com:8443/article",
-])("rejects a fallback redirect to another origin: %s", async (redirect) => {
+  ["https://example.com/article", "Report redirected to another origin"],
+  ["http://www.goldmansachs.com/article", "Source redirect is not public HTTP(S)"],
+  [
+    "https://www.goldmansachs.com:8443/article",
+    "Report redirected to another origin",
+  ],
+])("rejects a fallback redirect to another origin: %s", async (redirect, error) => {
   const url = "https://www.goldmansachs.com/article";
   vi.stubGlobal(
     "fetch",
@@ -148,7 +151,7 @@ it.each([
   vi.mocked(runSnippet).mockRejectedValue(new CodeExecutionRefused("403"));
   await expect(
     captureReport({ ANCHORBROWSER_API_KEY: "test" } as Env, url),
-  ).rejects.toThrow("Report redirected to another origin");
+  ).rejects.toThrow(error);
   expect(screenshotTool).not.toHaveBeenCalled();
   expect(endSession).toHaveBeenCalledWith("test", "session");
 });
