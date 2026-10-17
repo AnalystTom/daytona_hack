@@ -65,7 +65,7 @@ Media URLs and cache entries include the source run ID and are cached for a year
 At `/start` or in an empty `/workspace`, type a report's address with an instruction such as `Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.` Answer the question round and approve the plan; nothing is approved automatically.
 Creating runs currently requires the operator token or a valid signed session cookie; enter the operator token if prompted. After the report appears in **Spec**, select a number to inspect its provenance, then edit its label or value and choose **Save changes**.
 Reopen saved runs using the [workspace session controls](#workspace).
-See [financial report dissection](docs/spec.md#financial-report-dissection) for scope, evidence labels and replay behavior, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
+See [financial report dissection](docs/spec.md#financial-report-dissection) for scope and evidence labels, and the [report workflow](docs/orchestrator/spec.md#report-dissection) for service requirements and research limits.
 
 ## Scripts
 

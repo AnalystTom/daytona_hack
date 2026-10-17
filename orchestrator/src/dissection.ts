@@ -6,6 +6,7 @@ import {
 } from "../../src/shared/report";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { decodeHTML } from "entities";
+import { DomUtils, parseDocument } from "htmlparser2";
 import { articleText } from "./report";
 import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
@@ -21,27 +22,68 @@ export const cleanText = (text: string) =>
     .replace(/\s+([;:!?%]|[.,](?!\d))/g, "$1")
     .trim();
 
+function reportContent(html: string) {
+  const document = parseDocument(html, {
+    withStartIndices: true,
+    withEndIndices: true,
+  });
+  const main = DomUtils.findOne(
+    (node) => node.name === "main" || node.attribs.role === "main",
+    document.children,
+  );
+  const articles = DomUtils.findAll(
+    (node) => node.name === "article",
+    main?.children ?? document.children,
+  );
+  const scope =
+    articles.find((node) =>
+      DomUtils.existsOne((child) => child.name === "h1", node.children),
+    ) ??
+    articles[0] ??
+    main;
+  if (
+    !scope &&
+    DomUtils.findOne(
+      (node) => node.name === "html" || node.name === "body",
+      document.children,
+    )
+  )
+    return "";
+  const start = scope?.startIndex ?? Math.max(0, html.search(/<h1\b/i));
+  const disclaimer = html.indexOf("This article is being provided", start);
+  const end = Math.min(
+    scope?.endIndex == null ? html.length : scope.endIndex + 1,
+    disclaimer < 0 ? html.length : disclaimer,
+  );
+  const excluded = DomUtils.findAll(
+    (node) => /^(nav|aside|footer|script|style|template)$/.test(node.name),
+    document.children,
+  );
+  let content = " ".repeat(start);
+  let cursor = start;
+  for (const node of excluded) {
+    const from = Math.max(cursor, node.startIndex ?? 0);
+    const to = Math.min(end, (node.endIndex ?? -1) + 1);
+    if (to <= from) continue;
+    content += html.slice(cursor, from) + " ".repeat(to - from);
+    cursor = to;
+  }
+  return content + html.slice(cursor, end);
+}
+
 /** Offsets always address the captured HTML, never model-generated text. */
 export function extractFigures(
   html: string,
   sourceId = "article",
 ): ReportFigure[] {
-  // Limit to the article, excluding navigation, related stories and embedded application code.
-  const start = html.search(/<h1\b/i);
-  const stop = html.indexOf("This article is being provided", start);
-  const end = stop < 0 ? html.length : stop;
-  const content = html
-    .slice(Math.max(0, start), end)
-    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, (s) =>
-      " ".repeat(s.length),
-    );
+  const content = reportContent(html);
   const figures: ReportFigure[] = [];
   for (const block of content.matchAll(
     /<(h[1-6]|p|li|figcaption|td|th)\b[^>]*>([\s\S]*?)<\/\1>/gi,
   )) {
     const quote = cleanText(block[2]);
     if (!quote) continue;
-    const offset = Math.max(0, start) + block.index;
+    const offset = block.index;
     for (const quantity of reportQuantities(quote)) {
       figures.push({
         id: `${sourceId}_f${figures.length + 1}`,
@@ -296,12 +338,12 @@ export async function dissect(
   beforeWork?: () => Promise<void>,
 ) {
   signal?.throwIfAborted();
-  const figures = extractFigures(article.html);
+  const body = reportContent(article.html);
+  const figures = extractFigures(body);
   if (!figures.length)
     throw new Error("No report figures observed in captured HTML");
   const title = cleanText(
-    /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(article.html)?.[1] ??
-      "Report dissection",
+    /<h1\b[^>]*>([\s\S]*?)<\/h1>/i.exec(body)?.[1] ?? "Report dissection",
   );
   const sources: ReportDissection["sources"] = [
     {
@@ -318,20 +360,13 @@ export async function dissect(
       reason: "Captured source article",
     },
   ];
-  const start = article.html.search(/<h1\b/i);
-  const body = article.html.slice(
-    Math.max(0, start),
-    article.html.indexOf("This article is being provided", start) < 0
-      ? undefined
-      : article.html.indexOf("This article is being provided", start),
-  );
   const embeds = [
     ...body.matchAll(/<iframe\b[^>]*src=["']([^"']+)["'][^>]*>/gi),
   ].slice(0, 3);
   for (const [i, embed] of embeds.entries()) {
     const id = `chart${i + 1}`;
     const url = new URL(embed[1].replace(/&amp;/g, "&"), article.url).href;
-    const offset = article.html.indexOf(embed[0], Math.max(0, start));
+    const offset = embed.index;
     try {
       const capture = await sourceFetch(url, signal);
       signal?.throwIfAborted();

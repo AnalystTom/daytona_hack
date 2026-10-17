@@ -56,12 +56,6 @@ export function ReportCard({
       </header>
       <div className="report-body">
         <h3>{report.title}</h3>
-        {report.replay && (
-          <p className="report-replay" role="note">
-            Replay of run {report.replay.runId} at {report.replay.completedAt}.
-            Live capture or research failed: {report.replay.reason}
-          </p>
-        )}
         <p className="muted">
           Select a number to inspect its source. Changes are saved separately;
           captured originals stay intact.

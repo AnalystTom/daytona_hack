@@ -31,19 +31,13 @@ describe("report dashboard contract", () => {
       ).toBe(false);
     }
   });
-  it("keeps captured originals when an edit or labelled replay is received", () => {
+  it("keeps captured originals when an edit is received", () => {
     const result = ReportDissection.parse({
       ...reportContractExample,
       edits: { f1: { label: "Edited", value: "User value" } },
-      replay: {
-        runId: "original",
-        completedAt: reportContractExample.completedAt,
-        reason: "Capture unavailable",
-      },
     });
     expect(result.figures[0]?.value).toBe("$581 billion");
     expect(result.edits.f1?.value).toBe("User value");
-    expect(result.replay?.runId).toBe("original");
   });
 });
 
@@ -125,6 +119,15 @@ it("does not label bare integers as years or match them without currency", () =>
     { value: "2026", unit: "number" },
   ]);
 });
+
+it.each(incompleteQuantityExamples)(
+  "does not publish a partial quantity with a rate unit: $quote",
+  ({ quote }) => {
+    expect(reportQuantities(quote)).toEqual([
+      { value: "", unit: "", currency: "", status: "not_observed" },
+    ]);
+  },
+);
 
 it.each([...incompleteQuantityExamples, ...repeatedQuantityExamples])(
   "never verifies an amount with an unconsumed unit: $quote",

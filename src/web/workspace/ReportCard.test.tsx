@@ -13,14 +13,25 @@ import { ReportCard } from "./ReportCard";
 describe("report canvas data", () => {
   it.each([
     ...uncertainQuantityExamples,
-    ...incompleteQuantityExamples,
+    ...incompleteQuantityExamples.map(({ quote }) => ({
+      quote,
+      value: "USD 35 billion",
+      unit: "USD billion",
+    })),
     ...repeatedQuantityExamples,
   ])(
     "rechecks legacy matches and retains both uncertain quotes: $quote",
     ({ quote, value, unit }) => {
       const report = ReportDissection.parse({
         ...reportContractExample,
-        figures: [{ ...reportContractExample.figures[0], quote, value, unit }],
+        figures: [
+          {
+            ...reportContractExample.figures[0],
+            quote,
+            value,
+            unit,
+          },
+        ],
         sources: [
           { ...reportContractExample.sources[0], quote },
           {
@@ -68,20 +79,14 @@ describe("report canvas data", () => {
     expect(html).toContain("In the article");
     expect(html).toContain("report_run");
   });
-  it("renders edited values and replay identity without relabelling the original as fresh", () => {
+  it("renders edited values without changing captured originals", () => {
     const report = ReportDissection.parse({
       ...reportContractExample,
       edits: { f1: { label: "User label", value: "" } },
-      replay: {
-        runId: "original-run",
-        completedAt: reportContractExample.completedAt,
-        reason: "Live step failed",
-      },
     });
     const html = renderToStaticMarkup(
       <ReportCard report={report} evidence={[]} />,
     );
-    expect(html).toContain("Replay of run original-run");
     expect(html).toContain("Empty edited value");
     expect(html).toContain("User label");
     expect(html).toContain("Edited; original retained");

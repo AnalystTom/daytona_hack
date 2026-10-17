@@ -179,10 +179,6 @@ export function runView(
         });
         break;
       }
-      case "evidence_reset": {
-        view.evidence = [];
-        break;
-      }
       case "plan": {
         const plan = Plan.safeParse(data);
         if (!plan.success) break;

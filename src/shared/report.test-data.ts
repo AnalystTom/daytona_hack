@@ -10,22 +10,10 @@ export const repeatedQuantityExamples = [
 ].map((quote) => ({ quote, value: "USD 35 billion", unit: "USD billion" }));
 
 export const incompleteQuantityExamples = [
-  {
-    quote: "Investment was USD 35 billion/year.",
-    value: "USD 35",
-    unit: "USD number",
-  },
-  {
-    quote: "Investment was USD 35 billion /year.",
-    value: "USD 35 billion",
-    unit: "USD billion",
-  },
-  {
-    quote: "Investment was USD 35 billion per year.",
-    value: "USD 35 billion",
-    unit: "USD billion",
-  },
-];
+  "Investment was USD 35 billion/year.",
+  "Investment was USD 35 billion /year.",
+  "Investment was USD 35 billion per year.",
+].map((quote) => ({ quote, value: "", unit: "" }));
 
 export const uncertainQuantityExamples = [
   { quote: "Loss was (USD 35 billion).", value: "35 billion", unit: "billion" },

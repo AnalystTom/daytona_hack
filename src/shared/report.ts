@@ -34,7 +34,7 @@ export type ReportFigure = z.infer<typeof ReportFigure>;
 const currencyCodes = "USD|CAD|AUD|NZD|HKD|SGD|GBP|EUR|JPY|CNY|CHF|INR";
 const currencyToken = new RegExp(`^(?:${currencyCodes})$`, "i");
 const scaleToken =
-  /^(?:%|trillion|billion|million|thousand|bn|bps|[kmbt]|dollars|pounds|euros)$/i;
+  /^(?:%|trillion|billion|million|thousand|bn|bps|[kmbt]|dollars|pounds|euros)(?=$|[^\p{L}]|s\b)/iu;
 const scalar = new RegExp(
   `^(?:(?<prefix>${currencyCodes})\\s*)?(?<sign>[+−–-]?)(?:\\s*(?<symbol>[$€£])\\s*(?<innerSign>[+−–-]?))?\\s*(?:(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+)\\s*(?<scale>%|trillion|billion|million|thousand|bn|bps)?(?:\\s*(?<suffix>${currencyCodes}))?$`,
   "i",
@@ -68,6 +68,7 @@ export function reportQuantities(quote: string) {
       if (
         /^[+−–—\p{Sc}]*\.?\d/u.test(next) ||
         scaleToken.test(word) ||
+        /^(?:\/|per$)/i.test(word) ||
         currencyContext(word)
       )
         last++;
@@ -199,13 +200,6 @@ export const ReportDissection = z
       table: z.literal("report_run"),
       recordId: z.string().min(1),
     }),
-    replay: z
-      .object({
-        runId: z.string().min(1),
-        completedAt: z.iso.datetime(),
-        reason: z.string(),
-      })
-      .optional(),
   })
   .superRefine((report, ctx) => {
     const sources = new Set(report.sources.map((s) => s.id));

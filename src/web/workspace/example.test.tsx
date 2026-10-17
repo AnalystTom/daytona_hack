@@ -117,46 +117,6 @@ describe("fetchExample", () => {
 });
 
 describe("exampleView", () => {
-  it.each(["screenshot", "recording", "not_observed"])(
-    "maps effective replay %s evidence to the public snapshot identity",
-    (kind) => {
-      const replay: Example = {
-        ...example,
-        events: [
-          ...example.events,
-          { seq: 10, ts: example.savedAt, type: "evidence_reset", data: {} },
-          {
-            seq: 11,
-            ts: example.savedAt,
-            type: "evidence",
-            data: {
-              id: "replayed",
-              page: "/",
-              kind: kind === "not_observed" ? "screenshot" : kind,
-              status: kind === "not_observed" ? "not_observed" : "observed",
-              tool: "anchor",
-              capturedAt: example.finishedAt,
-              hash: "prior-capture",
-              limits: kind === "not_observed" ? "No prior screenshot" : "",
-              url:
-                kind === "not_observed"
-                  ? undefined
-                  : "/runs/original-run/evidence/replayed",
-            },
-          },
-        ],
-      };
-      expect(exampleView(replay).run.evidence).toMatchObject([
-        {
-          id: "replayed",
-          src:
-            kind === "not_observed"
-              ? undefined
-              : `/api/v1/example/${RUN}/evidence/replayed`,
-        },
-      ]);
-    },
-  );
   it("serves screenshots from the saved copy and replays the whole chat", () => {
     const { run, entries } = exampleView(example);
     expect(run.evidence.map((e) => e.src)).toEqual([

@@ -33,7 +33,7 @@ _Flourish_visualisation_id = 29875854;</script>`;
 const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 
 describe("observed report figures", () => {
-  it.each(uncertainQuantityExamples)(
+  it.each([...uncertainQuantityExamples, ...incompleteQuantityExamples])(
     "keeps unsupported currency notation whole: $quote",
     ({ quote }) => {
       const article = extractFigures(`<p>${quote}</p>`);
@@ -74,6 +74,74 @@ describe("observed report figures", () => {
     const [figure] = extractFigures(`<p>Growth was ${value}.</p>`);
     expect(figure).toMatchObject({ value, status: "observed" });
     expect(figure?.quote).toContain(value);
+  });
+  it.each(["article", "main"])(
+    "bounds figures and research to %s content with original offsets",
+    async (tag) => {
+      const reportQuote = "Investment reached USD 35 billion.";
+      const footerQuote =
+        "Revenue reached €99 billion according to Footer Research.";
+      const captured = `<html><body><nav><p>Navigation 555</p></nav><main>${tag === "article" ? "<article>" : ""}<h1>Investment report</h1><p>${reportQuote}</p><iframe src="https://charts.example/report"></iframe><aside><p>Related revenue €88 billion</p><iframe src="https://charts.example/aside"></iframe></aside>${tag === "article" ? "</article><section><p>Related story €77 billion</p></section>" : ""}</main><footer><p>${footerQuote} <a href="https://footer.example/research">Footer Research</a></p><iframe src="https://charts.example/footer"></iframe></footer></body></html>`;
+      const fetcher = vi.fn().mockResolvedValue(new Response("No chart data"));
+      vi.stubGlobal("fetch", fetcher);
+      vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+        const input = JSON.parse(opts.input as string);
+        expect(input.article).toContain(reportQuote);
+        expect(input.article).not.toContain("Related");
+        expect(input.article).not.toContain("Footer Research");
+        opts.onSearchCalls?.(1);
+        return {
+          sources: [
+            {
+              name: "Footer Research",
+              articleQuote: footerQuote,
+              url: "https://footer.example/research",
+              quote: footerQuote,
+              reason: "Unrelated",
+            },
+          ],
+          traces: [],
+        };
+      });
+      const report = await dissect(env, "run", {
+        html: captured,
+        url: "https://publisher.example/report",
+        capturedAt: "2026-10-16T19:00:00.000Z",
+        hash: "capture-hash",
+      });
+      expect(report.figures.map((figure) => figure.value)).toEqual([
+        "USD 35 billion",
+        "",
+      ]);
+      expect(report.sources.map((source) => source.id)).toEqual([
+        "article",
+        "chart1",
+      ]);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      expect(fetcher.mock.calls[0]?.[0]).toBe("https://charts.example/report");
+      for (const figure of report.figures) {
+        expect(
+          figure.quote.startsWith("<iframe")
+            ? captured.slice(figure.location.start, figure.location.end)
+            : cleanText(
+                captured.slice(figure.location.start, figure.location.end),
+              ),
+        ).toBe(figure.quote);
+      }
+    },
+  );
+  it("does not treat an unscoped full page as report content", async () => {
+    const captured =
+      "<html><body><h1>Publisher</h1><section><p>Related revenue €99 billion</p></section></body></html>";
+    expect(extractFigures(captured)).toEqual([]);
+    await expect(
+      dissect(env, "run", {
+        html: captured,
+        url: "https://publisher.example/report",
+        capturedAt: "2026-10-16T19:00:00.000Z",
+        hash: "capture-hash",
+      }),
+    ).rejects.toThrow("No report figures observed");
   });
   it("preserves an HTML-encoded minus sign", () => {
     expect(extractFigures("<p>Growth was &minus;2.5%.</p>")[0]).toMatchObject({
@@ -716,9 +784,7 @@ it.each(repeatedQuantityExamples)(
       capturedAt: "2026-10-16T19:00:00.000Z",
       hash: "hash",
     });
-    expect(
-      report.figures.some((f) => f.value === value && f.status === "observed"),
-    ).toBe(true);
+    expect(report.figures).toHaveLength(2);
     expect(report.traces).toHaveLength(2);
     expect(
       report.traces.every(

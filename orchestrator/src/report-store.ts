@@ -24,7 +24,7 @@ export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
   await store(env).query(
     `BEGIN TRANSACTION;
     UPSERT type::record('report_run', $id) CONTENT {
-      runId: $id, target: $target, successful: $successful,
+      runId: $id, target: $target,
       completedAt: $completedAt, snapshot: $snapshot
     };
     FOR $figure IN ${JSON.stringify(report.figures)} {
@@ -41,7 +41,6 @@ export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
     {
       id: report.runId,
       target,
-      successful: !report.replay,
       completedAt: report.completedAt,
       snapshot: JSON.stringify(snapshot),
     },
@@ -58,23 +57,6 @@ export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
       .runId !== report.runId
   )
     throw new Error("Report persistence could not be confirmed");
-}
-
-export async function latestReport(
-  env: Env,
-  target: string,
-): Promise<Snapshot | undefined> {
-  const [rows] = await store(env).query(
-    `SELECT snapshot, completedAt FROM report_run WHERE successful = true AND target = $target ORDER BY completedAt DESC LIMIT 1`,
-    { target },
-  );
-  const row = (rows as { snapshot: string }[])[0];
-  if (!row) return undefined;
-  const snapshot: Snapshot = JSON.parse(row.snapshot);
-  return {
-    report: ReportDissection.parse(snapshot.report),
-    evidence: snapshot.evidence,
-  };
 }
 
 export async function saveEdit(

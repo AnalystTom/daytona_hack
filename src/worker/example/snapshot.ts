@@ -119,7 +119,6 @@ export async function exportRun(
   const files = new Map<string, MediaFile>();
   const evidence = new Map<string, z.infer<typeof MediaEvidence>>();
   for (const event of events) {
-    if (event.type === "evidence_reset") evidence.clear();
     if (event.type !== "evidence") continue;
     const identity = z.object({ id: z.string() }).safeParse(event.data);
     if (identity.success) evidence.delete(identity.data.id);

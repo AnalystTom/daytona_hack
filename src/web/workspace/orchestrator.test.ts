@@ -227,36 +227,6 @@ describe("runView", () => {
     expect(runView("r1", events.slice(0, 3)).hasPreview).toBe(false);
   });
 
-  it.each([false, true])(
-    "uses the replaying run's screenshot URL, prior screenshot=%s",
-    (hasScreen) => {
-      const replay = runView("new-run", [
-        ev("evidence_reset", {}),
-        ev("evidence", {
-          id: "ev_report_screen",
-          page: "/",
-          kind: "screenshot",
-          tool: "anchor",
-          status: hasScreen ? "observed" : "not_observed",
-          capturedAt: "2026-10-16T12:00:00.000Z",
-          hash: hasScreen ? "sha256:abc" : "",
-          limits: hasScreen ? "Captured screenshot" : "Not observed",
-          url: hasScreen
-            ? "/runs/new-run/evidence/ev_report_screen"
-            : undefined,
-        }),
-      ]);
-      expect(replay.evidence).toEqual([
-        expect.objectContaining({
-          id: "ev_report_screen",
-          src: hasScreen
-            ? "/api/v1/runs/new-run/evidence/ev_report_screen"
-            : undefined,
-        }),
-      ]);
-    },
-  );
-
   it("drives the kanban: columns, reviews, preview and failures", () => {
     const board = deriveBoard(view.board);
     expect(board.runStopped).toBe(false);
@@ -316,13 +286,10 @@ describe("runView", () => {
     ]);
     expect(odd).toEqual({ hasPreview: false, evidence: [], board: [] });
   });
-  it("clears capture cards on reset and shows unavailable replacements as not observed", () => {
+  it("shows unavailable replacements as not observed", () => {
     const screenshot = events.find((e) => e.type === "evidence");
     expect(screenshot).toBeDefined();
     if (!screenshot) throw new Error("Missing screenshot event");
-    expect(
-      runView("r1", [screenshot, ev("evidence_reset", {})]).evidence,
-    ).toEqual([]);
     const replaced = runView("r1", [
       screenshot,
       ev("evidence", {

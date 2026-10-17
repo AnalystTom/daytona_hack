@@ -1143,11 +1143,6 @@
 .status-in_article {
   background: color-mix(in srgb, var(--pistachio) 50%, white);
 }
-.report-replay {
-  padding: 0.8rem;
-  border: 1px solid var(--persimmon);
-  border-radius: 0.5rem;
-}
 .report-records {
   margin-top: 1rem;
 }

@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ReportDissection } from "../../src/shared/report";
 import { reportContractExample } from "../../src/shared/report.test-data";
 import { SurrealRunStore } from "../../src/worker/store/surreal";
-import { latestReport, saveEdit, saveReport } from "./report-store";
+import { saveEdit, saveReport } from "./report-store";
 import type { Env } from "./types";
 
 // Like the run-store contract tests, use an explicitly supplied disposable server.
@@ -63,9 +63,12 @@ describe.skipIf(!config.url)("report persistence in real SurrealDB", () => {
     report.sources[0].title = 'US: source "quoted"; RETURN "data"; € 🌍';
     const snapshot = { report, evidence: [] };
     await saveReport(env, snapshot, report.sources[0].url ?? "");
-    expect(await latestReport(env, report.sources[0].url ?? "")).toEqual(
-      snapshot,
-    );
+    expect(
+      await db.query(
+        "SELECT snapshot FROM ONLY type::record('report_run', $id)",
+        { id: report.runId },
+      ),
+    ).toEqual([{ snapshot: JSON.stringify(snapshot) }]);
     const [figures] = await db.query("SELECT original FROM report_figure");
     const originals = (figures as { original: { id: string } }[])
       .map((row) => row.original)
@@ -94,8 +97,11 @@ describe.skipIf(!config.url)("report persistence in real SurrealDB", () => {
       "SELECT label, value FROM report_edit WHERE run = type::record('report_run', 'other-run')",
     );
     expect(other).toEqual([{ label: "US: US private", value: "" }]);
-    expect(await latestReport(env, report.sources[0].url ?? "")).toEqual(
-      snapshot,
-    );
+    expect(
+      await db.query(
+        "SELECT snapshot FROM ONLY type::record('report_run', $id)",
+        { id: report.runId },
+      ),
+    ).toEqual([{ snapshot: JSON.stringify(snapshot) }]);
   });
 });

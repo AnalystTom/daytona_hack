@@ -120,7 +120,6 @@ export interface RunEvent {
     | "chat"
     | "spec"
     | "evidence"
-    | "evidence_reset"
     | "plan"
     | "task"
     | "review"

@@ -32,11 +32,11 @@ import {
   stackRule,
 } from "./scope";
 import { RunTracer } from "./tracing";
-import { isReportGoal, replayTarget } from "./report";
+import { isReportGoal } from "./report";
 import { ReportEdit, type ReportDissection } from "../../src/shared/report";
 import { dissect } from "./dissection";
 import { attachRegions, captureReport } from "./report-capture";
-import { latestReport, saveEdit, saveReport } from "./report-store";
+import { saveEdit, saveReport } from "./report-store";
 import type {
   ChatMessage,
   Env,
@@ -184,12 +184,6 @@ export class Run extends DurableObject<Env> {
   ): Promise<{ contentType: string; content: Uint8Array } | null> {
     const evidence = this.s?.evidence.find((e) => e.id === id);
     if (!evidence) return null;
-    if (this.s.report?.replay) {
-      const origin = this.env.RUNS.get(
-        this.env.RUNS.idFromName(this.s.report.replay.runId),
-      ) as DurableObjectStub<Run>;
-      return origin.evidenceFile(id);
-    }
     if (!isStoredEvidenceId(id)) {
       const content = await this.ctx.storage.get<ArrayBuffer>(`blob:${id}`);
       return content
@@ -403,50 +397,13 @@ export class Run extends DurableObject<Env> {
       await saveReport(
         this.env,
         { report, evidence: this.s.evidence },
-        replayTarget(this.s.spec.url),
+        this.s.spec.url,
       );
       if (this.reportStopped()) return;
       this.s.report = report;
     } catch (error) {
       if (this.reportStopped()) return;
-      const target = replayTarget(this.s.spec.url);
-      const previous = target
-        ? await latestReport(this.env, target)
-        : undefined;
-      if (this.reportStopped()) return;
-      if (!previous || previous.report.runId === this.s.id)
-        throw new Error(
-          `Live dissection failed; no successful replay is available. ${String(error)}`,
-        );
-      for (const evidence of this.s.evidence)
-        await this.ctx.storage.delete(`blob:${evidence.id}`);
-      if (this.reportStopped()) return;
-      this.s.report = {
-        ...previous.report,
-        runId: this.s.id,
-        edits: {},
-        storage: { table: "report_run", recordId: this.s.id },
-        replay: {
-          runId: previous.report.runId,
-          completedAt: previous.report.completedAt,
-          reason: String(error),
-        },
-      };
-      this.s.evidence = previous.evidence.map((evidence) => ({
-        ...evidence,
-        url:
-          evidence.url && evidence.status !== "not_observed"
-            ? `/runs/${this.s.id}/evidence/${evidence.id}`
-            : undefined,
-      }));
-      await this.emit("evidence_reset", {});
-      for (const evidence of this.s.evidence)
-        await this.emit("evidence", evidence);
-      await saveReport(
-        this.env,
-        { report: this.s.report, evidence: this.s.evidence },
-        replayTarget(this.s.spec.url),
-      );
+      throw error;
     }
     if (this.reportStopped()) return;
     await this.emit("report", this.s.report);
@@ -454,9 +411,7 @@ export class Run extends DurableObject<Env> {
     await this.emit("phase", { phase: "done" });
     await this.addChat(
       "assistant",
-      this.s.report.replay
-        ? `Replay of run ${this.s.report.replay.runId} at ${this.s.report.replay.completedAt}. Live step failed: ${this.s.report.replay.reason}`
-        : `Report dissection saved: ${this.s.report.figures.length} figure records and ${this.s.report.sources.length} sources. Select a number on the canvas to inspect its quotation and source. Edits keep the original.`,
+      `Report dissection saved: ${this.s.report.figures.length} figure records and ${this.s.report.sources.length} sources. Select a number on the canvas to inspect its quotation and source. Edits keep the original.`,
     );
     await this.save();
   }

@@ -5,7 +5,7 @@ import {
   GOLDMAN_URL,
   reportContractExample,
 } from "../../src/shared/report.test-data";
-import { latestReport, saveEdit, saveReport } from "./report-store";
+import { saveEdit, saveReport } from "./report-store";
 import type { Env } from "./types";
 
 afterEach(() => vi.restoreAllMocks());
@@ -30,34 +30,13 @@ it("passes the snapshot to storage and accepts the returned receipt", async () =
   expect(query.mock.calls[0]?.[1]).toMatchObject({
     id: "test-run",
     target: GOLDMAN_URL,
-    successful: true,
     snapshot: JSON.stringify(snapshot()),
   });
   expect(query.mock.calls[1]?.[1]).toEqual({ id: "test-run" });
 });
 
-it("marks replay snapshots as unsuccessful in storage inputs", async () => {
-  const current = snapshot();
-  current.report.replay = {
-    runId: "prior",
-    completedAt: current.report.completedAt,
-    reason: "Live failure",
-  };
-  const query = vi
-    .spyOn(SurrealRunStore.prototype, "query")
-    .mockResolvedValueOnce([])
-    .mockResolvedValueOnce([{ snapshot: JSON.stringify(current) }]);
-  await saveReport(env, current, GOLDMAN_URL);
-  expect(query.mock.calls[0]?.[1]).toMatchObject({ successful: false });
-});
-
-it("parses a returned replay snapshot and rejects missing storage configuration", async () => {
-  const query = vi
-    .spyOn(SurrealRunStore.prototype, "query")
-    .mockResolvedValueOnce([[{ snapshot: JSON.stringify(snapshot()) }]]);
-  expect(await latestReport(env, GOLDMAN_URL)).toEqual(snapshot());
-  expect(query.mock.calls[0]?.[1]).toEqual({ target: GOLDMAN_URL });
-  await expect(latestReport({} as Env, GOLDMAN_URL)).rejects.toThrow(
+it("rejects missing storage configuration", async () => {
+  await expect(saveReport({} as Env, snapshot(), GOLDMAN_URL)).rejects.toThrow(
     "not configured",
   );
 });

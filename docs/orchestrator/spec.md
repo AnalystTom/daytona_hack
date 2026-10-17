@@ -62,7 +62,7 @@ The verifier has its own instructions and runs outside the sandbox, so it stays 
 
 [Report dissection](../spec.md#financial-report-dissection) branches from the website workflow below. A brief that explicitly asks to reconstruct, rebuild or dissect a report (for example the article address plus “Reconstruct this report: …”) follows the normal brief: one question round in chat, then approval in chat or through the approve route, and then uses report dissection instead of website planning. No address or wording auto-approves scope. A bare `report` keyword does not select report dissection.
 
-The report path runs `brief` → `inspecting` → `done` (or `failed` / `stopped`). It captures the article, parses available embedded Flourish chart data without executing source JavaScript, researches original sources, confirms persistence and emits a `report` event. The product spec owns its output and replay behavior.
+The report path runs `brief` → `inspecting` → `done` (or `failed` / `stopped`). It captures the article, parses available embedded Flourish chart data without executing source JavaScript, researches original sources, confirms persistence and emits a `report` event. The product spec owns its output and failure behavior.
 
 Research uses at most four OpenAI web-search tool calls and fetches at most six candidate original-source URLs, in addition to up to three embedded charts. A search that executes no web-search calls fails. Article/chart source identities are excluded before and after redirects.
 
@@ -230,7 +230,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 
 - **SurrealDB's target record model** links runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods as a graph (feature cites evidence, task implements feature, review judges task).
   It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
-- **Report records** use `report_run` for the snapshot and replay eligibility, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Replay copies the prior figures and source records into the new run with fresh edits; it does not copy screenshot blobs or make that replay eligible as a successful live fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
+- **Report records** use `report_run` for the snapshot, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Failed runs retain their own evidence and error; no prior run is used as a fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
 ## 13. Decided

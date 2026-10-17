@@ -125,7 +125,7 @@ It captures the live article and embedded investment chart, extracts observed fi
 The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
 Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.
 "Observed" means read from the article or its embedded chart; it does not establish independent verification. "Exact source quote match" requires the [bounded quote-evidence rule](orchestrator/spec.md#report-dissection); uncertain comparisons show "Unverified online" with both available quotations retained.
-Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. If the live run fails, it can replay only the most recent successful dissection of the same address and labels its original run ID, completion time and live failure reason; without one, the run fails explicitly.
+Edits preserve captured originals. The [records contract](orchestrator/spec.md#12-records) describes persistence. If capture, research or persistence fails, the run fails explicitly with its real error so the user can retry. Report captures are never borrowed from another run.
 This path starts no build workers or variants; REA and changes to login or account management are out of scope. The website workflow remains available separately.
 A figure Reversy could not read is marked "not observed", never filled in.
 

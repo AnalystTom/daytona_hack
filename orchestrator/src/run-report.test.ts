@@ -1,4 +1,4 @@
-import { afterEach, assert, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ReportDissection } from "../../src/shared/report";
 import {
   GOLDMAN_URL,
@@ -11,19 +11,11 @@ import {
 } from "../../src/worker/evidence/anchor";
 import { captureReport } from "./report-capture";
 import { dissect } from "./dissection";
-import { latestReport, saveEdit, saveReport } from "./report-store";
+import { saveEdit, saveReport } from "./report-store";
 import { capture } from "./inspect";
 import { llmJson } from "./services";
 import { Run } from "./run";
 import type { Env } from "./types";
-import backend from "./index";
-import { handleOrchestrator } from "../../src/worker/orchestrator/front";
-import {
-  accessJwt,
-  AUD,
-  certs,
-  TEAM,
-} from "../../src/worker/orchestrator/access-fixtures";
 
 vi.mock("cloudflare:workers", () => ({
   DurableObject: class {
@@ -49,7 +41,6 @@ vi.mock("./inspect", async (original) => ({
 }));
 vi.mock("./report-store", () => ({
   saveReport: vi.fn(),
-  latestReport: vi.fn(),
   saveEdit: vi.fn(),
 }));
 vi.mock("./services", () => ({
@@ -127,184 +118,6 @@ async function startReport(
   await run.approveSpec();
   return brief;
 }
-
-it.each([false, true])(
-  "replays only originating capture evidence after research fails, prior screenshot=%s",
-  async (hasScreen) => {
-    const previous = createRun();
-    const priorReport = report();
-    priorReport.edits.f1 = { label: "Prior edit", value: "Prior value" };
-    const makeCapture = (html: string, screenshot: boolean) => ({
-      article: {
-        html,
-        url: GOLDMAN_URL,
-        capturedAt: priorReport.completedAt,
-        hash: html,
-      },
-      evidence: [
-        {
-          id: "ev_report_html",
-          kind: "html" as const,
-          page: "/",
-          tool: "fetch",
-          status: "observed" as const,
-          capturedAt: priorReport.completedAt,
-          hash: html,
-          summary: html,
-          limits: "Captured HTML",
-        },
-        {
-          id: "ev_report_screen",
-          kind: "screenshot" as const,
-          page: "/",
-          tool: "anchor",
-          status: screenshot
-            ? ("observed" as const)
-            : ("not_observed" as const),
-          capturedAt: priorReport.completedAt,
-          hash: screenshot ? html : "",
-          summary: "Screenshot",
-          limits: screenshot ? "Captured screenshot" : "Not observed",
-        },
-      ],
-      blobs: {
-        ev_report_html: html,
-        ...(screenshot
-          ? { ev_report_screen: new Uint8Array([1, 2, 3]).buffer }
-          : {}),
-      },
-      boxes: [],
-      pageWidth: 1440,
-      pageHeight: 900,
-    });
-    vi.mocked(captureReport).mockResolvedValueOnce(
-      makeCapture("prior capture", hasScreen),
-    );
-    vi.mocked(dissect).mockResolvedValueOnce(priorReport);
-    await startReport(previous.run, "test-run");
-    await previous.run.alarm();
-    const priorState = await previous.run.getState();
-    const runs = {
-      idFromName: vi.fn((id: string) => id),
-      get: vi.fn(() => previous.run),
-    };
-    const current = createRun({
-      RUNS: runs as unknown as DurableObjectNamespace,
-    });
-    vi.mocked(captureReport).mockResolvedValueOnce(
-      makeCapture("failed live capture", true),
-    );
-    vi.mocked(dissect).mockRejectedValueOnce(new Error("Research failed"));
-    vi.mocked(latestReport).mockResolvedValueOnce({
-      report: priorReport,
-      evidence: priorState.evidence,
-    });
-    await startReport(current.run, "new-run");
-    await current.run.alarm();
-    const state = await current.run.getState();
-    expect(state.report).toMatchObject({
-      edits: {},
-      replay: { runId: "test-run", completedAt: priorReport.completedAt },
-    });
-    expect(state.report?.figures).toEqual(priorReport.figures);
-    expect(state.evidence).toEqual(
-      priorState.evidence.map((evidence) => ({
-        ...evidence,
-        url: evidence.url?.replace("/runs/test-run/", "/runs/new-run/"),
-      })),
-    );
-    expect(current.data.has("blob:ev_report_html")).toBe(false);
-    expect(current.data.has("blob:ev_report_screen")).toBe(false);
-    const html = await current.run.evidenceFile("ev_report_html");
-    expect(new TextDecoder().decode(html?.content)).toBe("prior capture");
-    expect(await current.run.evidenceFile("ev_report_screen")).toEqual(
-      hasScreen
-        ? { contentType: "image/png", content: new Uint8Array([1, 2, 3]) }
-        : null,
-    );
-    const events = await current.run.events(0);
-    const reset = events.findIndex((event) => event.type === "evidence_reset");
-    expect(reset).toBeGreaterThan(-1);
-    expect(
-      events
-        .slice(reset + 1)
-        .filter((event) => event.type === "evidence")
-        .map((event) => event.data),
-    ).toEqual(state.evidence);
-    expect(
-      state.evidence.filter((e) => e.kind === "screenshot" && e.url),
-    ).toHaveLength(hasScreen ? 1 : 0);
-    expect(
-      state.evidence.every(
-        (e) => !e.url || e.url.startsWith("/runs/new-run/evidence/"),
-      ),
-    ).toBe(true);
-    const backendEnv = {
-      RUNS: {
-        idFromName: (id: string) => id,
-        get: (id: string) => (id === "new-run" ? current.run : previous.run),
-      },
-    } as unknown as Env;
-    const env = {
-      ACCESS_TEAM_DOMAIN: TEAM,
-      ACCESS_AUD: AUD,
-      ORCHESTRATOR: {
-        fetch: (url: string, init?: RequestInit) =>
-          backend.fetch(new Request(url, init), backendEnv),
-      } as unknown as Fetcher,
-    };
-    const deps = {
-      fetcher: certs,
-      owners: {
-        get: async (runId: string) => ({
-          runId,
-          owner: runId === "new-run" ? "bob@example.com" : "alice@example.com",
-          createdAt: Date.now(),
-        }),
-        list: vi.fn(async () => []),
-        reserve: vi.fn(async () => undefined),
-        finish: vi.fn(async () => undefined),
-      },
-    };
-    const token = await accessJwt({ email: "bob@example.com" });
-    const request = (path: string) =>
-      handleOrchestrator(
-        new Request(`https://reversy.test${path}`, {
-          headers: { "cf-access-jwt-assertion": token },
-        }),
-        env,
-        deps,
-      );
-    const response = await request(
-      "/api/v1/runs/new-run/evidence/ev_report_screen",
-    );
-    assert(response);
-    expect(response.status).toBe(hasScreen ? 200 : 404);
-    if (hasScreen) {
-      expect(response.headers.get("content-type")).toBe("image/png");
-      expect(new Uint8Array(await response.arrayBuffer())).toEqual(
-        new Uint8Array([1, 2, 3]),
-      );
-    }
-    expect(
-      (await request("/api/v1/runs/test-run/evidence/ev_report_screen"))
-        ?.status,
-    ).toBe(404);
-    expect(runs.idFromName).toHaveBeenCalledWith("test-run");
-    expect(priorReport.edits.f1.value).toBe("Prior value");
-    await current.run.editReport("f1", {
-      label: "New edit",
-      value: "New value",
-    });
-    expect(saveEdit).toHaveBeenLastCalledWith(
-      expect.anything(),
-      "new-run",
-      "f1",
-      { label: "New edit", value: "New value" },
-    );
-    expect(priorReport.edits.f1.value).toBe("Prior value");
-  },
-);
 
 describe("report dissection run", () => {
   it("waits for the user to approve the scope, then persists a dashboard without a build worker", async () => {
@@ -386,55 +199,77 @@ describe("report dissection run", () => {
       address,
     );
   });
-  it("labels replay with its original run and timestamp when live capture fails", async () => {
-    const { run } = createRun();
-    vi.mocked(captureReport).mockRejectedValue(
-      new Error("Live capture unavailable"),
-    );
-    vi.mocked(latestReport).mockResolvedValue({
-      report: report(),
-      evidence: [],
-    });
-    await startReport(run, "new-run");
-    await run.alarm();
-    expect(latestReport).toHaveBeenCalledWith(expect.anything(), GOLDMAN_URL);
-    const state = await run.getState();
-    expect(state.report).toMatchObject({
-      runId: "new-run",
-      replay: {
-        runId: "test-run",
-        completedAt: report().completedAt,
-        reason: expect.stringContaining("Live capture unavailable"),
-      },
-    });
-    expect(state.phase).toBe("done");
-  });
-  it("never replays or shares a report for an address with a query or fragment", async () => {
-    const { run } = createRun();
-    const address = "https://example.org/report?token=secret#figures";
-    vi.mocked(captureReport).mockRejectedValue(new Error("Capture failed"));
-    vi.mocked(latestReport).mockResolvedValue({
-      report: report(),
-      evidence: [],
-    });
-    await startReport(run, "private-run", address);
-    await run.alarm();
-    expect(latestReport).not.toHaveBeenCalled();
-    expect(await run.getState()).toMatchObject({ phase: "failed" });
-    expect((await run.getState()).report).toBeUndefined();
-  });
-  it("shows failure when there is no real successful run to replay", async () => {
-    const { run } = createRun();
-    vi.mocked(captureReport).mockRejectedValue(new Error("Capture failed"));
-    vi.mocked(latestReport).mockResolvedValue(undefined);
-    await startReport(run, "new-run");
-    await run.alarm();
-    expect(await run.getState()).toMatchObject({
-      phase: "failed",
-      error: expect.stringContaining("no successful replay"),
-    });
-    expect((await run.getState()).report).toBeUndefined();
-  });
+  it.each([GOLDMAN_URL, "https://example.org/report?token=secret#figures"])(
+    "surfaces the real capture failure for %s",
+    async (address) => {
+      const { run } = createRun();
+      vi.mocked(captureReport).mockRejectedValueOnce(
+        new Error("Capture failed"),
+      );
+      await startReport(run, "new-run", address);
+      await run.alarm();
+      expect(await run.getState()).toMatchObject({
+        phase: "failed",
+        error: "Capture failed",
+      });
+      expect((await run.getState()).report).toBeUndefined();
+      expect(saveReport).not.toHaveBeenCalled();
+      expect(
+        (await run.events(0)).some((event) => event.type === "report"),
+      ).toBe(false);
+    },
+  );
+  it.each(["research", "persistence"])(
+    "keeps its own evidence and fails when report %s fails",
+    async (stage) => {
+      const otherRun = { evidenceFile: vi.fn() };
+      const runs = { idFromName: vi.fn(), get: vi.fn(() => otherRun) };
+      const { run } = createRun({
+        RUNS: runs as unknown as DurableObjectNamespace,
+      });
+      vi.mocked(captureReport).mockResolvedValueOnce({
+        article: {
+          html: "current capture",
+          url: GOLDMAN_URL,
+          capturedAt: report().completedAt,
+          hash: "current",
+        },
+        evidence: [
+          {
+            id: "ev_report_html",
+            kind: "html",
+            page: "/",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: report().completedAt,
+            hash: "current",
+            summary: "Current capture",
+            limits: "",
+          },
+        ],
+        blobs: { ev_report_html: "current capture" },
+        boxes: [],
+        pageWidth: 1440,
+        pageHeight: 900,
+      });
+      const error = `${stage} failed`;
+      if (stage === "research")
+        vi.mocked(dissect).mockRejectedValueOnce(new Error(error));
+      else {
+        vi.mocked(dissect).mockResolvedValueOnce(report());
+        vi.mocked(saveReport).mockRejectedValueOnce(new Error(error));
+      }
+      await startReport(run, "new-run");
+      await run.alarm();
+      expect(await run.getState()).toMatchObject({ phase: "failed", error });
+      expect((await run.getState()).report).toBeUndefined();
+      const html = await run.evidenceFile("ev_report_html");
+      expect(new TextDecoder().decode(html?.content)).toBe("current capture");
+      expect(await run.evidenceFile("prior-run-only")).toBeNull();
+      expect(runs.get).not.toHaveBeenCalled();
+      expect(saveReport).toHaveBeenCalledTimes(stage === "research" ? 0 : 1);
+    },
+  );
   it("saves an edit separately and leaves the captured original unchanged", async () => {
     const { run } = createRun();
     vi.mocked(captureReport).mockResolvedValue({
@@ -511,11 +346,10 @@ it("closes the report Anchor session on stop before capture finishes", async () 
   expect([...data.keys()].some((key) => key.startsWith("blob:"))).toBe(false);
   expect(endSession).toHaveBeenCalledTimes(1);
   expect(dissect).not.toHaveBeenCalled();
-  expect(latestReport).not.toHaveBeenCalled();
   expect(fetcher).not.toHaveBeenCalled();
 });
 
-it("stops report research without starting source requests or replay", async () => {
+it("stops report research without starting source requests", async () => {
   const actual =
     await vi.importActual<typeof import("./dissection")>("./dissection");
   vi.mocked(dissect).mockImplementationOnce(actual.dissect);
@@ -566,7 +400,6 @@ it("stops report research without starting source requests or replay", async () 
   });
   await alarm;
   expect(fetcher).not.toHaveBeenCalled();
-  expect(latestReport).not.toHaveBeenCalled();
   expect(saveReport).not.toHaveBeenCalled();
   expect((await run.getState()).phase).toBe("stopped");
   expect((await run.getState()).report).toBeUndefined();
