@@ -1,5 +1,6 @@
 import {
   AnchorError,
+  CodeExecutionRefused,
   createSession,
   endSession,
   runSnippet,
@@ -93,8 +94,10 @@ return { html: await page.content(), url: page.url(), png, ...locations };
       } catch (error) {
         signal?.throwIfAborted();
         // Code execution can be off for the account: read the page over HTTP and use the plain screenshot tool.
-        if (!(error instanceof AnchorError)) throw error;
+        if (!(error instanceof CodeExecutionRefused)) throw error;
         const page = await sourceFetch(url, signal);
+        if (new URL(page.url).origin !== new URL(url).origin)
+          throw new Error("Report redirected to another origin");
         html = page.html;
         url = page.url;
         const why = `Anchor code execution unavailable (${error.message.slice(0, 160)}); page HTML fetched directly, so DOM boxes and rendered content are not observed`;

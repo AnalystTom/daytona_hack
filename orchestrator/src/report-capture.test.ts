@@ -58,11 +58,19 @@ it.each([false, true])(
 
 it("falls back to fetched HTML and the screenshot tool when code execution is refused", async () => {
   const url = "https://www.goldmansachs.com/article";
+  const resolvedUrl = "https://www.goldmansachs.com/resolved-article";
   const html =
     "<h1>Investment</h1><p>That projection points to $1 trillion of AI-related investment around the globe in 2026, including $581 billion in the US.</p>";
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => new Response(html)),
+    vi.fn(async (input: string) =>
+      input === url
+        ? new Response(null, {
+            status: 302,
+            headers: { location: resolvedUrl },
+          })
+        : new Response(html),
+    ),
   );
   vi.mocked(createSession).mockResolvedValue({ id: "session" } as Awaited<
     ReturnType<typeof createSession>
@@ -77,11 +85,12 @@ it("falls back to fetched HTML and the screenshot tool when code execution is re
     { ANCHORBROWSER_API_KEY: "test" } as Env,
     url,
   );
-  expect(screenshotTool).toHaveBeenCalledWith("test", "session", url, {
+  expect(screenshotTool).toHaveBeenCalledWith("test", "session", resolvedUrl, {
     width: 1440,
     height: 900,
   });
   expect(capture.article.html).toBe(html);
+  expect(capture.article.url).toBe(resolvedUrl);
   expect(capture.boxes).toEqual([]);
   expect(capture.evidence[0]).toMatchObject({
     tool: "fetch",
@@ -94,6 +103,53 @@ it("falls back to fetched HTML and the screenshot tool when code execution is re
   expect(figures.map((f) => f.value)).toContain("$581 billion");
   for (const f of figures)
     expect(f.location).toMatchObject({ start: expect.any(Number) });
+  expect(endSession).toHaveBeenCalledWith("test", "session");
+});
+
+it.each([
+  "Anchor snippet failed: Report redirected to another origin",
+  "Anchor POST /v1/tools/execute-code failed with 500",
+])("rethrows non-refusal Anchor errors: %s", async (message) => {
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  vi.mocked(createSession).mockResolvedValue({ id: "session" } as Awaited<
+    ReturnType<typeof createSession>
+  >);
+  const error = new AnchorError(message);
+  vi.mocked(runSnippet).mockRejectedValue(error);
+  await expect(
+    captureReport(
+      { ANCHORBROWSER_API_KEY: "test" } as Env,
+      "https://www.goldmansachs.com/article",
+    ),
+  ).rejects.toBe(error);
+  expect(fetch).not.toHaveBeenCalled();
+  expect(screenshotTool).not.toHaveBeenCalled();
+  expect(endSession).toHaveBeenCalledWith("test", "session");
+});
+
+it.each([
+  "https://example.com/article",
+  "http://www.goldmansachs.com/article",
+  "https://www.goldmansachs.com:8443/article",
+])("rejects a fallback redirect to another origin: %s", async (redirect) => {
+  const url = "https://www.goldmansachs.com/article";
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async (input: string) =>
+      input === url
+        ? new Response(null, { status: 302, headers: { location: redirect } })
+        : new Response("<h1>Different report</h1>"),
+    ),
+  );
+  vi.mocked(createSession).mockResolvedValue({ id: "session" } as Awaited<
+    ReturnType<typeof createSession>
+  >);
+  vi.mocked(runSnippet).mockRejectedValue(new CodeExecutionRefused("403"));
+  await expect(
+    captureReport({ ANCHORBROWSER_API_KEY: "test" } as Env, url),
+  ).rejects.toThrow("Report redirected to another origin");
+  expect(screenshotTool).not.toHaveBeenCalled();
   expect(endSession).toHaveBeenCalledWith("test", "session");
 });
 
