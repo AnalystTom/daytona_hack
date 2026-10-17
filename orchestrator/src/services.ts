@@ -71,6 +71,8 @@ async function llmCall<T>(
         ? {
             tools: [{ type: "web_search", search_context_size: "low" }],
             max_tool_calls: opts.webSearch,
+            // Parallel calls in one turn can overshoot max_tool_calls.
+            parallel_tool_calls: false,
             max_output_tokens: 16000,
           }
         : {}),

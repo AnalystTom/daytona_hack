@@ -339,6 +339,28 @@ describe("observed report figures", () => {
     expect(report.traces.every((t) => t.status === "not_found")).toBe(true);
     expect(vi.mocked(llmJson).mock.calls.at(-1)?.[1].webSearch).toBe(4);
   });
+  it("keeps the report and records the real count when the provider overspends the search budget", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(chart)));
+    const run = async (calls: number) => {
+      vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+        opts.onSearchCalls?.(calls);
+        return { sources: [], traces: [] };
+      });
+      return dissect(env, "run", {
+        html: captured,
+        url: "https://www.goldmansachs.com/article",
+        capturedAt: "2026-10-17T04:18:32.733Z",
+        hash: "capture-hash",
+      });
+    };
+    const over = await run(6);
+    expect(over.figures.length).toBeGreaterThan(0);
+    expect(over.search).toMatchObject({ calls: 6, budget: 4 });
+    expect(over.search.limitations).toContain(
+      "The search used 6 calls against a budget of 4.",
+    );
+    expect((await run(4)).search.limitations).not.toContain("against a budget");
+  });
   it("refuses an online match when its quote is absent from the fetched source", async () => {
     vi.stubGlobal(
       "fetch",

@@ -618,8 +618,11 @@ For each figure return a trace: matches only when the independently fetched quot
     search: {
       calls: searchCalls,
       budget: searchBudget,
-      limitations:
-        "At most four OpenAI web-search calls and six fetched original sources. Only directly fetched matching quotations count as traced. Paywalls, images and unavailable datasets remain not observed.",
+      limitations: `At most four OpenAI web-search calls and six fetched original sources. Only directly fetched matching quotations count as traced. Paywalls, images and unavailable datasets remain not observed.${
+        searchCalls > searchBudget
+          ? ` The search used ${searchCalls} calls against a budget of ${searchBudget}.`
+          : ""
+      }`,
     },
     storage: { table: "report_run", recordId: runId },
   });
