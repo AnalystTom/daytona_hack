@@ -424,6 +424,145 @@ describe("observed report figures", () => {
     expect(report.figures[1]?.label).not.toContain("2026");
   });
   it.each([
+    "Investment is $5 billion in 2026 and 2027.",
+    "Investment is $5 billion in 2026 or 2027.",
+    "Investment is $5 billion in 2026 and in 2027.",
+    "Investment is $5 billion in 2026, and 2027.",
+    "Investment is $5 billion in 2026 & 2027.",
+    "Investment is $5 billion during 2026 through 2027.",
+    "Investment is $5 billion from 2026 to 2027.",
+    "Investment is $5 billion in 2026 and 2027 and 2028.",
+    "Investment in 2026 and 2027 is $5 billion.",
+  ])(
+    "leaves coordinated periods unset in both extraction paths: %s",
+    (quote) => {
+      const article = extractFigures(`<p>${quote}</p>`);
+      for (const heading of ["title", "subtitle"]) {
+        const headlines = extractChart(
+          chart
+            .replace("layout.title", `layout.${heading}`)
+            .replace(
+              "Goldman Sachs Research estimates companies will invest $1.019 trillion globally in AI this year",
+              quote,
+            ),
+          "chart1",
+        ).filter((f) => f.group === "key_figures");
+        for (const figures of [article, headlines]) {
+          const figure = figures.find((f) => f.value === "$5 billion");
+          expect(figure).toMatchObject({ value: "$5 billion", period: "" });
+          expect(figure?.label).not.toMatch(/2026|2027|2028/);
+        }
+      }
+    },
+  );
+  it("retains an explicitly written year span", () => {
+    expect(
+      extractFigures("<p>Investment is $5 billion for 2026-2027.</p>")[0],
+    ).toMatchObject({
+      value: "$5 billion",
+      period: "2026-2027",
+    });
+  });
+  it("keeps coordinated years out of naming and rejects a single-year replacement", async () => {
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      const input = JSON.parse(opts.input as string);
+      expect(input.naming[0].period).toBe("");
+      opts.onSearchCalls?.(1);
+      return {
+        sources: [],
+        traces: [],
+        labels: [{ figureId: input.naming[0].id, label: "Investment, 2026" }],
+      };
+    });
+    const report = await dissect(env, "run", {
+      html: "<p>Investment is $5 billion in 2026 and 2027.</p>",
+      url: "https://publisher.example/report",
+      capturedAt: "2026-10-17T04:18:32.733Z",
+      hash: "capture-hash",
+    });
+    expect(report.figures[0]).toMatchObject({
+      value: "$5 billion",
+      period: "",
+      label: "Amount",
+    });
+  });
+  it("keeps fallback scope local in article and chart headings", () => {
+    const quote =
+      "Those estimates imply that AI capex will rise from 1.8% of GDP in the US (with global AI investment totaling 0.9% of global GDP) in 2026 to 2.5% of GDP in the US (1.3% globally) in 2027, with a further increase to 2.8% (1.4% globally) in 2028.";
+    const expected = [
+      ["1.8%", "GDP, 2026"],
+      ["0.9%", "Global GDP, 2026"],
+      ["2.5%", "GDP, 2027"],
+      ["1.3%", "Globally, 2027"],
+      ["2.8%", "Percentage, 2028"],
+      ["1.4%", "Globally, 2028"],
+    ];
+    expect(
+      extractFigures(`<p>${quote}</p>`).map((f) => [f.value, f.label]),
+    ).toEqual(expected);
+    for (const heading of ["title", "subtitle"]) {
+      expect(
+        extractChart(
+          chart
+            .replace("layout.title", `layout.${heading}`)
+            .replace(
+              "Goldman Sachs Research estimates companies will invest $1.019 trillion globally in AI this year",
+              quote,
+            ),
+          "chart1",
+        )
+          .filter((f) => f.group === "key_figures")
+          .map((f) => [f.value, f.label]),
+      ).toEqual(expected);
+    }
+  });
+  it.each([
+    [
+      "US returns were 5%; UK returns were 6% globally.",
+      ["Percentage", "Globally"],
+    ],
+    ["US returns were 5% (6% globally) last year.", ["Percentage", "Globally"]],
+    [
+      "US returns were 5% and 6% internationally.",
+      ["Percentage", "Internationally"],
+    ],
+  ])("does not borrow another quantity's scope: %s", (quote, labels) => {
+    expect(extractFigures(`<p>${quote}</p>`).map((f) => f.label)).toEqual(
+      labels,
+    );
+  });
+  it.each([false, true])(
+    "preserves fallback scope when model labels are absent or rejected: %s",
+    async (reject) => {
+      vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+        const input = JSON.parse(opts.input as string);
+        opts.onSearchCalls?.(1);
+        return {
+          sources: [],
+          traces: [],
+          ...(reject
+            ? {
+                labels: input.naming.map((f: { id: string }) => ({
+                  figureId: f.id,
+                  label: "US returns, 2030",
+                })),
+              }
+            : {}),
+        };
+      });
+      const report = await dissect(env, "run", {
+        html: "<p>US returns were 5% (6% globally).</p>",
+        url: "https://publisher.example/report",
+        capturedAt: "2026-10-17T04:18:32.733Z",
+        hash: "capture-hash",
+      });
+      expect(report.figures.map((f) => f.label)).toEqual([
+        "Percentage",
+        "Globally",
+      ]);
+    },
+  );
+  it.each([
     "Since 2022 cumulative AI investment will total $1.8 trillion by the end of this year.",
     "Cumulative AI investment of $1.8 trillion since 2022 is forecast by the end of this year.",
     "Investment since 2022 totals $1.8 trillion.",

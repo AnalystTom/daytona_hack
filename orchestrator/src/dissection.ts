@@ -138,6 +138,16 @@ export function figureQuantities(quote: string) {
         ) &&
         !/[,;:]|\b(?:and|but|while|whereas|to)\b/i.test(
           quote.slice(Math.min(q.end, y.end), Math.max(q.start, y.start)),
+        ) &&
+        !years.some(
+          (other) =>
+            other !== y &&
+            /^\s*(?:,?\s*(?:and|or|nor|to|through|until|&|as well as)|,)\s*(?:(?:in|for|by|during)\s+)?$/i.test(
+              quote.slice(
+                Math.min(y.end, other.end),
+                Math.max(y.start, other.start),
+              ),
+            ),
         ),
     );
     const period = near.length === 1 ? near[0]!.value : "";
@@ -150,7 +160,7 @@ export function figureQuantities(quote: string) {
 const CONNECTOR =
   /^(?:of|in|on|for|to|by|from|than|per|at|about|around|including|and|with|a|an|the)$/i;
 const CLAUSE_END =
-  /,|;|:|\(|\s(?:in|for|by|from|since|during|according|writes|as|this|compared|than|with|while|and|to)\s/i;
+  /,|;|:|[()]|\s(?:in|for|by|from|since|during|according|writes|as|this|compared|than|with|while|and|to)\s/i;
 
 /** Deterministic fallback when no model label is available: what follows the number, else its kind. */
 export function fallbackLabel(
@@ -162,32 +172,19 @@ export function fallbackLabel(
   const after = sentence
     .slice(at + quantity.text.length)
     .split(CLAUSE_END)[0]!
-    .replace(/[“”"()]/g, "")
+    .replace(/[“”"().!?]/g, "")
     .trim()
     .split(/\s+/)
     .filter(Boolean);
   while (after[0] && CONNECTOR.test(after[0])) after.shift();
-  const before = sentence
-    .slice(0, at)
-    .split(/[,;:]/)
-    .at(-1)!
-    .replace(/\S*\d\S*/g, "")
-    .replace(/[“”"()]/g, "")
-    .trim()
-    .split(/\s+/)
-    .slice(-7)
-    .join(" ")
-    .slice(0, 60);
   const name =
-    after.length > 1
+    after.length > 0
       ? after.join(" ").slice(0, 60)
-      : before
-        ? before
-        : quantity.unit.includes("%")
-          ? "Percentage"
-          : /[$€£]|USD|EUR|GBP/.test(quantity.unit)
-            ? "Amount"
-            : "Count";
+      : quantity.unit.includes("%")
+        ? "Percentage"
+        : /[$€£]|USD|EUR|GBP/.test(quantity.unit)
+          ? "Amount"
+          : "Count";
   return `${name[0]!.toUpperCase()}${name.slice(1)}${period && !name.includes(period) ? `, ${period}` : ""}`;
 }
 
