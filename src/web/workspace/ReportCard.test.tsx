@@ -210,4 +210,69 @@ describe("report canvas data", () => {
       expect(html).toContain(quote);
     },
   );
+  it("renders the dashboard: summary, grouped breakdown, periods and every place a figure appears", () => {
+    const [base] = reportContractExample.figures;
+    const location = {
+      kind: "html",
+      start: 1,
+      end: 9,
+      path: "HTML characters 1–9",
+    };
+    const chartLocation = { ...location, kind: "chart_data" };
+    const cell = (id: string, row: string, column: string, value: string) => ({
+      ...base,
+      id,
+      value,
+      unit: "$ billions",
+      label: `${row}: ${column}`,
+      sourceId: "chart1",
+      location: chartLocation,
+      group: "investment_breakdown",
+      breakdown: { row, column },
+    });
+    const report = ReportDissection.parse({
+      ...reportContractExample,
+      figures: [
+        {
+          ...base,
+          label: "Global AI investment, 2026",
+          period: "2026",
+          mentions: [{ quote: "Restated in the body", location }],
+        },
+        cell("c1", "US", "US public", "530"),
+        cell("c2", "US", "US private", "35"),
+        cell("c3", "Global ex-US", "US public", "234"),
+        {
+          ...base,
+          id: "n1",
+          value: "",
+          label: "Unreadable quantity: 1e3",
+          status: "not_observed",
+          group: "not_observed",
+        },
+      ],
+      sources: [
+        ...reportContractExample.sources,
+        {
+          ...reportContractExample.sources[0],
+          id: "chart1",
+          title: "Embedded investment chart",
+          url: "https://charts.example/flourish",
+          quoteUrl: "https://charts.example/flourish",
+        },
+      ],
+    });
+    const html = renderToStaticMarkup(
+      <ReportCard report={report} evidence={[]} />,
+    );
+    expect(html).toContain("Global AI investment, 2026");
+    expect(html).toContain("Period 2026");
+    expect(html).toContain("2 places");
+    expect(html).toContain("Where invested");
+    expect(html).toContain("US private");
+    expect(html).toMatch(/<th[^>]*scope="row"[^>]*>Global ex-US<\/th>/);
+    expect(html).toContain("Not observed");
+    expect(html).toContain("3 figures read from this source");
+    expect(html).toContain("Open chart source");
+  });
 });

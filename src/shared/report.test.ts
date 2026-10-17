@@ -167,3 +167,28 @@ it("keeps saved comparisons without complete-passage evidence unverified", () =>
     exactQuoteEvidence(figure, { value: figure.value, quote: figure.quote }),
   ).toBe(false);
 });
+
+it.each([
+  ["It is 2%-5% of GDP.", "2%-5%", "%"],
+  ["Between USD 5-10 billion.", "USD 5-10 billion", "USD billion"],
+  ["Up (1.3% globally) today.", "1.3%", "%"],
+  ["Said “about 2022,” twice.", "2022", "number"],
+])("reads %s as an observed quantity", (quote, value, unit) => {
+  expect(reportQuantities(quote)).toMatchObject([
+    { value, unit, status: "observed" },
+  ]);
+});
+
+it.each([
+  ["Investment reaches USD 5-10 billion.", "USD 5-10 billion", "USD billion"],
+  ["Investment reaches USD 5—10 billion.", "USD 5—10 billion", "USD billion"],
+  ["Loss was (USD 35 billion", "USD 35 billion", "USD billion"],
+])("never verifies a range or possible negative: %s", (quote, value, unit) => {
+  const figure = ReportDissection.parse(reportContractExample).figures[0]!;
+  expect(
+    exactQuoteEvidence(
+      { ...figure, quote, value, unit },
+      { quote, value, completePassage: true },
+    ),
+  ).toBe(false);
+});

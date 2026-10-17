@@ -1163,6 +1163,46 @@
 .status-in_article {
   background: color-mix(in srgb, var(--pistachio) 50%, white);
 }
+.report-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.75rem;
+  margin: 1rem 0 0;
+  padding: 0.9rem 1rem;
+  background: var(--parchment);
+  border-radius: 0.75rem;
+}
+.report-summary div {
+  display: flex;
+  flex-direction: column-reverse;
+}
+.report-summary dd {
+  margin: 0;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.5rem;
+  font-variant-numeric: tabular-nums;
+}
+.report-summary dt {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+.report-breakdown caption {
+  caption-side: top;
+  text-align: left;
+  padding: 0 0 0.6rem;
+  color: var(--muted);
+}
+.report-breakdown td {
+  font-variant-numeric: tabular-nums;
+}
+.report-breakdown td.is-selected {
+  background: color-mix(in srgb, var(--pistachio) 28%, white);
+}
+.report-places ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
 .report-records {
   margin-top: 1rem;
 }

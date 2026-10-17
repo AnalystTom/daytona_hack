@@ -36,7 +36,7 @@ const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 describe("observed report figures", () => {
   it("extracts the captured Goldman Sachs page before researching its sources", async () => {
     expect(extractFigures(captured).map((figure) => figure.value)).toContain(
-      "$1 trillion",
+      "$1 Trillion",
     );
     const fetcher = vi.fn().mockResolvedValue(new Response(chart));
     vi.stubGlobal("fetch", fetcher);
@@ -76,6 +76,62 @@ describe("observed report figures", () => {
         cleanText(captured.slice(figure.location.start, figure.location.end)),
       ).toBe(figure.quote);
     }
+    expect(report.figures.map((f) => f.value)).not.toContain("157");
+    expect(report.sources[0]?.quote).toBe(report.sources[0]?.title);
+    expect(
+      report.figures
+        .filter((figure) => figure.group === "investment_breakdown")
+        .map((f) => f.breakdown),
+    ).toEqual([
+      { row: "US", column: "US public" },
+      { row: "US", column: "US private" },
+      { row: "US", column: "Non-US public" },
+      { row: "Global ex-US", column: "US public" },
+      { row: "Global ex-US", column: "US private" },
+      { row: "Global ex-US", column: "Non-US public" },
+    ]);
+    expect(report.sources[1]).toMatchObject({
+      id: "chart1",
+      status: "in_article",
+      quote:
+        "Goldman Sachs Research estimates companies will invest $1.019 trillion globally in AI this year",
+      reason: expect.stringContaining("6 values in 2 rows"),
+    });
+  });
+  it("applies a model label only when it is short and invents no number", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(chart)));
+    vi.mocked(llmJson).mockImplementationOnce(async (_env, opts) => {
+      const input = JSON.parse(opts.input as string);
+      expect(input.naming[0]).toMatchObject({
+        id: "article_f1",
+        value: "$1 Trillion",
+        period: "2026",
+        sentence: expect.stringContaining("Exceed $1 Trillion"),
+      });
+      opts.onSearchCalls?.(1);
+      return {
+        sources: [],
+        traces: [],
+        labels: [
+          { figureId: "article_f1", label: "Global AI investment, 2026" },
+          { figureId: "article_f2", label: "US AI investment, 2030" },
+          { figureId: "article_f3", label: "x".repeat(71) },
+          { figureId: "chart1_f0_0", label: "Overwritten chart cell" },
+        ],
+      };
+    });
+    const report = await dissect(env, "run", {
+      html: captured,
+      url: "https://www.goldmansachs.com/article",
+      capturedAt: "2026-10-17T04:18:32.733Z",
+      hash: "capture-hash",
+    });
+    const label = (id: string) =>
+      report.figures.find((f) => f.id === id)?.label;
+    expect(label("article_f1")).toBe("Global AI investment, 2026");
+    expect(label("article_f2")).toBe("Amount");
+    expect(label("article_f3")).toBe("Amount, 2026");
+    expect(label("chart1_f0_0")).toBe("US: US public");
   });
   it.each([...uncertainQuantityExamples, ...incompleteQuantityExamples])(
     "keeps unsupported currency notation whole: $quote",
@@ -225,7 +281,6 @@ describe("observed report figures", () => {
     "$1.019,5 billion",
     "1e3",
     "1/2",
-    "2.5%-3.5%",
     "--2.5%",
     "(2.5%)",
     "1 019 billion",
@@ -265,34 +320,98 @@ describe("observed report figures", () => {
       location: { path: "layout.subtitle" },
     });
   });
-  it("extracts every occurrence, including periods and percentages, without the old eight-figure cap", () => {
+  it("lists each distinct figure once with its period and every location", () => {
     const figures = extractFigures(html);
-    expect(figures.length).toBeGreaterThan(8);
-    expect(figures.map((f) => f.value)).toEqual([
-      "$1 Trillion",
-      "2026",
-      "$1 trillion",
-      "2026",
-      "$581 billion",
-      "1.8%",
-      "0.9%",
-      "2026",
-      "2.5%",
-      "",
-      "2027",
-      "2.8%",
-      "",
-      "2028",
+    expect(figures.map((f) => [f.value, f.period])).toEqual([
+      ["$1 Trillion", "2026"],
+      ["$581 billion", "2026"],
+      ["1.8%", "2026"],
+      ["0.9%", "2026"],
+      ["2.5%", "2027"],
+      ["1.3%", "2027"],
+      ["2.8%", "2028"],
+      ["1.4%", "2028"],
     ]);
+    expect(figures.map((f) => f.id)).toEqual(
+      figures.map((_, i) => `article_f${i + 1}`),
+    );
+    // "$1 trillion" in the body is the title's figure restated, so it is a location of it.
+    expect(figures[0]?.mentions).toHaveLength(1);
     for (const figure of figures) {
-      expect(figure.status).toBe(figure.value ? "observed" : "not_observed");
+      expect(figure.status).toBe("observed");
       expect(figure.sourceId).toBe("article");
-      expect(
-        cleanText(html.slice(figure.location.start, figure.location.end)),
-      ).toBe(figure.quote);
-      expect(figure.quote).toContain(figure.value);
+      for (const place of [figure, ...(figure.mentions ?? [])]) {
+        expect(
+          cleanText(html.slice(place.location.start, place.location.end)),
+        ).toBe(place.quote);
+        expect(place.quote).toContain(
+          place === figure ? figure.value : figure.value.toLowerCase(),
+        );
+      }
       expect(figure.location.path).toBeTruthy();
     }
+  });
+  it("treats years and dates as context and skips site chrome", () => {
+    const figures = extractFigures(captured);
+    expect(figures.map((f) => f.value)).not.toContain("157");
+    expect(figures.map((f) => f.value)).not.toContain("2026");
+    expect(figures.map((f) => f.value)).not.toContain("2022");
+    const cases = extractFigures(
+      "<p>On 7 August 2026 the fund reported FY26 returns of 12% for 2022-2025, in Q3 and since March 5.</p>",
+    );
+    expect(cases.map((f) => [f.value, f.period])).toEqual([
+      ["12%", "2022-2025"],
+    ]);
+  });
+  it("starts a page-wide container at the title, before menus and mega-navigation", () => {
+    const figures = extractFigures(
+      `<div class="x--root-grid-main"><ul><li><a>157 Years of Excellence</a></li></ul><h1>Report</h1><p>Spend was $5 billion.</p></div>`,
+    );
+    expect(figures.map((f) => f.value)).toEqual(["$5 billion"]);
+  });
+  it("keeps one figure for a repeated value but every distinct place it appears", () => {
+    const figures = extractFigures(
+      "<p>Capex reached $794 billion in 2026.</p><p>Analysts repeat $794 billion for 2026.</p><p>Without a year, $794 billion differs.</p><p>Revenue was $5 billion; assets were $5 billion.</p>",
+    );
+    expect(
+      figures.map((f) => [f.value, f.period, f.mentions?.length ?? 0]),
+    ).toEqual([
+      ["$794 billion", "2026", 1],
+      ["$794 billion", "", 0],
+      ["$5 billion", "", 0],
+      ["$5 billion", "", 0],
+    ]);
+  });
+  it.each([
+    ["2%-5% of GDP", "2%-5%", "%"],
+    ["2% - 5% of GDP", "2% - 5%", "%"],
+    ["between 2–5%", "2–5%", "%"],
+    ["$5-10 billion", "$5-10 billion", "$ billion"],
+    ["2.5%-3.5%", "2.5%-3.5%", "%"],
+  ])("reads the range in %s as an observed figure", (text, value, unit) => {
+    expect(extractFigures(`<p>It reached ${text}.</p>`)).toMatchObject([
+      { value, unit, status: "observed", group: "key_figures" },
+    ]);
+  });
+  it.each(["$5 billion-10%", "5 million-10 billion", "€5-$10 billion"])(
+    "does not publish a range with mixed units: %s",
+    (text) => {
+      expect(extractFigures(`<p>It reached ${text}.</p>`)).toMatchObject([
+        { value: "", status: "not_observed" },
+      ]);
+    },
+  );
+  it("reads a figure that opens a parenthetical but not an accounting negative", () => {
+    expect(
+      extractFigures("<p>Up 2.5% (1.3% globally) and (2.5%).</p>").map((f) => [
+        f.value,
+        f.status,
+      ]),
+    ).toEqual([
+      ["2.5%", "observed"],
+      ["1.3%", "observed"],
+      ["", "not_observed"],
+    ]);
   });
   it("reads the published chart dataset and precise headline without executing JavaScript", () => {
     const figures = extractChart(chart, "chart1");
@@ -408,7 +527,7 @@ describe("observed report figures", () => {
 it("retains a source link actually cited in the article when the original cannot be read", async () => {
   const quote =
     "But these estimates have several drawbacks, according to Goldman Sachs Research.";
-  const captured = `<h1>Investment in 2026</h1><p>But these estimates have several drawbacks, according to <a href="/insights/goldman-sachs-research">Goldman Sachs Research</a>.</p>`;
+  const captured = `<h1>Investment of $5 billion in 2026</h1><p>But these estimates have several drawbacks, according to <a href="/insights/goldman-sachs-research">Goldman Sachs Research</a>.</p>`;
   vi.mocked(llmJson).mockResolvedValueOnce({
     sources: [
       {
@@ -448,7 +567,7 @@ it("does not call a normalized empty quotation an observed original source", asy
     sources: [
       {
         name: "Research",
-        articleQuote: "Research investment in 2026",
+        articleQuote: "Research investment of $5 billion",
         url: "https://www.goldmansachs.com/original",
         title: "Unobserved title",
         publisher: "Unobserved publisher",
@@ -460,7 +579,7 @@ it("does not call a normalized empty quotation an observed original source", asy
     traces: [],
   });
   const report = await dissect(env, "run", {
-    html: "<h1>Research investment in 2026</h1>",
+    html: "<h1>Research investment of $5 billion</h1>",
     url: "https://www.goldmansachs.com/article",
     capturedAt: "2026-10-16T19:00:00.000Z",
     hash: "hash",
@@ -479,7 +598,7 @@ it.each([
 ])(
   "excludes article and chart aliases from both source promotions: %s",
   async (url) => {
-    const quote = "Research investment in 2026";
+    const quote = "Research investment of $5 billion";
     const captured = `<h1>${quote}</h1><iframe src="https://www.goldmansachs.com/chart"></iframe>`;
     vi.stubGlobal(
       "fetch",
@@ -512,7 +631,7 @@ it.each([
           figureId: "article_f1",
           url,
           quote,
-          value: "2026",
+          value: "$5 billion",
           status: "matches",
           reason: "Claim",
         },
@@ -582,19 +701,6 @@ it.each([
     "$35 billion",
     "AI investment is $35 billion [cad] in 2026 and will rise.",
     "not_found",
-  ],
-  ["2026", originalQuote, "not_found", "article_f2"],
-  [
-    "2026",
-    "AI investment is $35 billion in 12026 and will rise.",
-    "not_found",
-    "article_f2",
-  ],
-  [
-    "2027",
-    "AI investment is $35 billion in 2027 and will rise.",
-    "not_found",
-    "article_f2",
   ],
   ["35", originalQuote, "not_found", "chart1_f0_1"],
   ["", originalQuote, "not_found", "article_f1", "not_found"],
@@ -933,15 +1039,15 @@ it.each(["chart", "search", "source"])(
         traces: [1, 2].map((i) => ({
           figureId: `article_f${i}`,
           url: `https://research.example/source${i}`,
-          value: "2026",
-          quote: "Investment in 2026",
+          value: "$5 billion",
+          quote: "Investment of $5 billion",
           status: "matches",
         })),
       };
     });
     const article = {
       html:
-        "<h1>Investment in 2026</h1><p>Investment in 2027</p>" +
+        "<h1>Investment of $5 billion</h1><p>Investment of $6 billion</p>" +
         (stage === "chart"
           ? '<iframe src="https://research.example/chart1"></iframe><iframe src="https://research.example/chart2"></iframe>'
           : ""),
