@@ -93,7 +93,7 @@ const interpret = (g: Groups | undefined) => {
 /** "2%-5%" or "$5-10 billion": both ends must be supported scalars with compatible units. */
 function rangeGroups(value: string): Groups | undefined {
   for (let i = 1; i < value.length; i++) {
-    if (!"-–—".includes(value[i]!)) continue;
+    if (!"-–—".includes(value.charAt(i))) continue;
     const lo = scalar.exec(value.slice(0, i).trim())?.groups;
     const hi = scalar.exec(value.slice(i + 1).trim())?.groups;
     if (!lo || !hi || (lo.sign && lo.innerSign) || (hi.sign && hi.innerSign))

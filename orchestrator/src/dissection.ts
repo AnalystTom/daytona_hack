@@ -150,7 +150,7 @@ export function figureQuantities(quote: string) {
             ),
         ),
     );
-    const period = near.length === 1 ? near[0]!.value : "";
+    const period = near.length === 1 ? (near[0]?.value ?? "") : "";
     return [
       { ...q, period, sentence: sentence.text, sentenceStart: sentence.from },
     ];
@@ -169,9 +169,9 @@ export function fallbackLabel(
   period: string,
 ) {
   const at = quantity.start;
-  const after = sentence
-    .slice(at + quantity.text.length)
-    .split(CLAUSE_END)[0]!
+  const after = (
+    sentence.slice(at + quantity.text.length).split(CLAUSE_END)[0] ?? ""
+  )
     .replace(/[“”"().!?]/g, "")
     .trim()
     .split(/\s+/)
@@ -185,7 +185,7 @@ export function fallbackLabel(
         : /[$€£]|USD|EUR|GBP/.test(quantity.unit)
           ? "Amount"
           : "Count";
-  return `${name[0]!.toUpperCase()}${name.slice(1)}${period && !name.includes(period) ? `, ${period}` : ""}`;
+  return `${name.charAt(0).toUpperCase()}${name.slice(1)}${period && !name.includes(period) ? `, ${period}` : ""}`;
 }
 
 /** Offsets always address the captured HTML, never model-generated text. */
