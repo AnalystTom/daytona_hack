@@ -41,7 +41,7 @@ describe("report dashboard contract", () => {
   });
 });
 
-it("rejects observed sources without a capture hash and exceeded research budgets", () => {
+it("rejects observed sources without a capture hash but keeps an overspent search", () => {
   expect(
     ReportDissection.safeParse({
       ...reportContractExample,
@@ -53,7 +53,7 @@ it("rejects observed sources without a capture hash and exceeded research budget
       ...reportContractExample,
       search: { ...reportContractExample.search, calls: 5 },
     }).success,
-  ).toBe(false);
+  ).toBe(true);
 });
 
 it.each([

@@ -212,14 +212,8 @@ export const ReportDissection = z
         code: "custom",
         message: "Duplicate figure or source id",
       });
-    if (
-      report.storage.recordId !== report.runId ||
-      report.search.calls > report.search.budget
-    )
-      ctx.addIssue({
-        code: "custom",
-        message: "Invalid report record or search budget",
-      });
+    if (report.storage.recordId !== report.runId)
+      ctx.addIssue({ code: "custom", message: "Invalid report record" });
     for (const source of report.sources) {
       if (
         (source.status === "in_article" || source.status === "traced_online") &&
