@@ -204,6 +204,123 @@ describe("run scope", () => {
       }),
     );
   });
+  it("fetches the page HTML itself when none was captured, then scans its bundles", async () => {
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+    const upload = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+      exitCode: 0,
+      result: JSON.stringify({
+        findings: [
+          {
+            kind: "api",
+            value: "/api/x",
+            file: "0.js",
+            sha256: "ab".repeat(32),
+            locator: "0.js:1:0",
+            state: "observed",
+          },
+        ],
+        omitted: 0,
+        truncated: false,
+        limitations: [],
+      }),
+    });
+    const { state } = await plannedRun("frontend", "Frontend only", [], {
+      "https://site.example/static/app.js": "fetch('/api/x')",
+    });
+    expect(state.evidence.some((e) => e.kind === "html")).toBe(false);
+    expect(upload).toHaveBeenCalledOnce();
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        status: "observed",
+        page: "/insights/article",
+        limits: expect.stringContaining(
+          "fetched server-side, not browser-rendered",
+        ),
+      }),
+    );
+  });
+
+  it.each([
+    {
+      scope: "frontend",
+      status: 503,
+      headers: new Headers(),
+      reason: "HTTP 503",
+    },
+    {
+      scope: "backend",
+      status: 302,
+      headers: new Headers({ location: "/login" }),
+      reason: "page URL outside the approved scope",
+    },
+    {
+      scope: "backend",
+      status: 200,
+      headers: new Headers({ "content-type": "application/json" }),
+      reason: "page response is not HTML",
+    },
+  ])(
+    "records not_observed without scanning when $scope fetch fails: $reason",
+    async ({ scope, status, headers, reason }) => {
+      const create = vi.spyOn(Daytona.prototype, "create");
+      stubFetch({
+        orchestrator_turn: [turn(scope, false), turn(scope, true)],
+        plan: [{ tasks: [] }],
+        review: [{ verdict: "approve", reason: "ok", findings: [] }],
+      });
+      const stub = globalThis.fetch;
+      const ctx = context();
+      const run = new Run(
+        ctx as unknown as DurableObjectState,
+        { ORCHESTRATOR_MODEL: "m" } as Env,
+      );
+      await ctx.ready;
+      await run.start("run-1", SITE, `${scope} only`);
+      await run.message("Yes, go ahead.");
+      const requests: string[] = [];
+      vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+        requests.push(String(input));
+        return String(input).startsWith(SITE)
+          ? Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  content: '<script src="/preview.js"></script>',
+                }),
+                { status, headers },
+              ),
+            )
+          : stub(input, init);
+      });
+      await run.alarm();
+      const state = await run.getState();
+      expect(state.phase).toBe("planned");
+      expect(create).not.toHaveBeenCalled();
+      expect(
+        requests.filter((url) => url.startsWith("https://site.example/")),
+      ).toEqual(
+        scope === "backend"
+          ? [
+              SITE,
+              "https://site.example/robots.txt",
+              "https://site.example/sitemap.xml",
+              SITE,
+            ]
+          : [SITE],
+      );
+      expect(state.evidence).toContainEqual(
+        expect.objectContaining({
+          kind: "code",
+          tool: "rea",
+          status: "not_observed",
+          limits: `no approved page HTML was captured, and fetching it failed: ${reason}`,
+        }),
+      );
+    },
+  );
+
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",
     async (scope) => {
@@ -437,13 +554,13 @@ describe("run scope", () => {
     expect(plan?.instructions).toContain("sections/NAME.html");
     expect(plan?.instructions).not.toContain("server/routes");
     expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02"]);
-    // REA reads the page's bundles for frontend runs too; this page ships none
+    // REA reads the page's bundles for frontend runs too, from HTML it fetched itself
     expect(state.evidence).toContainEqual(
       expect.objectContaining({
         kind: "code",
         tool: "rea",
         status: "not_observed",
-        limits: "no approved page HTML was captured",
+        limits: expect.stringContaining("page HTML fetched server-side"),
       }),
     );
   });
