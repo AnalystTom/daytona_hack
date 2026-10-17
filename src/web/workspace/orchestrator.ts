@@ -46,6 +46,8 @@ const Evidence = z.object({
   capturedAt: z.iso.datetime({ offset: true }),
   hash: z.string(),
   limits: z.string(),
+  summary: z.string().optional(),
+  locator: z.string().optional(),
   url: z.string().optional(),
 });
 const Task = z.object({
@@ -159,22 +161,35 @@ export function runView(
         const item = Evidence.safeParse(data);
         if (!item.success) break;
         const e = item.data;
-        // Only screenshots and recordings have a card; other evidence feeds the plan.
-        const kind = e.kind === "recording" ? "recording" : "screenshot";
-        // A screenshot that was not observed still gets a card saying why.
-        const missing = e.status === "not_observed" && kind === "screenshot";
-        if (e.kind !== kind) break;
-        view.evidence = view.evidence.filter((x) => x.id !== e.id);
-        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
-        view.evidence.push({
+        const base = {
           id: e.id,
-          kind,
           label: e.status,
           pageOrState: e.page,
           tool: e.tool,
           capturedAt: e.capturedAt,
           contentHash: e.hash || "unknown",
           limitations: e.limits ? [e.limits] : [],
+        };
+        view.evidence = view.evidence.filter((x) => x.id !== e.id);
+        // REA's static reading of the shipped bundles: no file, just what was found and where.
+        if (e.kind === "code") {
+          view.evidence.push({
+            ...base,
+            kind: "bundle",
+            summary: e.summary,
+            locator: e.locator,
+          });
+          break;
+        }
+        // Screenshots and recordings have a card; other evidence feeds the plan.
+        const kind = e.kind === "recording" ? "recording" : "screenshot";
+        // A screenshot that was not observed still gets a card saying why.
+        const missing = e.status === "not_observed" && kind === "screenshot";
+        if (e.kind !== kind) break;
+        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
+        view.evidence.push({
+          ...base,
+          kind,
           src: missing ? undefined : `/api/v1${e.url}`,
         });
         break;

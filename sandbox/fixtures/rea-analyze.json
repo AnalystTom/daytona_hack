@@ -1,0 +1,434 @@
+{
+  "normalized_result": {
+    "statistics": {
+      "relevant_files": 2,
+      "nested_asar_containers": 0,
+      "text_bytes_read": 251,
+      "invalid_utf8_files": 0,
+      "parsed_javascript_files": 2,
+      "visited_ast_nodes": 62,
+      "findings": 7,
+      "modules": 0,
+      "parse_failures": 0
+    },
+    "limitations": [
+      "CommonJS and ESM binding relationships were recovered from inert syntax and resolved only within the inventoried artifact container.",
+      "JavaScript and HTML were parsed as inert text; bundle bootstrap code was never executed."
+    ],
+    "graph": {
+      "coverage": {
+        "status": "complete",
+        "truncated": false,
+        "omitted_count": 0,
+        "limits": []
+      },
+      "nodes": [
+        {
+          "kind": "javascript-module",
+          "observations": [
+            {
+              "label": "main.js",
+              "properties": {
+                "semantic_role": "source-module",
+                "path": "main.js",
+                "container_sha256": "e8d73d55301a19797972b2354322199b8bfc37da76a95254f0c50be9295460c6",
+                "logical_module_key": "main.js",
+                "module_format": "esm",
+                "import_relationships": 1,
+                "export_relationships": 1,
+                "export_names": ["App"],
+                "omitted_export_names": 0
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "main.js",
+                    "start": {
+                      "line": 1,
+                      "column": 0
+                    },
+                    "end": {
+                      "line": 5,
+                      "column": 0
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "endpoint",
+          "observations": [
+            {
+              "label": "/api/users",
+              "properties": {
+                "endpoint_kind": "network",
+                "value": "/api/users",
+                "mechanism": "call:fetch"
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "main.js",
+                    "start": {
+                      "line": 2,
+                      "column": 57
+                    },
+                    "end": {
+                      "line": 2,
+                      "column": 76
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "javascript-asset",
+          "observations": [
+            {
+              "label": "ui.js",
+              "properties": {
+                "path": "ui.js",
+                "bytes": 37,
+                "inventory_artifact_id": "art_fbceb6152e685cae344797a30656dac30acfcc78109a63fbf0638cda64f3b6fd",
+                "unpacked": false,
+                "file_kind": "javascript",
+                "text_status": "included",
+                "parse_status": "complete",
+                "json_parse_status": null,
+                "json_top_level_keys": [],
+                "omitted_json_top_level_keys": 0,
+                "vendor_markers": []
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0",
+                  "sha256": "df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "artifact-path",
+                    "path": "ui.js"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "javascript-module",
+          "observations": [
+            {
+              "label": "ui.js:h",
+              "properties": {
+                "semantic_role": "export-binding",
+                "module_path": "ui.js",
+                "relationship_kind": "export",
+                "exported_name": "h",
+                "local_name": "h",
+                "imported_name": null,
+                "declared_specifier": null
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0",
+                  "sha256": "df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "ui.js",
+                    "start": {
+                      "line": 1,
+                      "column": 7
+                    },
+                    "end": {
+                      "line": 1,
+                      "column": 36
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "javascript-asset",
+          "observations": [
+            {
+              "label": "main.js",
+              "properties": {
+                "path": "main.js",
+                "bytes": 214,
+                "inventory_artifact_id": "art_af822ed0db76f70cd9ef604edd23be0b117c18683d741a904a9ad2b3276988de",
+                "unpacked": false,
+                "file_kind": "javascript",
+                "text_status": "included",
+                "parse_status": "complete",
+                "json_parse_status": null,
+                "json_top_level_keys": [],
+                "omitted_json_top_level_keys": 0,
+                "vendor_markers": []
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "artifact-path",
+                    "path": "main.js"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "artifact",
+          "observations": [
+            {
+              "label": "artifact root",
+              "properties": {
+                "format": "directory",
+                "bytes": 0,
+                "inventory_manifest_id": "agm_4affb3aa2f0f22bab374ee96eafac2e954f3b90813b123f1c7509a5679c4fc7e",
+                "inventory_graph_sha256": "fe2ef2da5442673595349bb95913e47fa88b55a66bc43dd9b797ce427718ef3f",
+                "inventory_artifact_id": "art_c05e21777f7dd78810bf3c38767103910e1710efaa73d3ebd63e8d8b43b455a3"
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_e8d73d55301a19797972b2354322199b8bfc37da76a95254f0c50be9295460c6",
+                  "sha256": "e8d73d55301a19797972b2354322199b8bfc37da76a95254f0c50be9295460c6"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "artifact-path",
+                    "path": "artifact-root"
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "javascript-module",
+          "observations": [
+            {
+              "label": "ui.js",
+              "properties": {
+                "semantic_role": "source-module",
+                "path": "ui.js",
+                "container_sha256": "e8d73d55301a19797972b2354322199b8bfc37da76a95254f0c50be9295460c6",
+                "logical_module_key": "ui.js",
+                "module_format": "esm",
+                "import_relationships": 0,
+                "export_relationships": 1,
+                "export_names": ["h"],
+                "omitted_export_names": 0
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0",
+                  "sha256": "df8a36590f3c8208baa88e686e3d3be15354dea8fc1fd8e6898b8cf460dee2f0"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "ui.js",
+                    "start": {
+                      "line": 1,
+                      "column": 0
+                    },
+                    "end": {
+                      "line": 2,
+                      "column": 0
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "endpoint",
+          "observations": [
+            {
+              "label": "/pricing",
+              "properties": {
+                "endpoint_kind": "route",
+                "value": "/pricing",
+                "mechanism": "property:path"
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "main.js",
+                    "start": {
+                      "line": 3,
+                      "column": 18
+                    },
+                    "end": {
+                      "line": 3,
+                      "column": 34
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "endpoint",
+          "observations": [
+            {
+              "label": "/api/plans",
+              "properties": {
+                "endpoint_kind": "network",
+                "value": "/api/plans",
+                "mechanism": "call:fetch"
+              },
+              "evidence": {
+                "state": "observed",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "main.js",
+                    "start": {
+                      "line": 4,
+                      "column": 0
+                    },
+                    "end": {
+                      "line": 4,
+                      "column": 39
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "kind": "javascript-module",
+          "observations": [
+            {
+              "label": "main.js:App:return-shapes",
+              "properties": {
+                "semantic_role": "export-return-shapes",
+                "module_path": "main.js",
+                "exported_name": "App",
+                "callable_id": "callable:function:36:117",
+                "callable_kind": "function",
+                "static_return_shapes": [
+                  {
+                    "source_range": {
+                      "start": {
+                        "line": 2,
+                        "column": 24
+                      },
+                      "end": {
+                        "line": 2,
+                        "column": 86
+                      }
+                    },
+                    "value_status": "unknown",
+                    "fields": [
+                      {
+                        "path": "",
+                        "presence": "present",
+                        "state": "unknown",
+                        "value": null,
+                        "reason": "Unsupported CallExpression value."
+                      }
+                    ],
+                    "property_coverage": []
+                  }
+                ],
+                "return_shape_coverage": {
+                  "status": "complete",
+                  "retained_return_sites": 1,
+                  "omitted_return_sites": 0,
+                  "omitted_fields": 0,
+                  "omitted_property_coverage": 0,
+                  "projection_complete": true
+                }
+              },
+              "evidence": {
+                "state": "inferred",
+                "artifact": {
+                  "available": true,
+                  "artifact_id": "art_8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa",
+                  "sha256": "8b042780395cf27d1ffccdcdc0eb04635bc3f959a8286c85a1eaecefb7f9b0aa"
+                },
+                "location": {
+                  "available": true,
+                  "value": {
+                    "kind": "source-range",
+                    "source": "main.js",
+                    "start": {
+                      "line": 2,
+                      "column": 7
+                    },
+                    "end": {
+                      "line": 2,
+                      "column": 88
+                    }
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

@@ -31,6 +31,7 @@ import {
   SCOPES,
   stackRule,
 } from "./scope";
+import { reaInspect } from "./rea";
 import { RunTracer } from "./tracing";
 import { isReportGoal } from "./report";
 import { ReportEdit, type ReportDissection } from "../../src/shared/report";
@@ -909,6 +910,34 @@ export class Run extends DurableObject<Env> {
     return file ? new TextDecoder().decode(file.content) : "";
   }
 
+  /** REA decomposes the first captured page's script bundles into code evidence (one throwaway sandbox). */
+  private async inspectCode(signal: AbortSignal) {
+    const html = await this.originalHtml();
+    signal.throwIfAborted();
+    const fields = await reaInspect(
+      this.daytona,
+      html,
+      this.s.spec.url,
+      {
+        snapshot: this.env.DAYTONA_SNAPSHOT || undefined,
+        labels: { app: "reversy", run: this.s.id.slice(0, 60), role: "rea" },
+      },
+      signal,
+    );
+    const page = new URL(this.s.spec.url).pathname;
+    let n = this.s.evidence.length + 1;
+    await this.storeEvidence(
+      fields.map((f) => ({
+        ...f,
+        id: `ev_${String(n++).padStart(3, "0")}`,
+        page,
+        capturedAt: now(),
+      })),
+      {},
+    );
+    await this.beforeWork();
+  }
+
   private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
     const signal = this.inspection.signal;
     signal.throwIfAborted();
@@ -971,6 +1000,8 @@ export class Run extends DurableObject<Env> {
     }
     signal.throwIfAborted();
     await this.beforeWork();
+    if (step !== "plan" && !this.s.evidence.some((e) => e.tool === "rea"))
+      await this.inspectCode(signal);
     this.s.signInPaths = undefined;
     this.s.phase = "planning";
     await this.emit("phase", { phase: "planning" }, signal);
@@ -986,6 +1017,7 @@ export class Run extends DurableObject<Env> {
 Architecture every task must respect (it keeps parallel work conflict-free):
 ${architecture(scope, APP)}
 Every task cites the evidence ids it builds from. A feature with no evidence is a deliberate change and must say so.
+Code evidence (kind "code", tool "rea") is a static reading of the shipped bundles: use its modules, routes and API calls to shape components, routing and the back end, but treat it as unexecuted unless other evidence observed the same behaviour.
 Acceptance criteria must be checkable by a reviewer from the diff and the evidence.
 ${DATA_INSTRUCTIONS}`,
       input: JSON.stringify({
@@ -997,6 +1029,7 @@ ${DATA_INSTRUCTIONS}`,
           status: e.status,
           summary: e.summary,
           limits: e.limits,
+          locator: e.locator,
           routes: e.routes,
           response: e.response,
         })),

@@ -119,6 +119,51 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
   );
 }
 
+const SHOWN_FINDINGS = 12;
+
+// One card for REA's static reading of the shipped bundles: each finding with its locator and hash.
+function CodeCard({ items }: { items: CanvasEvidence[] }) {
+  const found = items.filter((e) => e.label !== "not_observed");
+  const missing = items.find((e) => e.label === "not_observed");
+  const shown = found.slice(0, SHOWN_FINDINGS);
+  return (
+    <article className="card evidence-card">
+      <header className="card-head">
+        <CodeIcon />
+        <h2 className="card-title">Code evidence</h2>
+      </header>
+      {shown.length ? (
+        <ul className="code-findings">
+          {shown.map((item) => (
+            <li key={item.id}>
+              <span>{item.summary}</span>
+              <span className="code-locator" title={item.contentHash}>
+                {item.locator ?? item.contentHash}
+                {item.label === "inferred" && (
+                  <span className="evidence-label"> Inferred</span>
+                )}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="muted">
+          {missing?.summary ?? "No code evidence"}
+          {missing?.limitations.length ? `: ${missing.limitations[0]}` : ""}
+        </p>
+      )}
+      {found.length > shown.length && (
+        <p className="muted">
+          {found.length - shown.length} more findings feed the plan.
+        </p>
+      )}
+      <p className="evidence-caption">
+        <span>Static reading by {items[0]?.tool}, not executed</span>
+      </p>
+    </article>
+  );
+}
+
 export function SpecView({
   canvas,
   onSaveReport,
@@ -128,6 +173,7 @@ export function SpecView({
 }) {
   const screenshots = canvas.evidence.filter((e) => e.kind === "screenshot");
   const recordings = canvas.evidence.filter((e) => e.kind === "recording");
+  const code = canvas.evidence.filter((e) => e.kind === "bundle");
   if (!canvas.draftSpec && !canvas.report && canvas.evidence.length === 0) {
     return (
       <div className="empty-state">
@@ -176,6 +222,11 @@ export function SpecView({
             <VideoCard item={item} />
           </CanvasItem>
         ))}
+        {code.length > 0 && (
+          <CanvasItem id="code-evidence" label="Code evidence">
+            <CodeCard items={code} />
+          </CanvasItem>
+        )}
         {canvas.draftSpec && recordings.length === 0 && (
           <CanvasItem id="video-evidence" label="Video evidence">
             <VideoCard />
@@ -207,6 +258,14 @@ function VideoIcon() {
   return (
     <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 7h12v10H3z M15 11l6-3v8l-6-3" />
+    </svg>
+  );
+}
+
+function CodeIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 7l-5 5 5 5 M16 7l5 5-5 5 M14 4l-4 16" />
     </svg>
   );
 }

@@ -50,7 +50,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 | `chat` | `{role, text, ts}` | Chat panel |
 | `spec` | `Spec` from [`types.ts`](../../orchestrator/src/types.ts) | Draft spec card. Unconfirmed items show "Not confirmed yet"; redirect presentation follows the [workspace guide](../../README.md#workspace) |
 | `report` | [`ReportDissection`](../../src/shared/report.ts), including the latest edits | Report dissection card in the Spec canvas |
-| `evidence` | `Evidence` from [`types.ts`](../../orchestrator/src/types.ts) | Screenshot / evidence cards; capture limits are in [Evidence](spec.md#6-evidence); missing screenshots follow the [workspace guide](../../README.md#workspace) |
+| `evidence` | `Evidence` from [`types.ts`](../../orchestrator/src/types.ts) | Screenshot, video and code evidence cards (`kind: "code"` items carry `summary` and `locator`); capture limits are in [Evidence](spec.md#6-evidence); missing screenshots follow the [workspace guide](../../README.md#workspace) |
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |

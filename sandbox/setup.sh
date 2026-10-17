@@ -43,6 +43,15 @@ if ! codex --version 2>/dev/null | grep -q " ${CODEX_VERSION}$"; then
   npm install -g "@openai/codex@${CODEX_VERSION}"
 fi
 
+# rea-scan.mjs runs REA during inspection; on Linux REA needs procps' ps, installed above.
+if [ "$(rea --version 2>/dev/null)" != "$REA_VERSION" ]; then
+  [ "$(npm view "rea-agents@${REA_VERSION}" dist.integrity)" = "$REA_INTEGRITY" ] || {
+    echo "rea-agents@${REA_VERSION} does not match the pinned integrity" >&2
+    exit 1
+  }
+  npm install -g "rea-agents@${REA_VERSION}"
+fi
+
 if ! no-mistakes --version 2>/dev/null | grep -q "v${NO_MISTAKES_VERSION} "; then
   fetch "https://github.com/kunchenguid/no-mistakes/releases/download/v${NO_MISTAKES_VERSION}/no-mistakes-v${NO_MISTAKES_VERSION}-linux-amd64.tar.gz" \
     "$NO_MISTAKES_SHA256" "$tmp/no-mistakes.tar.gz"
