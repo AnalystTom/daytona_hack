@@ -8,6 +8,39 @@ import {
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("backend HTML evidence", () => {
+  it.each([false, true])(
+    "retains only HTML within the storage byte cap, oversized=%s",
+    async (oversized) => {
+      const html = oversized
+        ? "界".repeat(640_000)
+        : '<script src="main.js"></script>';
+      vi.spyOn(globalThis, "fetch").mockImplementation(async (url) =>
+        String(url) === "https://site.example/docs/"
+          ? new Response(html, { headers: { "content-type": "text/html" } })
+          : new Response("", { status: 404 }),
+      );
+      const { evidence, blobs } = await inspectBackend(
+        "https://site.example/docs/",
+        1,
+      );
+      const document = evidence.find((item) => item.kind === "html");
+      expect(document).toMatchObject({
+        page: "/docs/",
+        status: oversized ? "not_observed" : "observed",
+      });
+      if (!document) throw new Error("missing HTML evidence");
+      if (oversized) {
+        expect(blobs[document.id]).toBeUndefined();
+        expect(document.path).toBeUndefined();
+      } else {
+        expect(blobs[document.id]).toBe(html);
+        expect(document.path).toMatch(/\.html$/);
+      }
+    },
+  );
+});
+
 describe("backend facts", () => {
   it.each(["&amp;", "&AMP;", "&#38;", "&#x26;"])(
     "decodes %s in HTML attributes while preserving raw script strings",

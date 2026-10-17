@@ -31,6 +31,7 @@ import {
   SCOPES,
   stackRule,
 } from "./scope";
+import { reaInspect, reaNotObserved } from "./rea";
 import { RunTracer } from "./tracing";
 import { isReportGoal } from "./report";
 import { ReportEdit, type ReportDissection } from "../../src/shared/report";
@@ -88,6 +89,7 @@ export class Run extends DurableObject<Env> {
   private _tracer?: RunTracer;
   private signInTransition = Promise.resolve();
   private inspection = new AbortController();
+  private reaInspection?: ReturnType<typeof reaInspect>;
   private captureSessions = new Set<() => Promise<void>>();
 
   private serializeSignIn<T>(action: () => Promise<T>) {
@@ -531,6 +533,9 @@ export class Run extends DurableObject<Env> {
     this.s.pending = "stop";
     this.inspection.abort();
     await this.save();
+    await this.reaInspection?.catch((error) => {
+      if (error !== this.inspection.signal.reason) throw error;
+    });
     await Promise.all([...this.captureSessions].map((close) => close()));
     await this.ctx.storage.deleteAlarm();
     if (this.s.sandboxId) {
@@ -901,13 +906,65 @@ export class Run extends DurableObject<Env> {
     return confirmed.length ? confirmed : [this.s.spec.url];
   }
 
-  /** The DOM of the first captured page, or "" when none was observed. */
+  private async originalDocument() {
+    const { scope } = captureScope(this.s.spec.url, this.approvedPaths());
+    for (const dom of this.s.evidence) {
+      if (
+        (dom.kind !== "dom" && dom.kind !== "html") ||
+        dom.status !== "observed"
+      )
+        continue;
+      const record = isStoredEvidenceId(dom.id)
+        ? await evidenceStore(this.env).getEvidence(dom.id)
+        : undefined;
+      const url =
+        record?.url ?? new URL(dom.page.split(" @ ")[0], this.s.spec.url).href;
+      if (!inScope(url, scope)) continue;
+      const file = await this.evidenceFile(dom.id);
+      if (file) return { html: new TextDecoder().decode(file.content), url };
+    }
+  }
+
   private async originalHtml() {
-    const dom = this.s.evidence.find(
-      (e) => (e.kind === "dom" || e.kind === "html") && e.status === "observed",
+    return (await this.originalDocument())?.html ?? "";
+  }
+
+  /** REA scans the first retained, observed document in approved scope (one throwaway sandbox). */
+  private async inspectCode(signal: AbortSignal) {
+    const document = await this.originalDocument();
+    signal.throwIfAborted();
+    this.reaInspection = document
+      ? reaInspect(
+          this.daytona,
+          document.html,
+          document.url,
+          {
+            snapshot: this.env.DAYTONA_SNAPSHOT || undefined,
+            labels: {
+              app: "reversy",
+              run: this.s.id.slice(0, 60),
+              role: "rea",
+            },
+          },
+          signal,
+        )
+      : Promise.resolve([
+          reaNotObserved("no approved page HTML was captured", 0),
+        ]);
+    const fields = await this.reaInspection;
+    const source = new URL(document?.url ?? this.s.spec.url);
+    const page = redactQuery(source.pathname + source.search);
+    let n = this.s.evidence.length + 1;
+    await this.storeEvidence(
+      fields.map((f) => ({
+        ...f,
+        id: `ev_${String(n++).padStart(3, "0")}`,
+        page,
+        capturedAt: now(),
+      })),
+      {},
     );
-    const file = dom && (await this.evidenceFile(dom.id));
-    return file ? new TextDecoder().decode(file.content) : "";
+    await this.beforeWork();
   }
 
   private async inspectAndPlan(step: "inspect" | "resume_sign_in" | "plan") {
@@ -972,6 +1029,8 @@ export class Run extends DurableObject<Env> {
     }
     signal.throwIfAborted();
     await this.beforeWork();
+    if (!this.s.evidence.some((e) => e.tool === "rea"))
+      await this.inspectCode(signal);
     this.s.signInPaths = undefined;
     this.s.phase = "planning";
     await this.emit("phase", { phase: "planning" }, signal);
@@ -987,6 +1046,7 @@ export class Run extends DurableObject<Env> {
 Architecture every task must respect (it keeps parallel work conflict-free):
 ${architecture(scope, APP)}
 Every task cites the evidence ids it builds from. A feature with no evidence is a deliberate change and must say so.
+Code evidence (kind "code", tool "rea") is a static reading of the shipped bundles: use its modules, routes and API calls to shape components, routing and the back end, but treat it as unexecuted unless other evidence observed the same behaviour.
 Acceptance criteria must be checkable by a reviewer from the diff and the evidence.
 ${DATA_INSTRUCTIONS}`,
       input: JSON.stringify({
@@ -998,6 +1058,7 @@ ${DATA_INSTRUCTIONS}`,
           status: e.status,
           summary: e.summary,
           limits: e.limits,
+          locator: e.locator,
           routes: e.routes,
           response: e.response,
         })),

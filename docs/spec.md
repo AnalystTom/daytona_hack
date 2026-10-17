@@ -74,6 +74,7 @@ The canvas is the specification and evidence surface:
 - **Draft spec** card: the target URL, pages and flows, and open questions. Anything not yet agreed is shown as "Not confirmed yet".
 - **Target screenshot** cards follow the [workspace guide's screenshot and unavailable-evidence behavior](../README.md#workspace).
 - **Video evidence** cards: real recordings from the [evidence contract](orchestrator/spec.md#6-evidence), or "No recording yet".
+- **Code evidence** card follows the [workspace guide's findings and unavailable-analysis behavior](../README.md#workspace).
 - Each piece of evidence links to its page or flow.
 
 The board's raster is a layout reference only; the live canvas shows the original captured artifacts.

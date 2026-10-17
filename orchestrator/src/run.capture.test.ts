@@ -134,6 +134,7 @@ async function persistedRun(
   evidence: Evidence[] = [],
   phase: Phase = "planned",
   empty = false,
+  env: Partial<Env> = {},
 ) {
   const ctx = fakeCtx();
   if (!empty)
@@ -154,7 +155,7 @@ async function persistedRun(
       tasks: [],
       signInPaths: phase === "awaiting_sign_in" ? ["/account"] : undefined,
     });
-  const run = new Run(ctx as never, {} as Env);
+  const run = new Run(ctx as never, env as Env);
   await ctx.loaded();
   return { run, ctx };
 }
@@ -204,6 +205,329 @@ function bindCapture(signIn: SignIn | null = null) {
 }
 
 describe("Run sign-in handoff", () => {
+  it("uses the final captured URL for REA while redacting event and planner labels", async () => {
+    const { run } = await persistedRun([], "inspecting", false, {
+      EVENTS_WEBHOOK_URL: "https://hooks.example/events",
+    });
+    const state = await run.getState();
+    state.pending = "inspect";
+    state.spec.pages = [{ path: "/docs", confirmed: true }];
+    state.spec.scope = "frontend";
+    const memory = bindCapture();
+    vi.mocked(evidenceStore).mockReturnValue(memory.store);
+    const finalUrl = "https://example.com/docs/?access_token=browser-secret";
+    vi.spyOn(anchor, "createSession").mockResolvedValue({
+      id: "capture",
+      liveViewUrl: "https://live.example/capture",
+    });
+    vi.spyOn(anchor, "endSession").mockResolvedValue();
+    vi.spyOn(anchor, "primaryRecording").mockResolvedValue(null);
+    vi.spyOn(anchor, "runSnippet")
+      .mockResolvedValue({ finalUrl, png: fixturePngBase64 })
+      .mockResolvedValueOnce({
+        ...fixturePageFacts(finalUrl),
+        html: '<script src="main.js?token=bundle-secret"></script>',
+      });
+    const webhooks: unknown[] = [];
+    const bundles: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://hooks.example/events") {
+        webhooks.push(JSON.parse(String(init?.body)));
+        return new Response("");
+      }
+      bundles.push(String(url));
+      return new Response("fetch('/api/x')");
+    });
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+    vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+      exitCode: 0,
+      result: JSON.stringify({
+        findings: [
+          {
+            kind: "api",
+            value: "/api/x",
+            file: "0.js",
+            sha256: "hash",
+            locator: "0.js:1:0",
+            state: "observed",
+          },
+        ],
+      }),
+    });
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("planned");
+    expect(bundles).toEqual([
+      "https://example.com/docs/main.js?token=bundle-secret",
+    ]);
+    expect(
+      [...memory.records.values()].find((record) => record.kind === "dom")?.url,
+    ).toBe(finalUrl);
+    const code = (await run.getState()).evidence.find(
+      (item) => item.kind === "code",
+    );
+    expect(code).toMatchObject({
+      page: "/docs/",
+      summary: "API call /api/x in https://example.com/docs/main.js",
+    });
+    expect(vi.mocked(verifyPlan).mock.calls[0]?.[2]).toContainEqual(code);
+    expect(
+      JSON.stringify([
+        await run.events(0),
+        webhooks,
+        vi.mocked(llmJson).mock.calls,
+      ]),
+    ).not.toMatch(/browser-secret|bundle-secret/);
+  });
+
+  it("refuses to report stopped when allocation was interrupted without an ID", async () => {
+    const { run, ctx } = await persistedRun(
+      [
+        {
+          id: "ev_001",
+          page: "/account",
+          kind: "html",
+          tool: "fetch",
+          status: "observed",
+          capturedAt: "now",
+          hash: "hash",
+          limits: "",
+          summary: "HTML",
+        },
+      ],
+      "awaiting_sign_in",
+      false,
+      { DAYTONA_API_URL: "https://daytona.example" },
+    );
+    await ctx.storage.put(
+      "blob:ev_001",
+      new TextEncoder().encode('<script src="main.js"></script>').buffer,
+    );
+    const allocating = deferred<void>();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
+      if (String(url) === "https://example.com/main.js")
+        return new Response("fetch('/api/x')");
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener(
+          "abort",
+          () => reject(init.signal?.reason),
+          { once: true },
+        );
+        allocating.resolve();
+      });
+    });
+    await run.skipSignIn();
+    const alarm = run.alarm();
+    await allocating.promise;
+    await expect(run.stop()).rejects.toThrow("Sandbox allocation unconfirmed");
+    await alarm;
+    expect((await run.getState()).phase).toBe("inspecting");
+    expect((await run.getState()).pending).toBe("stop");
+    expect(verifyPlan).not.toHaveBeenCalled();
+  });
+
+  it("resolves bundles from a stored DOM document's URL", async () => {
+    const record: EvidenceRecord = {
+      ...redirected,
+      kind: "dom",
+      label: "observed",
+      url: "https://example.com/docs/",
+      pageOrState: "/docs/",
+      contentType: "text/html",
+    };
+    const { run } = await persistedRun(
+      [toEvidence(record)],
+      "awaiting_sign_in",
+    );
+    (await run.getState()).spec.pages.push({ path: "/docs/", confirmed: true });
+    vi.mocked(evidenceStore).mockReturnValue({
+      putEvidence: async () => {},
+      getEvidence: async () => record,
+      getContent: async () =>
+        new TextEncoder().encode('<script src="main.js"></script>'),
+      saveSignIn: async () => {},
+      takeSignIn: async () => null,
+    });
+    const fetcher = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (url) => {
+        expect(String(url)).toBe("https://example.com/docs/main.js");
+        return new Response("", { status: 404 });
+      });
+    await run.skipSignIn();
+    await run.alarm();
+    expect((await run.getState()).phase).toBe("planned");
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect((await run.getState()).evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        page: "/docs/",
+        status: "not_observed",
+        limits: expect.stringContaining("HTTP 404"),
+      }),
+    );
+  });
+
+  it.each(["skip", "resume"] as const)(
+    "scans only available approved document bundles on %s",
+    async (action) => {
+      const { run, ctx } = await persistedRun(
+        [
+          {
+            id: "ev_001",
+            page: "/unapproved/",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+          {
+            id: "ev_002",
+            page: "/docs/",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+        ],
+        "awaiting_sign_in",
+      );
+      await ctx.storage.put(
+        "blob:ev_001",
+        new TextEncoder().encode('<script src="wrong.js"></script>').buffer,
+      );
+      (await run.getState()).spec.pages.push({
+        path: "/docs/",
+        confirmed: true,
+      });
+      await ctx.storage.put(
+        "blob:ev_002",
+        new TextEncoder().encode(
+          '<base href="assets/"><script src="main.js"></script>',
+        ).buffer,
+      );
+      const fetcher = vi
+        .spyOn(globalThis, "fetch")
+        .mockImplementation(async (url) => {
+          expect(String(url)).toBe("https://example.com/docs/assets/main.js");
+          return new Response("fetch('/api/x')");
+        });
+      const create = vi
+        .spyOn(Daytona.prototype, "create")
+        .mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+      vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+        exitCode: 0,
+        result: JSON.stringify({
+          findings: [
+            {
+              kind: "api",
+              value: "/api/x",
+              file: "0.js",
+              sha256: "hash",
+              locator: "0.js:1:0",
+              state: "observed",
+            },
+          ],
+        }),
+      });
+      const remove = vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+      captureMock.mockResolvedValue({ status: "captured", items: [] });
+      if (action === "skip") await run.skipSignIn();
+      else await run.resumeSignIn();
+      await run.alarm();
+      expect((await run.getState()).phase).toBe("planned");
+      expect(vi.mocked(verifyPlan).mock.calls[0]?.[2]).toContainEqual(
+        expect.objectContaining({
+          kind: "code",
+          page: "/docs/",
+          summary: "API call /api/x in https://example.com/docs/assets/main.js",
+        }),
+      );
+      expect(fetcher).toHaveBeenCalledOnce();
+      expect(create).toHaveBeenCalledOnce();
+      expect(remove).toHaveBeenCalledWith("rea");
+      if (action === "skip") expect(captureMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([false, true])(
+    "stop awaits REA deletion and reports cleanup failure=%s",
+    async (fails) => {
+      const { run, ctx } = await persistedRun(
+        [
+          {
+            id: "ev_001",
+            page: "/account",
+            kind: "html",
+            tool: "fetch",
+            status: "observed",
+            capturedAt: "now",
+            hash: "hash",
+            limits: "",
+            summary: "HTML",
+          },
+        ],
+        "awaiting_sign_in",
+      );
+      await ctx.storage.put(
+        "blob:ev_001",
+        new TextEncoder().encode('<script src="main.js"></script>').buffer,
+      );
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("fetch('/api/x')"),
+      );
+      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+      const scanning = deferred<void>();
+      vi.spyOn(Daytona.prototype, "exec").mockImplementation(
+        (_id, _command, opts) =>
+          new Promise((_resolve, reject) => {
+            opts?.signal?.addEventListener(
+              "abort",
+              () => reject(opts.signal?.reason),
+              { once: true },
+            );
+            scanning.resolve();
+          }),
+      );
+      const deleting = deferred<void>();
+      const release = deferred<void>();
+      vi.spyOn(Daytona.prototype, "remove").mockImplementation(async () => {
+        deleting.resolve();
+        await release.promise;
+        if (fails) throw new Error("cleanup unconfirmed");
+      });
+      await run.skipSignIn();
+      const alarm = run.alarm();
+      await scanning.promise;
+      const stop = run.stop().then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      await deleting.promise;
+      expect((await run.getState()).phase).toBe("inspecting");
+      expect((await run.getState()).pending).toBe("stop");
+      release.resolve();
+      if (fails) {
+        expect(await stop).toEqual(new Error("cleanup unconfirmed"));
+        expect((await run.getState()).pending).toBe("stop");
+      } else {
+        expect(await stop).toBeUndefined();
+        expect((await run.getState()).phase).toBe("stopped");
+      }
+      await alarm;
+      expect(verifyPlan).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["skip", "resume", "expired"] as const)(
     "retains public backend evidence across a combined run's %s handoff",
     async (action) => {
@@ -585,6 +909,14 @@ describe("Run sign-in handoff", () => {
     state = await run.getState();
     expect(state.phase).toBe("planned");
     expect(state.signInPaths).toBeUndefined();
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        tool: "rea",
+        status: "not_observed",
+        limits: "no approved page HTML was captured",
+      }),
+    );
     expect(JSON.stringify([state, ctx.events()])).not.toContain(live);
   });
 

@@ -318,7 +318,7 @@ export function backendFacts(html: string, base: string) {
   };
 }
 
-/** Back-end evidence for one route: the response itself, the APIs it points at, crawl files, code analysis. */
+/** Back-end evidence for one route: response metadata, retained HTML, inferred API references and crawl files. */
 export async function inspectBackend(
   url: string,
   startId: number,
@@ -343,7 +343,9 @@ export async function inspectBackend(
       page,
       capturedAt: now(),
       hash: blob ? await sha256(blob) : "",
-      ...(blob ? { path: `evidence/${eid}.json` } : {}),
+      ...(blob
+        ? { path: `evidence/${eid}.${e.kind === "html" ? "html" : "json"}` }
+        : {}),
       ...e,
     });
   };
@@ -384,6 +386,21 @@ export async function inspectBackend(
         1,
       ),
     );
+    if (res.ok && headers["content-type"]?.includes("text/html")) {
+      const retained = new TextEncoder().encode(html).byteLength < 1_900_000;
+      await add(
+        {
+          kind: "html",
+          tool: "fetch",
+          status: retained ? "observed" : "not_observed",
+          limits: retained
+            ? "response HTML without a browser session"
+            : "response HTML exceeds the evidence storage cap",
+          summary: `HTML of ${page}`,
+        },
+        retained ? html : undefined,
+      );
+    }
   } catch (e) {
     signal?.throwIfAborted();
     await add({
@@ -444,15 +461,6 @@ export async function inspectBackend(
     }
   }
 
-  // shortcut: REA is not installed in the sandbox yet, so code-level evidence is recorded as not observed; capture it once REA runs there.
-  await add({
-    kind: "code",
-    tool: "rea",
-    status: "not_observed",
-    limits:
-      "REA analysis of shipped JavaScript bundles is not available in this build",
-    summary: `REA analysis of ${facts.scripts.length} script bundles not run`,
-  });
   signal?.throwIfAborted();
   return { evidence, blobs };
 }

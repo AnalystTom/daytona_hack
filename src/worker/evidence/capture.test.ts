@@ -15,6 +15,7 @@ import {
   recordingList,
 } from "./fixtures";
 import type { EvidenceStore, SignIn } from "./store";
+import * as anchor from "./anchor";
 
 const scope = { origin: "https://example.com", paths: ["/", "/pricing"] };
 
@@ -123,6 +124,49 @@ function deps(store: EvidenceStore) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("captureRun (fixture Anchor responses)", () => {
+  it.each(["first_look", "full_pack"] as const)(
+    "preserves actual document and viewport URLs in %s artifacts",
+    async (mode) => {
+      fakeAnchor();
+      const finalUrl = "https://example.com/docs/?token=navigation";
+      const desktopUrl = "https://example.com/docs/?token=desktop";
+      const mobileUrl = "https://example.com/docs/?token=mobile";
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockResolvedValueOnce(fixturePageFacts(finalUrl))
+        .mockResolvedValueOnce({ finalUrl: desktopUrl, png: fixturePngBase64 })
+        .mockResolvedValueOnce({ finalUrl: mobileUrl, png: fixturePngBase64 });
+      try {
+        const memory = memoryStore();
+        const { deps: d, events } = deps(memory.store);
+        await captureRun(d, "run_1", {
+          mode,
+          scope: { origin: scope.origin, paths: ["/docs"] },
+        });
+        const items = [...memory.records.values()];
+        expect(
+          items
+            .filter((item) => item.kind === "screenshot")
+            .map((item) => item.url),
+        ).toEqual(
+          mode === "full_pack" ? [desktopUrl, mobileUrl] : [desktopUrl],
+        );
+        if (mode === "full_pack") {
+          for (const kind of ["dom", "styles", "assets", "network"]) {
+            expect(items.find((item) => item.kind === kind)).toMatchObject({
+              url: finalUrl,
+              label: "observed",
+              pageOrState: "/docs",
+            });
+          }
+        }
+        expect(JSON.stringify(events)).not.toContain("token=");
+      } finally {
+        snippet.mockRestore();
+      }
+    },
+  );
+
   it.each([false, true])(
     "closes the session and refuses further paid calls when the run expires between viewports (fallback=%s)",
     async (refuseCode) => {

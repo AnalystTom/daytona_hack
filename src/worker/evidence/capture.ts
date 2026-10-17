@@ -219,6 +219,7 @@ export async function captureRun(
   const capturePage = async (path: string) => {
     deps.signal?.throwIfAborted();
     const url = `${scope.origin}${path}`;
+    let documentUrl = url;
     const pageScope = { origin: scope.origin, paths: [path] };
     const shots = Object.entries(
       full ? viewports : { desktop: viewports.desktop },
@@ -241,7 +242,15 @@ export async function captureRun(
       label: EvidenceRecord["label"] = "observed",
     ) => {
       const expected = pending.shift() as Expected;
-      ids.push(await save(expected, label, contentType, content, limitations));
+      ids.push(
+        await save(
+          { ...expected, url: documentUrl },
+          label,
+          contentType,
+          content,
+          limitations,
+        ),
+      );
     };
     const skip = async (reason: string) => {
       ids.push(await notObserved(pending.shift() as Expected, reason));
@@ -279,6 +288,7 @@ export async function captureRun(
       if (!inScope(finalUrl, pageScope)) {
         leave("Redirected to", finalUrl);
       } else {
+        documentUrl = finalUrl;
         if (full && !facts) {
           for (let n = 0; n < 4; n++) await skip(noCodeExecution);
         } else if (full && facts) {
@@ -334,6 +344,7 @@ export async function captureRun(
             leave("Page moved to", shot.finalUrl);
             break;
           }
+          documentUrl = shot.finalUrl;
           await take("image/png", fromBase64(shot.png), [limit]);
         }
       }

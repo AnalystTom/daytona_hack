@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import { Parser } from "htmlparser2";
 import { describe, expect, it, vi } from "vitest";
 import type { CanvasEvidence } from "../../shared/workspace";
 import { BuildView } from "./BuildView";
@@ -133,6 +134,111 @@ describe("SpecView", () => {
     expect(html).toContain("<video");
     // Loaded as a blob with the operator token once mounted.
     expect(html).not.toContain('src="/api/v1/runs/r1/evidence/ev_2"');
+  });
+
+  it("keeps twelve findings visible and discloses every retained finding", () => {
+    const evidence = Array.from({ length: 60 }, (_, i) => ({
+      ...screenshot,
+      id: `code-${i}`,
+      kind: "bundle" as const,
+      tool: "rea",
+      summary: `Finding ${i + 1}`,
+      locator: `main.js:${i + 1}:0`,
+    }));
+    const html = renderToStaticMarkup(<SpecView canvas={{ evidence }} />);
+    let collapsed = 0;
+    let disclosed = 0;
+    let inDetails = false;
+    new Parser({
+      onopentag(name, attrs) {
+        if (name === "details") {
+          expect(attrs.open).toBeUndefined();
+          inDetails = true;
+        }
+        if (name === "li") {
+          if (inDetails) disclosed++;
+          else collapsed++;
+        }
+      },
+      onclosetag(name) {
+        if (name === "details") inDetails = false;
+      },
+    }).end(html);
+    expect(collapsed).toBe(12);
+    expect(disclosed).toBe(48);
+    expect(html).toContain("Show all 60 findings");
+    expect(html).toContain("main.js:60:0");
+  });
+
+  it("shows REA code evidence beside the spec with locators, or why it is missing", () => {
+    const code = (data: Record<string, unknown>, seq: number) => ({
+      seq,
+      ts: screenshot.capturedAt,
+      type: "evidence",
+      data: {
+        page: "/",
+        kind: "code",
+        tool: "rea",
+        capturedAt: screenshot.capturedAt,
+        limits: "Static analysis only",
+        ...data,
+      },
+    });
+    const found = runView("r1", [
+      code(
+        {
+          id: "ev_004",
+          status: "observed",
+          hash: "sha256:b1",
+          locator: "b1.mjs:12:4",
+          summary:
+            "API call POST /api/signup in https://cdn.example.com/b1.mjs",
+        },
+        1,
+      ),
+      code(
+        {
+          id: "ev_005",
+          status: "inferred",
+          hash: "sha256:b1",
+          locator: "b1.mjs:40:1",
+          summary: "Route /pricing in https://cdn.example.com/b1.mjs",
+        },
+        2,
+      ),
+    ]);
+    expect(found.evidence[0]).toMatchObject({
+      kind: "bundle",
+      locator: "b1.mjs:12:4",
+      contentHash: "sha256:b1",
+    });
+    const html = renderToStaticMarkup(
+      <SpecView canvas={{ evidence: found.evidence }} />,
+    );
+    expect(html).toContain("Code evidence");
+    expect(html).toContain("API call POST /api/signup");
+    expect(html).toContain("b1.mjs:12:4");
+    expect(html).toContain("Inferred");
+
+    const missing = runView("r1", [
+      code(
+        {
+          id: "ev_004",
+          status: "not_observed",
+          hash: "",
+          limits: "REA failed: timed out",
+          summary: "REA analysis of 2 script bundles not run",
+        },
+        1,
+      ),
+    ]);
+    expect(
+      renderToStaticMarkup(
+        <SpecView canvas={{ evidence: missing.evidence }} />,
+      ),
+    ).toContain(
+      "REA analysis of 2 script bundles not run: REA failed: timed out",
+    );
   });
 });
 

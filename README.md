@@ -35,6 +35,8 @@ In **Spec**, when the entered URL redirects, the draft spec shows "You entered X
 
 A screenshot item marked **Inferred** displays its captured image on the canvas with that label; its capture limits are in the [orchestrator API](docs/orchestrator/api.md#evidence-capture). A screenshot item marked **Not observed** stays on the canvas with the capture reason and no image. If the first look has no usable screenshot, Reversy's first chat reply explains why.
 
+The **Code evidence** card in **Spec** shows REA's static findings with bundle locators, artifact hashes on hover and **Inferred** labels where applicable. It shows the first 12 findings; **Show all N findings** reveals the rest of the retained list. When analysis is unavailable or finds nothing, the card shows the reason. These findings do not prove runtime behavior; analysis scope and limits are in the [evidence contract](docs/orchestrator/spec.md#6-evidence).
+
 Use **Spec** or **Build** to work on the canvas:
 
 - Drag empty canvas space or scroll to pan. Scrollable card content scrolls normally until its edge.
@@ -244,7 +246,7 @@ Install the [Daytona CLI](https://www.daytona.io/docs/en/tools/cli.md), sign in,
 daytona snapshot create reversy-run --dockerfile sandbox/Dockerfile --context sandbox --cpu 4 --memory 8 --disk 20
 ```
 
-`setup.sh` installs the pinned versions in `sandbox/versions.env` (Node, Git, Codex CLI, no-mistakes, Forgejo, `tea`, and the Firstmate commit), verifies every download's SHA-256, and skips anything already at its pin, so it is safe to re-run.
+`setup.sh` installs the toolchain pinned in [`sandbox/versions.env`](sandbox/versions.env) and skips tools already at their pin, so it is safe to re-run. Direct binary downloads are SHA-256 checked; REA's npm registry integrity is checked against its pin before installation.
 To change a version, edit `versions.env` and build a new snapshot.
 
 Daytona forks only Linux VM sandboxes, and builds from a Dockerfile only for containers.

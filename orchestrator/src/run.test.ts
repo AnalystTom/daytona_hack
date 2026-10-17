@@ -69,7 +69,10 @@ type Call = {
 };
 
 // Stubs the model (one canned answer per prompt name) and the target site.
-function stubFetch(answers: Record<string, unknown[]>) {
+function stubFetch(
+  answers: Record<string, unknown[]>,
+  bundles: Record<string, string> = {},
+) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
     if (input === "https://api.openai.com/v1/responses") {
@@ -85,6 +88,7 @@ function stubFetch(answers: Record<string, unknown[]>) {
       ];
       return Response.json({ output_text: JSON.stringify(queue.shift()) });
     }
+    if (bundles[input]) return new Response(bundles[input]);
     if (input.startsWith(SITE))
       return new Response(HTML, {
         headers: { "content-type": "text/html", "cache-control": "max-age=60" },
@@ -119,12 +123,20 @@ const task = (id: string, owns: string[], dependsOn: string[] = []) => ({
   dependsOn,
 });
 
-async function plannedRun(scope: string, goal: string, tasks: unknown[]) {
-  const calls = stubFetch({
-    orchestrator_turn: [turn(scope, false), turn(scope, true)],
-    plan: [{ tasks }],
-    review: [{ verdict: "approve", reason: "ok", findings: [] }],
-  });
+async function plannedRun(
+  scope: string,
+  goal: string,
+  tasks: unknown[],
+  bundles: Record<string, string> = {},
+) {
+  const calls = stubFetch(
+    {
+      orchestrator_turn: [turn(scope, false), turn(scope, true)],
+      plan: [{ tasks }],
+      review: [{ verdict: "approve", reason: "ok", findings: [] }],
+    },
+    bundles,
+  );
   const ctx = context();
   const run = new Run(
     ctx as unknown as DurableObjectState,
@@ -145,6 +157,53 @@ afterEach(() => {
 });
 
 describe("run scope", () => {
+  it("scans retained backend HTML before planning and attributes code to that document", async () => {
+    vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+    const upload = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
+    const remove = vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+    vi.spyOn(Daytona.prototype, "exec").mockResolvedValue({
+      exitCode: 0,
+      result: JSON.stringify({
+        findings: [
+          {
+            kind: "api",
+            value: "/api/x",
+            file: "0.js",
+            sha256: "hash",
+            locator: "0.js:1:0",
+            state: "observed",
+          },
+        ],
+      }),
+    });
+    const { run, state, calls } = await plannedRun(
+      "backend",
+      "Backend only",
+      [],
+      {
+        "https://site.example/static/app.js": "fetch('/api/x')",
+      },
+    );
+    expect(state.phase).toBe("planned");
+    const html = state.evidence.find((e) => e.kind === "html");
+    assert(html);
+    expect(
+      new TextDecoder().decode((await run.evidenceFile(html.id))?.content),
+    ).toBe(HTML);
+    expect(html.path).toMatch(/\.html$/);
+    expect(upload).toHaveBeenCalledOnce();
+    expect(remove).toHaveBeenCalledWith("rea");
+    expect(
+      calls.find((call) => call.name === "plan")?.input.evidence,
+    ).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        page: "/insights/article",
+        locator: "0.js:1:0",
+        summary: "API call /api/x in https://site.example/static/app.js",
+      }),
+    );
+  });
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",
     async (scope) => {
@@ -293,7 +352,7 @@ describe("run scope", () => {
     // a page path that leaves the run's site is never fetched
     expect(state.evidence.some((e: Evidence) => e.page === "/x")).toBe(false);
 
-    // evidence: network observations, with honest labels; REA stays not observed
+    // evidence: network observations, with honest labels; REA records why it did not run
     const after = state.evidence.slice(1) as Evidence[];
     expect(after.some((e) => e.kind === "screenshot")).toBe(false);
     expect(after).toContainEqual(
@@ -378,7 +437,15 @@ describe("run scope", () => {
     expect(plan?.instructions).toContain("sections/NAME.html");
     expect(plan?.instructions).not.toContain("server/routes");
     expect(state.tasks.map((t: Task) => t.id)).toEqual(["t01", "t02"]);
-    expect(state.evidence.some((e: Evidence) => e.kind === "code")).toBe(false);
+    // REA reads the page's bundles for frontend runs too; this page ships none
+    expect(state.evidence).toContainEqual(
+      expect.objectContaining({
+        kind: "code",
+        tool: "rea",
+        status: "not_observed",
+        limits: "no approved page HTML was captured",
+      }),
+    );
   });
 
   it("emits unrestricted chat and plan prompts for a combined run", async () => {

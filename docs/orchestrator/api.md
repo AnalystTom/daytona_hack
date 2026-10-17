@@ -25,7 +25,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 | `POST /runs/:id/sign-in/skip` | | Plans without the stopped pages (async) |
 | `POST /runs/:id/build` | | Start website build. Needs phase `planned`, otherwise 500 with "No build started: tasks appear after the spec is approved." Report goals return 500 with "Report dissection does not start build workers" |
 | `POST /runs/:id/report-edit` | `{figureId, edit: ReportEdit}` | Saves an edit to a known figure on a `done` report, emits `report`, and returns the updated `ReportDissection`; 500 for an incomplete report or unknown figure. Body validation is owned by [`runRoute`](../../src/worker/orchestrator/front.ts) and [`ReportEdit`](../../src/shared/report.ts) |
-| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active website inspection/planning and report capture/research, closes active Anchor sessions and saved sign-in sessions, and confirms worker cancellation or an already stopped, archived or deleted sandbox, then marks open tasks `stopped`; provider-read or cancellation failures keep `pending: "stop"` |
+| `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active website inspection/planning and report capture/research, waits for [REA cleanup](spec.md#6-evidence), closes active Anchor sessions and saved sign-in sessions, and confirms worker cancellation or an already stopped, archived or deleted sandbox, then marks open tasks `stopped`; provider-read or cancellation failures keep `pending: "stop"` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -50,7 +50,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 | `chat` | `{role, text, ts}` | Chat panel |
 | `spec` | `Spec` from [`types.ts`](../../orchestrator/src/types.ts) | Draft spec card. Unconfirmed items show "Not confirmed yet"; redirect presentation follows the [workspace guide](../../README.md#workspace) |
 | `report` | [`ReportDissection`](../../src/shared/report.ts), including the latest edits | Report dissection card in the Spec canvas |
-| `evidence` | `Evidence` from [`types.ts`](../../orchestrator/src/types.ts) | Screenshot / evidence cards; capture limits are in [Evidence](spec.md#6-evidence); missing screenshots follow the [workspace guide](../../README.md#workspace) |
+| `evidence` | `Evidence` from [`types.ts`](../../orchestrator/src/types.ts) | Screenshot, video and code evidence cards (`kind: "code"` items carry `summary` and `locator`); capture limits are in [Evidence](spec.md#6-evidence); missing screenshots follow the [workspace guide](../../README.md#workspace) |
 | `plan` | `{tasks: Task[]}` | Kanban, all in Queued |
 | `task` | Task | Move card: `queued`→Queued, `building`→Building, `in_review`→In review, `merged`→Merged; `failed`/`stopped` stay with `failure` and `nextAction` |
 | `review` | `{taskId, verdict, reason, findings, diffStat}` | Review card on the task |
