@@ -346,19 +346,22 @@ describe("example routes", () => {
     expect(response?.status).toBe(404);
   });
 
-  it("leaves the example's run itself behind the operator check", async () => {
+  it("leaves the example's run itself behind run ownership", async () => {
     fakeSurreal();
     const { fetcher, seen } = fakeOrchestrator();
     for (const action of ["messages", "approve", "build", "stop"]) {
       const response = await worker.fetch(
         request(`/api/v1/runs/${RUN}/${action}`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: {
+            "content-type": "application/json",
+            origin: "https://reversy.test",
+          },
           body: "{}",
         }),
         env(fetcher) as never,
       );
-      expect(response.status).toBe(401);
+      expect(response.status).toBe(404);
     }
     expect(seen).toEqual([]);
   });

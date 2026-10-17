@@ -592,17 +592,6 @@
   font-size: 0.875rem;
 }
 
-.token-form input {
-  flex: 1 1 10rem;
-  min-width: 0;
-  border: 1px solid var(--line);
-  border-radius: 0.5rem;
-  padding: 0.4rem 0.6rem;
-  background: var(--card);
-  font: inherit;
-  font-size: 0.875rem;
-}
-
 .composer-hint {
   margin: 0 0 0.4rem;
   color: var(--muted);

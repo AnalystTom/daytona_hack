@@ -11,7 +11,6 @@ import { Mark } from "./Mark";
 
 const NOTICE_TITLE = {
   not_connected: "Not connected",
-  operator_token: "Operator token needed",
   not_found: "Not found",
   access_required: "Sign-in needed",
   failed: "Request failed",
@@ -22,7 +21,6 @@ type Handlers = {
   pending: boolean;
   onRetry: (id: string) => void;
   onSend: (text: string) => void;
-  onSaveToken: (token: string, noticeId: string) => void;
 };
 
 function Entry({
@@ -30,7 +28,6 @@ function Entry({
   pending,
   onRetry,
   onSend,
-  onSaveToken,
 }: Handlers & { entry: ChatEntry }) {
   switch (entry.kind) {
     case "user":
@@ -77,9 +74,6 @@ function Entry({
               >
                 Sign in in a new tab
               </a>
-            )}
-            {entry.error === "operator_token" && (
-              <TokenForm onSave={(token) => onSaveToken(token, entry.id)} />
             )}
           </div>
         </li>
@@ -135,7 +129,6 @@ export function ChatPanel({
   pending,
   onSend,
   onRetry,
-  onSaveToken,
   readOnly,
 }: Handlers & {
   entries: ChatEntry[];
@@ -189,7 +182,6 @@ export function ChatPanel({
               pending={pending}
               onRetry={onRetry}
               onSend={onSend}
-              onSaveToken={onSaveToken}
             />
           ))}
         </ol>
@@ -247,38 +239,6 @@ export function ChatPanel({
         </form>
       )}
     </aside>
-  );
-}
-
-function TokenForm({ onSave }: { onSave: (token: string) => void }) {
-  const [token, setToken] = useState("");
-  return (
-    <form
-      className="notice-actions token-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (token.trim()) onSave(token.trim());
-      }}
-    >
-      <label className="visually-hidden" htmlFor="operator-token">
-        Operator token
-      </label>
-      <input
-        id="operator-token"
-        type="password"
-        autoComplete="off"
-        placeholder="Operator token"
-        value={token}
-        onChange={(event) => setToken(event.target.value)}
-      />
-      <button
-        type="submit"
-        className="button button-primary"
-        disabled={!token.trim()}
-      >
-        Sign in
-      </button>
-    </form>
   );
 }
 

@@ -5,12 +5,7 @@ import { OrchestratorEvent } from "./orchestrator";
 // Client for the run API (/api/v1/runs), which forwards to the orchestrator.
 export type RunCallError = {
   ok: false;
-  error:
-    | "not_connected"
-    | "operator_token"
-    | "not_found"
-    | "access_required"
-    | "failed";
+  error: "not_connected" | "not_found" | "access_required" | "failed";
   detail: string;
 };
 export type RunCallResult<T> = { ok: true; value: T } | RunCallError;
@@ -25,25 +20,11 @@ const ErrorBody = z.union([
   z.object({ error: z.string().min(1) }).transform((b) => b.error),
 ]);
 
-// Older pages kept the operator token in localStorage; the HttpOnly session cookie replaces it.
+// Older pages kept the operator token in localStorage; visitors no longer need one.
 try {
   localStorage.removeItem("reversy.operatorToken");
 } catch {
   // Storage blocked: nothing was kept there.
-}
-
-// Swaps the operator token for the session cookie; the token itself is never stored.
-export async function signIn(
-  token: string,
-  fetchImpl: typeof fetch = fetch,
-): Promise<RunCallResult<undefined>> {
-  return call(
-    "POST",
-    "/api/v1/session",
-    { token },
-    async () => undefined,
-    fetchImpl,
-  );
 }
 
 async function call<T>(
@@ -86,29 +67,11 @@ async function call<T>(
   const reason = ErrorBody.safeParse(json);
   const detail = reason.success ? reason.data : `HTTP ${response.status}`;
   if (response.status === 401) {
-    if (
-      !(
-        typeof json === "object" &&
-        json !== null &&
-        "code" in json &&
-        (json.code === "operator_token_required" ||
-          (path === "/api/v1/session" && json.code === "unauthorized"))
-      )
-    ) {
-      return {
-        ok: false,
-        error: "access_required",
-        detail:
-          "Sign in in a new tab, then return to this workspace and try again. Keep this tab open.",
-      };
-    }
     return {
       ok: false,
-      error: "operator_token",
+      error: "access_required",
       detail:
-        path === "/api/v1/session"
-          ? "The operator token was refused. Paste the current one."
-          : "Runs spend money, so only operators can start, steer or follow them. Paste the operator token to continue.",
+        "Sign in in a new tab, then return to this workspace and try again. Keep this tab open.",
     };
   }
   if (response.status === 404) {
@@ -131,13 +94,17 @@ export function createRun(
   brief: { url: string; goal: string },
   fetchImpl: typeof fetch = fetch,
 ) {
-  return call(
-    "POST",
-    "/api/v1/runs",
-    brief,
-    async (r) => ({ runId: CreatedRun.parse(await r.json()).id }),
-    fetchImpl,
-  );
+  const start = () =>
+    call(
+      "POST",
+      "/api/v1/runs",
+      brief,
+      async (r) => ({ runId: CreatedRun.parse(await r.json()).id }),
+      fetchImpl,
+    );
+  return typeof navigator !== "undefined" && navigator.locks
+    ? navigator.locks.request("reversy.createRun", start)
+    : start();
 }
 
 export function sendMessage(

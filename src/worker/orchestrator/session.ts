@@ -1,13 +1,5 @@
-import { z } from "zod";
 import { runBridgeToken } from "../daytona/bridge-token";
-import {
-  checkToken,
-  errorResponse,
-  Failure,
-  notConfigured,
-  readJson,
-  sameSecret,
-} from "../runs/api";
+import { checkToken, Failure, notConfigured, sameSecret } from "../runs/api";
 import {
   ACCESS_HEADER,
   type AccessEnv,
@@ -16,69 +8,36 @@ import {
 } from "./access";
 
 // __Host- keeps the cookie on this exact host, Secure and Path=/.
-export const SESSION_COOKIE = "__Host-reversy_session";
-const SESSION_SECONDS = 12 * 60 * 60;
-
-const SessionRequest = z.object({ token: z.string().min(1).max(500) });
+export const SESSION_COOKIE = "__Host-reversy_visitor";
+const SESSION_SECONDS = 30 * 24 * 60 * 60;
+const VISITOR_ID = /^[\w-]{36}$/;
 
 const foreignOrigin = () =>
   new Failure(403, "forbidden_origin", "Requests must come from this site.");
 
-// HMAC of the expiry, keyed by OPERATOR_TOKEN: rotating the token signs every session out.
-const sign = (secret: string, expires: number) =>
-  runBridgeToken(secret, `session:${expires}`);
+// HMAC of the visitor id, keyed by OPERATOR_TOKEN (never sent to the browser): rotating the
+// token signs every visitor out.
+const sign = (secret: string, id: string) =>
+  runBridgeToken(secret, `visitor:${id}`);
 
-// Before Access setup, POST swaps the operator token for a signed HttpOnly cookie; DELETE clears it.
-export async function handleSession(
-  request: Request,
-  env: { OPERATOR_TOKEN?: string } & AccessEnv,
-): Promise<Response> {
-  try {
-    if (request.headers.get("origin") !== new URL(request.url).origin) {
-      throw foreignOrigin();
-    }
-    if (request.method === "DELETE") return session("", 0);
-    if (request.method !== "POST") {
-      throw new Failure(405, "method_not_allowed", "Use POST or DELETE.");
-    }
-    if (accessConfig(env)) {
-      throw new Failure(
-        401,
-        "access_required",
-        "Sign in through Cloudflare Access in a new tab, then return to your workspace and try again.",
-      );
-    }
-    if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
-    const { token } = await readJson(request, SessionRequest);
-    if (!(await sameSecret(token, env.OPERATOR_TOKEN))) {
-      throw new Failure(401, "unauthorized", "The operator token was refused.");
-    }
-    const expires = Math.floor(Date.now() / 1000) + SESSION_SECONDS;
-    const signature = await sign(env.OPERATOR_TOKEN, expires);
-    return session(`${expires}.${signature}`, SESSION_SECONDS);
-  } catch (error) {
-    return errorResponse(request, error);
-  }
+// Who is calling. `owner` is the run owner: the Access email, or "anon:<id>" for a visitor's
+// anonymous session; undefined for an operator bearer, who may act on any run. `setCookie`
+// is set when a new visitor needs their session cookie.
+export interface Caller {
+  owner?: string;
+  setCookie?: string;
 }
-
-const session = (value: string, maxAge: number) =>
-  new Response(null, {
-    status: 204,
-    headers: {
-      "set-cookie": `${SESSION_COOKIE}=${value}; Max-Age=${maxAge}; Path=/; HttpOnly; Secure; SameSite=Strict`,
-    },
-  });
 
 export async function checkCaller(
   request: Request,
   env: { OPERATOR_TOKEN?: string } & AccessEnv,
   fetcher?: typeof fetch,
-): Promise<string | undefined> {
+): Promise<Caller> {
   const origin = request.headers.get("origin");
   const own = origin === new URL(request.url).origin;
   if (origin !== null && !own) throw foreignOrigin();
   const access = accessConfig(env);
-  let email: string | undefined;
+  let caller: Caller;
   if (access) {
     const jwt = request.headers.get(ACCESS_HEADER);
     if (!jwt) {
@@ -88,32 +47,35 @@ export async function checkCaller(
         "Sign in through Cloudflare Access in a new tab, then return to your workspace and try again.",
       );
     }
-    email = await verifyAccessJwt(jwt, access, fetcher);
+    caller = { owner: await verifyAccessJwt(jwt, access, fetcher) };
   } else if (request.headers.has("authorization")) {
     await checkToken(request, env, "OPERATOR_TOKEN");
-    return undefined;
+    return {};
   } else {
     if (!env.OPERATOR_TOKEN) throw notConfigured(["OPERATOR_TOKEN"]);
-    if (!(await validSession(request, env.OPERATOR_TOKEN))) {
-      throw new Failure(
-        401,
-        "operator_token_required",
-        "Sign in with the operator token to use runs.",
-      );
-    }
+    caller = await visitor(request, env.OPERATOR_TOKEN);
   }
   if (!["GET", "HEAD"].includes(request.method) && !own) throw foreignOrigin();
-  return email;
+  return caller;
 }
 
-async function validSession(request: Request, secret: string) {
+// A visitor's own cookie names their anonymous session; anything else gets a fresh one.
+async function visitor(request: Request, secret: string): Promise<Caller> {
   const cookie = (request.headers.get("cookie") ?? "")
     .split(";")
     .map((part) => part.trim())
     .find((part) => part.startsWith(`${SESSION_COOKIE}=`))
     ?.slice(SESSION_COOKIE.length + 1);
-  const [expiry = "", signature = ""] = (cookie ?? "").split(".");
-  const expires = Number(expiry);
-  if (!/^\d{1,12}$/.test(expiry) || expires <= Date.now() / 1000) return false;
-  return sameSecret(signature, await sign(secret, expires));
+  const [id = "", signature = ""] = (cookie ?? "").split(".");
+  if (
+    VISITOR_ID.test(id) &&
+    (await sameSecret(signature, await sign(secret, id)))
+  ) {
+    return { owner: `anon:${id}` };
+  }
+  const fresh = crypto.randomUUID();
+  return {
+    owner: `anon:${fresh}`,
+    setCookie: `${SESSION_COOKIE}=${fresh}.${await sign(secret, fresh)}; Max-Age=${SESSION_SECONDS}; Path=/; HttpOnly; Secure; SameSite=Strict`,
+  };
 }

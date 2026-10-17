@@ -173,8 +173,8 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - Run admission and lifetime limits are defined in the [README's access policy](../README.md#sign-in-with-cloudflare-access).
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - Recordings are capped at 30 seconds.
-- Run authentication and workspace ownership follow the [README's access policy](../README.md#sign-in-with-cloudflare-access).
-- Report demo scope and exclusions: see [Financial report demo](#financial-report-demo).
+- Run authentication and workspace ownership follow the [README's access policy](../README.md#who-can-use-runs).
+- Report scope and exclusions: see [Financial report dissection](#financial-report-demo). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
 - Run scope and the first demo target: see section 5.
 - SurrealDB is the main store as well as Agent Memory, not an optional extra.
 - UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.

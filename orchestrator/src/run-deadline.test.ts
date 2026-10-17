@@ -239,6 +239,7 @@ function frontFor({ run, env, state }: Awaited<ReturnType<typeof setup>>) {
         method: "POST",
         headers: {
           origin: "https://reversy.test",
+          "cf-connecting-ip": "203.0.113.1",
           "cf-access-jwt-assertion": await accessJwt(),
         },
         body: JSON.stringify(

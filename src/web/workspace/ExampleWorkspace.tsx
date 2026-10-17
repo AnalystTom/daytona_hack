@@ -179,7 +179,6 @@ export function ExampleRun({ example }: { example: Example }) {
         pending={false}
         onSend={noop}
         onRetry={noop}
-        onSaveToken={noop}
         readOnly={
           <p className="composer-hint">
             This example is read-only. Start your own session to send a brief.
