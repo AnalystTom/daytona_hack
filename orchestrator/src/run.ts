@@ -934,7 +934,7 @@ export class Run extends DurableObject<Env> {
     return (await this.originalDocument())?.html ?? "";
   }
 
-  /** REA scans the first retained, observed document in approved scope (one throwaway sandbox). */
+  /** Prefer retained evidence; anonymous fallback cannot reproduce pages known to need sign-in. */
   private async inspectCode(signal: AbortSignal) {
     let document = await this.originalDocument();
     signal.throwIfAborted();
