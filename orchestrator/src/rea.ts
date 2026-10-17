@@ -208,11 +208,19 @@ export async function reaInspect(
       await daytona.writeFile(id, `${REA_DIR}/${name}`, body);
     }
     signal?.throwIfAborted();
-    const r = await daytona.exec(
-      id,
-      `node /opt/reversy/sandbox/rea-scan.mjs ${REA_DIR} ${REA_SECONDS}`,
-      { timeout: REA_SECONDS + 30 },
-    );
+    // Stopping the run must not wait out the scan: race it against abort so finally removes the sandbox now.
+    const r = await Promise.race([
+      new Promise<never>((_, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason), {
+          once: true,
+        });
+      }),
+      daytona.exec(
+        id,
+        `node /opt/reversy/sandbox/rea-scan.mjs ${REA_DIR} ${REA_SECONDS}`,
+        { timeout: REA_SECONDS + 30 },
+      ),
+    ]);
     let scan: unknown;
     try {
       scan = JSON.parse(r.result.trim().split("\n").at(-1) ?? "");

@@ -180,6 +180,20 @@ describe("reaInspect", () => {
     expect(crashed.removed).toEqual(["sb1"]);
   });
 
+  it("stops waiting for the scan on abort and removes the sandbox", async () => {
+    serve();
+    const sb = sandbox("");
+    const stop = new AbortController();
+    sb.exec = () => {
+      stop.abort(new Error("run stopped"));
+      return new Promise(() => {}); // a scan that would run to its bound
+    };
+    await expect(
+      reaInspect(sb, html, "https://site.example/", {}, stop.signal),
+    ).rejects.toThrow("run stopped");
+    expect(sb.removed).toEqual(["sb1"]);
+  });
+
   it("skips bundles over the size cap", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(new Uint8Array(4_000_001)),
