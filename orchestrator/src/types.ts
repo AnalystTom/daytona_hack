@@ -43,7 +43,7 @@ export type Phase =
   | "failed";
 
 // What a run reverse engineers; set from each run's brief and chat, never fixed per version.
-export type Scope = "frontend" | "backend" | "both";
+export type Scope = "frontend" | "backend" | "both" | "report";
 
 export type EvidenceStatus = "observed" | "inferred" | "not_observed";
 

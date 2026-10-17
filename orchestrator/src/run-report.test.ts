@@ -111,7 +111,7 @@ async function startReport(
   vi.mocked(capture).mockResolvedValueOnce({ status: "captured", items: [] });
   vi.mocked(llmJson).mockResolvedValueOnce({
     reply: "Review the report scope",
-    spec: {},
+    spec: { scope: "frontend" },
     userApproved: false,
   });
   const brief = structuredClone(await run.start(id, url, goal));
@@ -142,6 +142,8 @@ describe("report dissection run", () => {
       spec: { approved: false },
     });
     expect(captureReport).not.toHaveBeenCalled();
+    // the model answered "frontend", but the typed brief is a report
+    expect(start.spec.scope).toBe("report");
     expect(await run.getState()).toMatchObject({
       phase: "inspecting",
       pending: "report",
