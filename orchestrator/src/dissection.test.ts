@@ -1,5 +1,4 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
 import {
   cleanText,
   dissect,
@@ -7,6 +6,7 @@ import {
   extractFigures,
   sourceFetch,
 } from "./dissection";
+import captured from "./fixtures/goldman-report";
 import { llmJson, sha256 } from "./services";
 import type { Env } from "./types";
 import {
@@ -35,10 +35,6 @@ const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
 
 describe("observed report figures", () => {
   it("extracts the captured Goldman Sachs page before researching its sources", async () => {
-    const captured = readFileSync(
-      new URL("./fixtures/goldman-report.html", import.meta.url),
-      "utf8",
-    );
     expect(extractFigures(captured).map((figure) => figure.value)).toContain(
       "$1 trillion",
     );
@@ -69,7 +65,9 @@ describe("observed report figures", () => {
       report.figures.some((figure) => figure.value === "$581 billion"),
     ).toBe(true);
     expect(
-      report.figures.filter((figure) => figure.group === "investment_breakdown"),
+      report.figures.filter(
+        (figure) => figure.group === "investment_breakdown",
+      ),
     ).toHaveLength(6);
     for (const figure of report.figures.filter(
       (figure) => figure.sourceId === "article",
