@@ -32,7 +32,7 @@ import {
   stackRule,
 } from "./scope";
 import { RunTracer } from "./tracing";
-import { isReportGoal } from "./report";
+import { isReportGoal, replayTarget } from "./report";
 import { ReportEdit, type ReportDissection } from "../../src/shared/report";
 import { dissect } from "./dissection";
 import { attachRegions, captureReport } from "./report-capture";
@@ -403,13 +403,16 @@ export class Run extends DurableObject<Env> {
       await saveReport(
         this.env,
         { report, evidence: this.s.evidence },
-        this.s.spec.url,
+        replayTarget(this.s.spec.url),
       );
       if (this.reportStopped()) return;
       this.s.report = report;
     } catch (error) {
       if (this.reportStopped()) return;
-      const previous = await latestReport(this.env, this.s.spec.url);
+      const target = replayTarget(this.s.spec.url);
+      const previous = target
+        ? await latestReport(this.env, target)
+        : undefined;
       if (this.reportStopped()) return;
       if (!previous || previous.report.runId === this.s.id)
         throw new Error(
@@ -442,7 +445,7 @@ export class Run extends DurableObject<Env> {
       await saveReport(
         this.env,
         { report: this.s.report, evidence: this.s.evidence },
-        this.s.spec.url,
+        replayTarget(this.s.spec.url),
       );
     }
     if (this.reportStopped()) return;

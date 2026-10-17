@@ -409,6 +409,20 @@ describe("report dissection run", () => {
     });
     expect(state.phase).toBe("done");
   });
+  it("never replays or shares a report for an address with a query or fragment", async () => {
+    const { run } = createRun();
+    const address = "https://example.org/report?token=secret#figures";
+    vi.mocked(captureReport).mockRejectedValue(new Error("Capture failed"));
+    vi.mocked(latestReport).mockResolvedValue({
+      report: report(),
+      evidence: [],
+    });
+    await startReport(run, "private-run", address);
+    await run.alarm();
+    expect(latestReport).not.toHaveBeenCalled();
+    expect(await run.getState()).toMatchObject({ phase: "failed" });
+    expect((await run.getState()).report).toBeUndefined();
+  });
   it("shows failure when there is no real successful run to replay", async () => {
     const { run } = createRun();
     vi.mocked(captureReport).mockRejectedValue(new Error("Capture failed"));

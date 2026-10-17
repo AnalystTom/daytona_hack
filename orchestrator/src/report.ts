@@ -21,3 +21,10 @@ export const isReportGoal = (goal: string) =>
   /\b(?:reconstruct|dissect|rebuild)\s+(?:(?:this|that|the|a|an)\s+)?(?:(?:financial|investment)\s+)?reports?\b/i.test(
     goal,
   );
+
+// Replay reuses an earlier run's report for the same address, so only plain public addresses qualify:
+// a query, fragment or credentials could carry a token that must not be shared with another run.
+export function replayTarget(url: string) {
+  const u = new URL(url);
+  return u.search || u.hash || u.username || u.password ? "" : u.href;
+}
