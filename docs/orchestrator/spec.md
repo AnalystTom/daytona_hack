@@ -29,7 +29,7 @@ Our Cloudflare Worker (web app + API, the only front door)
    │  service binding (private)              ▲ run events
    ▼                                         │
 Reversy orchestrator (Cloudflare Worker, one Durable Object per run)
-   │  owns chat, inspect, plan, build, review; calls the verifier (GPT, from Cloudflare)
+   │  owns chat, inspect, plan, build, review; calls the verifier from Cloudflare
    ▼
 Daytona run sandbox (Tier 3 or higher, full internet access)
    ├─ Codex workers (one task each, own git worktree and branch)
@@ -48,12 +48,14 @@ Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys st
 
 | Agent | Runs in | Model | Writes code | Job |
 |---|---|---|---|---|
-| Orchestrator | Durable Object on Cloudflare | Nicrron (`NICRRON_MODEL`, default `nicrron/auto`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
+| Orchestrator | Durable Object on Cloudflare | Nicrron (`NICRRON_MODEL`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
 | Workers | Codex in the Daytona sandbox | `WORKER_MODEL`, reasoning from `WORKER_EFFORT` (deployment values in [`wrangler.jsonc`](../../orchestrator/wrangler.jsonc)) | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
 | Reviewer | Orchestrator, on Cloudflare | Nicrron (`NICRRON_MODEL`) | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
 | Verifier | Cloudflare, outside the sandbox | Nicrron (`NICRRON_MODEL`) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
 
-All models are OpenAI; there is no Anthropic model in the demo.
+Chat, planning, review and verification use the fixed Nicrron gateway URL and default model defined in [`src/shared/nicrron.ts`](../../src/shared/nicrron.ts), with `NICRRON_API_KEY` and an optional `NICRRON_MODEL` on the orchestrator Worker. `ORCHESTRATOR_MODEL` selects the direct OpenAI model for report source web search; sandbox Codex workers also stay on OpenAI because they require its Responses API. Both exceptions use `OPENAI_API_KEY`. `VERIFIER_MODEL` no longer selects the orchestrator verifier's model; it uses `NICRRON_MODEL`.
+
+Every structured reply is validated against the supplied JSON Schema before use, including field types, required fields and rejection of unexpected properties where the schema forbids them. Invalid JSON or schema mismatches fail the call rather than approving scope or passing verification; see [`llmJson`](../../orchestrator/src/services.ts) and its [regression tests](../../orchestrator/src/services.test.ts).
 The verifier has its own instructions and runs outside the sandbox, so it stays independent of the agents it checks.
 
 ## 5. How a run works
@@ -70,7 +72,7 @@ Research requests a budget of four OpenAI web-search tool calls with parallel to
 
 The bounded quote-evidence rule requires the complete independently captured HTML passage, never a model-clipped substring. After whitespace normalization, both the passage and complete figure value must exactly match the captured figure quotation and value. The shared extractor recognizes numeric tokens with currency context, signs, comma thousands separators, decimals, supported scales and ranges (`2%-5%`, `$5-10 billion`) whose two ends share one unit; token sequences it cannot parse, and ranges with mixed units, are marked not observed. A quantity that merely opens a parenthetical (`(1.3% globally)`) is read; one wrapped whole in brackets (`(2.5%)`) stays unsupported, and the matcher below never verifies a range or a value directly after an opening bracket. A parsed value alone does not establish a complete unit: matching requires that value to occur only once in each passage and end it, apart from sentence punctuation. Unconsumed suffix text remains unverified. Matching denies by default: both quotes must independently contain the same complete quantity, unit, scale and sign with an attached, unambiguous currency token (the euro symbol or a supported ISO currency code). Dollar and pound symbols alone, absent or conflicting currency, parenthesised or prefixed negatives and unsupported separators remain unverified. Bare integers have no inferred year unit; years, percentages and basis points have no currency exemption. Currency is not inferred from page context, and there is no FX conversion or numerical equivalence. The shared implementations are `reportQuantities` and `exactQuoteEvidence` in [`src/shared/report.ts`](../../src/shared/report.ts), also checked when displaying a saved match.
 
-The orchestrator needs `NICRRON_API_KEY` (all chat, plan, review and verifier calls go through the Nicrron gateway, model `NICRRON_MODEL`, default `nicrron/auto`), `OPENAI_API_KEY` (report source web search, which Nicrron cannot serve, and the Codex agents in the sandbox, which need the OpenAI Responses API) and the `SURREALDB_*` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session normally captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
+The orchestrator needs the [agent model bindings](#4-agents) and the `SURREALDB_*` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session normally captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
 
 Only a `CodeExecutionRefused` from the report snippet triggers fallback: HTML is fetched directly and Anchor's plain screenshot tool is attempted in the same session. The fetched HTML's final URL must retain the requested origin; a different origin fails the run. Other snippet errors, including origin rejection, still fail without fallback. Fetched HTML is observed evidence, but DOM boxes and rendered content are not observed. A fallback screenshot is **inferred** because its final browser URL cannot be verified, and it has no source regions. If the screenshot tool raises an `AnchorError`, the captured HTML remains usable and the screenshot is **not observed** with the failure reason. The session closes on success or failure. See [`captureReport`](../../orchestrator/src/report-capture.ts) and its [regression tests](../../orchestrator/src/report-capture.test.ts).
 
@@ -208,7 +210,7 @@ A failed or stopped task stays on the board with its reason and next action.
 
 ## 9. Verifier
 
-- Runs on Cloudflare on `NICRRON_MODEL` (Nicrron), never from inside the sandbox.
+- Runs on Cloudflare, never from inside the sandbox; model selection follows the [agent configuration](#4-agents).
 - Checks three things: the plan before build, each merged task, and the final rebuild.
 - Input: the agreed spec, the relevant evidence, and the output being checked (the plan, or a merged task with its live preview).
 - Frontend task and final checks keep the root-preview HTML comparison. Backend checks probe observed page GET paths and same-origin API paths referenced by inferred endpoint evidence; a task uses its cited evidence and the final check uses all evidence. Combined runs perform both checks.
@@ -245,7 +247,7 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 ## 13. Decided
 
 - Demo engine: the Reversy orchestrator (Cloudflare Durable Object), enhanced with full Anchor capture. Firstmate in Daytona with no-mistakes is the second engine for later.
-- All models are OpenAI, including the verifier.
+- Runtime model routing follows the [agent configuration](#4-agents).
 - Run limits: see section 10.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - End of run: a live preview inside the app, with an optional deploy-live action.

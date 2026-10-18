@@ -87,16 +87,16 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 
 | Binding | Used by | Without it |
 |---|---|---|
-| `NICRRON_API_KEY` (secret) | The verifier, `POST /api/v1/runs/:id/verify`, through the Nicrron gateway (`NICRRON_MODEL`, default `nicrron/auto`) | The endpoint returns 503 naming the missing binding |
+| `NICRRON_API_KEY` (secret) | The [verifier](#verifier), `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
 | `VERIFIER_TOKEN` (secret) | Callers of the verify endpoint send `Authorization: Bearer <VERIFIER_TOKEN>`; a wrong or missing token gets 401 | The endpoint returns 503 naming the missing binding |
 
 Set a secret with `npx wrangler secret put <NAME>`.
 
 ## Verifier
 
-`POST /api/v1/runs/:id/verify` checks the orchestrator's output with `claude-opus-5-5` at high effort (`docs/orchestrator/spec.md` section 9).
+`POST /api/v1/runs/:id/verify` checks the orchestrator's output through Nicrron at high effort. Set `NICRRON_MODEL` on the web Worker to select a model; the gateway URL and default model are defined in [`src/shared/nicrron.ts`](src/shared/nicrron.ts).
 The body is `{kind: "plan" | "task" | "final", spec, evidence, findings, screenshots, plan}`, plus `task` for `kind: "task"` and `rebuildEvidenceIds` for `kind: "final"`; the schemas are in `src/shared/verifier.ts`.
-It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs.
+It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs. `model` is the gateway-reported model, or `nicrron` if the gateway omits it.
 A model error, refusal, truncated reply or malformed verdict returns 502, never a pass.
 
 ## Run API

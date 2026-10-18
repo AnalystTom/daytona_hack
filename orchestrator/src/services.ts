@@ -113,7 +113,20 @@ async function llmCall<T>(
       ),
     },
   );
-  const body: any = await res.json();
+  const body = (await res.json()) as {
+    output_text?: string;
+    output?: {
+      type: string;
+      content?: { type: string; text?: string }[];
+    }[];
+    choices?: { message?: { content?: string | null } }[];
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
+  };
   opts.signal?.throwIfAborted();
   if (!res.ok)
     throw new Error(
@@ -130,8 +143,8 @@ async function llmCall<T>(
   const text = opts.webSearch
     ? (body.output_text ??
       body.output
-        ?.flatMap((o: any) => o.content || [])
-        .find((c: any) => c.type === "output_text")?.text)
+        ?.flatMap((o) => o.content || [])
+        .find((c) => c.type === "output_text")?.text)
     : body.choices?.[0]?.message?.content;
   if (typeof text !== "string") throw new Error(`${via} returned no content`);
   set?.({
@@ -147,7 +160,9 @@ async function llmCall<T>(
   } catch {
     throw new Error(`${via} returned invalid JSON: ${text.slice(0, 200)}`);
   }
-  const parsed = z.fromJSONSchema(opts.schema).safeParse(value);
+  const parsed = z
+    .fromJSONSchema(opts.schema as z.core.JSONSchema.JSONSchema)
+    .safeParse(value);
   if (!parsed.success)
     throw new Error(
       `${via} returned output that does not match ${opts.name} schema: ${parsed.error.message}`,
@@ -214,7 +229,9 @@ export async function recall(
     },
     body: JSON.stringify({ query, k: 10, lens: [[scope]] }),
   });
-  return res.ok ? ((await res.json()) as any).context || "" : "";
+  return res.ok
+    ? ((await res.json()) as { context?: string }).context || ""
+    : "";
 }
 
 // --- Page HTML for route discovery (Anchor when set, else a plain fetch) ---
