@@ -3,6 +3,7 @@ import * as inspect from "./inspect";
 import { Daytona } from "./daytona";
 import { Run } from "./run";
 import { tracing } from "./services";
+import { chatReply } from "./nicrron-fixtures";
 import type { Env, Phase, Task } from "./types";
 import orchestrator from "./index";
 import {
@@ -96,6 +97,7 @@ async function setup(
   const env = {
     RUN_MAX_MINUTES: options.minutes,
     ORCHESTRATOR_MODEL: "test",
+    NICRRON_API_KEY: "k",
     WORKER_MODEL: "test",
   } as Env;
   const run = new Run(ctx as unknown as DurableObjectState, env);
@@ -105,9 +107,9 @@ async function setup(
   const request = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("api.openai.com")) {
+      if (url.includes("api.nicrron.ai")) {
         const body = JSON.parse(String(init?.body));
-        const name = body.text.format.name;
+        const name = body.response_format.json_schema.name;
         calls.push(name);
         const output =
           name === "orchestrator_turn"
@@ -115,7 +117,7 @@ async function setup(
             : name === "plan"
               ? { tasks: [] }
               : { pass: true, findings: [], summary: "Pass" };
-        return Response.json({ output_text: JSON.stringify(output) });
+        return chatReply(JSON.stringify(output));
       }
       return new Response("<html>Observed page</html>");
     },
@@ -462,10 +464,10 @@ describe("run paid-work deadlines", () => {
       pending: "inspect",
     });
     request.mockImplementation(async (input) => {
-      if (String(input).includes("api.openai.com")) {
+      if (String(input).includes("api.nicrron.ai")) {
         calls.push("plan");
         expire();
-        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
+        return chatReply(JSON.stringify({ tasks: [] }));
       }
       return new Response("<html>observed</html>");
     });
@@ -676,10 +678,10 @@ describe("run paid-work deadlines", () => {
       pending: "inspect",
     });
     request.mockImplementation(async (input) => {
-      if (String(input).includes("api.openai.com")) {
+      if (String(input).includes("api.nicrron.ai")) {
         calls.push("plan");
         await run.stop();
-        return Response.json({ output_text: JSON.stringify({ tasks: [] }) });
+        return chatReply(JSON.stringify({ tasks: [] }));
       }
       return new Response("<html>observed</html>");
     });
@@ -695,23 +697,19 @@ describe("run paid-work deadlines", () => {
         phase: "building",
       });
       request.mockImplementation(async (input, init) => {
-        if (String(input).includes("api.openai.com")) {
+        if (String(input).includes("api.nicrron.ai")) {
           const body = JSON.parse(String(init?.body));
-          calls.push(body.text.format.name);
+          calls.push(body.response_format.json_schema.name);
           if (failure === "provider")
             return Response.json({ error: "unavailable" }, { status: 503 });
-          if (failure === "json") return Response.json({ output_text: "{" });
+          if (failure === "json") return chatReply("{");
           if (failure === "refusal")
             return Response.json({
-              output: [{ content: [{ type: "refusal", refusal: "No" }] }],
+              choices: [{ message: { content: null, refusal: "No" } }],
             });
-          return Response.json({
-            output_text: JSON.stringify({
-              pass: true,
-              findings: [],
-              summary: "Pass",
-            }),
-          });
+          return chatReply(
+            JSON.stringify({ pass: true, findings: [], summary: "Pass" }),
+          );
         }
         return new Response("<html>observed</html>");
       });
@@ -794,21 +792,17 @@ describe("run paid-work deadlines", () => {
       const client = frontFor(context);
       client.records[0].busy = false;
       request.mockImplementation(async (input, init) => {
-        if (String(input).includes("api.openai.com")) {
+        if (String(input).includes("api.nicrron.ai")) {
           const body = JSON.parse(String(init?.body)) as {
-            text: { format: { name: string } };
+            response_format: { json_schema: { name: string } };
           };
-          calls.push(body.text.format.name);
+          calls.push(body.response_format.json_schema.name);
           if (failure === "provider")
             return Response.json({ error: "unavailable" }, { status: 503 });
-          if (failure === "json") return Response.json({ output_text: "{" });
-          return Response.json({
-            output_text: JSON.stringify({
-              pass: true,
-              findings: [],
-              summary: "Pass",
-            }),
-          });
+          if (failure === "json") return chatReply("{");
+          return chatReply(
+            JSON.stringify({ pass: true, findings: [], summary: "Pass" }),
+          );
         }
         return new Response("<html>Observed page</html>");
       });

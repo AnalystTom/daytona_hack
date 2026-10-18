@@ -87,7 +87,7 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 
 | Binding | Used by | Without it |
 |---|---|---|
-| `ANTHROPIC_API_KEY` (secret) | The verifier, `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
+| `NICRRON_API_KEY` (secret) | The verifier, `POST /api/v1/runs/:id/verify`, through the Nicrron gateway (`NICRRON_MODEL`, default `nicrron/auto`) | The endpoint returns 503 naming the missing binding |
 | `VERIFIER_TOKEN` (secret) | Callers of the verify endpoint send `Authorization: Bearer <VERIFIER_TOKEN>`; a wrong or missing token gets 401 | The endpoint returns 503 naming the missing binding |
 
 Set a secret with `npx wrangler secret put <NAME>`.
@@ -205,7 +205,7 @@ The SDK itself is not bundled because it depends on Node-only packages that the 
 |---|---|
 | `SANDBOX_API_TOKEN` | Every sandbox route: callers send it as `Authorization: Bearer`, because these routes spend money and instruct agents that hold secrets |
 | `DAYTONA_API_KEY` | Every sandbox route |
-| `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox |
+| `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox. Nicrron serves no OpenAI Responses endpoint, which Codex requires, so these calls stay on OpenAI |
 | `BRIDGE_TOKEN` | Starting a run sandbox or a pod: never sent to a sandbox; each run's bridge gets only `HMAC-SHA256(BRIDGE_TOKEN, runId)` (hex, `runBridgeToken` in `src/worker/daytona/bridge-token.ts`) and sends that as `Authorization: Bearer` |
 | `DAYTONA_SNAPSHOT` (optional) | Snapshot name; defaults to `reversy-run` |
 | `DAYTONA_API_URL` (optional) | Daytona API base; defaults to `https://app.daytona.io/api` |

@@ -103,7 +103,7 @@ For browser evidence, the orchestrator uses Reversy's evidence capture (`src/wor
 npm install
 npm install --prefix orchestrator
 cd orchestrator
-# .dev.vars: OPENAI_API_KEY, DAYTONA_API_KEY, SPECTRON_URL, SPECTRON_CONTEXT_ID, SPECTRON_API_KEY, ANCHORBROWSER_API_KEY,
+# .dev.vars: NICRRON_API_KEY, OPENAI_API_KEY, DAYTONA_API_KEY, SPECTRON_URL, SPECTRON_CONTEXT_ID, SPECTRON_API_KEY, ANCHORBROWSER_API_KEY,
 #            SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD
 npx wrangler dev
 ```
