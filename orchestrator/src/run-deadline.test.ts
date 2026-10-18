@@ -113,7 +113,16 @@ async function setup(
         calls.push(name);
         const output =
           name === "orchestrator_turn"
-            ? { reply: "Which pages?", spec: state.spec, userApproved: false }
+            ? {
+                reply: "Which pages?",
+                spec: {
+                  scope: "frontend",
+                  pages: [{ path: "/", confirmed: true, notes: "" }],
+                  flows: [],
+                  openQuestions: [],
+                },
+                userApproved: false,
+              }
             : name === "plan"
               ? { tasks: [] }
               : { pass: true, findings: [], summary: "Pass" };
