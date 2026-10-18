@@ -1,4 +1,5 @@
 // Nicrron (structured outputs; OpenAI Responses only for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
+import { z } from "zod";
 import {
   DEFAULT_NICRRON_MODEL,
   DEFAULT_NICRRON_URL,
@@ -75,7 +76,7 @@ async function llmCall<T>(
   const res = await fetch(
     opts.webSearch
       ? "https://api.openai.com/v1/responses"
-      : `${env.NICRRON_API_URL || DEFAULT_NICRRON_URL}/chat/completions`,
+      : `${DEFAULT_NICRRON_URL}/chat/completions`,
     {
       signal: opts.signal,
       method: "POST",
@@ -140,11 +141,18 @@ async function llmCall<T>(
     "llm.token_count.completion":
       body.usage?.output_tokens ?? body.usage?.completion_tokens ?? 0,
   });
+  let value: unknown;
   try {
-    return parseJsonReply(text) as T;
+    value = parseJsonReply(text);
   } catch {
     throw new Error(`${via} returned invalid JSON: ${text.slice(0, 200)}`);
   }
+  const parsed = z.fromJSONSchema(opts.schema).safeParse(value);
+  if (!parsed.success)
+    throw new Error(
+      `${via} returned output that does not match ${opts.name} schema: ${parsed.error.message}`,
+    );
+  return parsed.data as T;
 }
 
 // --- SurrealDB Agent Memory: observations and decisions with their sources ---

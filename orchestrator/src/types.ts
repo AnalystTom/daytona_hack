@@ -14,7 +14,6 @@ export interface Env extends StoreEnv {
   DAYTONA_API_KEY: string;
   DAYTONA_SNAPSHOT?: string;
   NICRRON_API_KEY: string; // every orchestrator model call except web search
-  NICRRON_API_URL?: string;
   NICRRON_MODEL?: string; // default nicrron/auto
   OPENAI_API_KEY: string; // web search and the Codex agents in the run sandbox
   ORCHESTRATOR_MODEL: string;
