@@ -159,13 +159,13 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Anchor | Essential: the browser for [evidence capture](orchestrator/spec.md#6-evidence) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | Main data store (runs, tasks, reviews, verdicts, canvas) and Agent Memory for observations and decisions with their sources |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
-| GPT 6.1 via the OpenAI API | Orchestrator (also the chat agent), Codex workers, review and the verifier; all models are OpenAI |
+| Model providers | Routing and model selection follow the [agent configuration](orchestrator/spec.md#4-agents) |
 
 Decided since Revision 2, which lists these as open or says otherwise:
 
 - First site: daytona.io, with Daytona's permission.
 - Repository: new, `AnalystTom/daytona_hack`.
-- Runtime models: all OpenAI, GPT 6.1 for the agents and the verifier.
+- Runtime models: see the [agent configuration](orchestrator/spec.md#4-agents).
 - Hosting: Cloudflare Workers.
 - Build engine: the Reversy orchestrator, a Cloudflare Durable Object per run, enhanced with full Anchor capture, running Codex workers in one Daytona sandbox. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop. Firstmate in Daytona with no-mistakes review is a second engine for later.
 - The orchestrator is private: only our site calls it, and only we can test it.

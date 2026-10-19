@@ -1210,3 +1210,23 @@
   cursor: pointer;
   padding: 0.5rem 0;
 }
+
+/* Touch screens: controls need a 44px target */
+@media (pointer: coarse) {
+  .button,
+  .ws-view,
+  .ss-toggle,
+  .cv-tool,
+  .ws-brand {
+    min-height: 2.75rem;
+  }
+
+  .cv-tool {
+    min-width: 2.75rem;
+  }
+
+  .send-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}

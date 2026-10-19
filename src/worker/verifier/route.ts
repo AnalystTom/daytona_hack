@@ -1,8 +1,9 @@
 import { VerifyRequest, type VerifyResponse } from "../../shared/verifier";
-import { VERIFIER_MODEL, VerifierError, verify } from "./verify";
+import { VerifierError, verify } from "./verify";
 
 export interface VerifierEnv {
-  ANTHROPIC_API_KEY?: string;
+  NICRRON_API_KEY?: string;
+  NICRRON_MODEL?: string; // default nicrron/auto
   VERIFIER_TOKEN?: string;
 }
 
@@ -37,9 +38,9 @@ export async function handleVerify(
   if (!(await tokenMatches(given, env.VERIFIER_TOKEN))) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!env.ANTHROPIC_API_KEY) {
+  if (!env.NICRRON_API_KEY) {
     return Response.json(
-      { error: "Verifier unavailable: ANTHROPIC_API_KEY binding is missing" },
+      { error: "Verifier unavailable: NICRRON_API_KEY binding is missing" },
       { status: 503 },
     );
   }
@@ -57,11 +58,16 @@ export async function handleVerify(
     );
   }
   try {
-    const verdict = await verify(env.ANTHROPIC_API_KEY, parsed.data);
+    const verdict = await verify(
+      {
+        NICRRON_API_KEY: env.NICRRON_API_KEY,
+        NICRRON_MODEL: env.NICRRON_MODEL,
+      },
+      parsed.data,
+    );
     const response: VerifyResponse = {
       runId,
       kind: parsed.data.kind,
-      model: VERIFIER_MODEL,
       ...verdict,
     };
     return Response.json(response);

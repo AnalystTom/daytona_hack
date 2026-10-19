@@ -1,4 +1,11 @@
-// OpenAI (structured outputs), SurrealDB Agent Memory, page HTML — all over plain fetch.
+// Nicrron (structured outputs; OpenAI Responses only for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
+import { z } from "zod";
+import {
+  DEFAULT_NICRRON_MODEL,
+  DEFAULT_NICRRON_URL,
+  parseJsonReply,
+  withJsonSchema,
+} from "../../src/shared/nicrron";
 import type { RunTracer } from "./tracing";
 import { type Env, USER_AGENT } from "./types";
 
@@ -20,7 +27,10 @@ export async function llmJson<T>(
     model?: string;
   },
 ): Promise<T> {
-  const model = opts.model || env.ORCHESTRATOR_MODEL;
+  // Nicrron serves no web search, so that one call stays on OpenAI with its own model name.
+  const model = opts.webSearch
+    ? opts.model || env.ORCHESTRATOR_MODEL
+    : env.NICRRON_MODEL || DEFAULT_NICRRON_MODEL;
   const call = (set?: (a: Record<string, string | number>) => void) =>
     llmCall<T>(env, opts, model, set);
   return tracing.current
@@ -55,42 +65,72 @@ async function llmCall<T>(
 ): Promise<T> {
   await opts.beforeCall?.();
   opts.signal?.throwIfAborted();
-  const res = await fetch("https://api.openai.com/v1/responses", {
-    signal: opts.signal,
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.OPENAI_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      reasoning: { effort: opts.effort || "high" },
-      instructions: opts.instructions,
-      input: opts.input,
-      ...(opts.webSearch
-        ? {
-            tools: [{ type: "web_search", search_context_size: "low" }],
-            max_tool_calls: opts.webSearch,
-            // Parallel calls in one turn can overshoot max_tool_calls.
-            parallel_tool_calls: false,
-            max_output_tokens: 16000,
-          }
-        : {}),
-      text: {
-        format: {
-          type: "json_schema",
-          name: opts.name,
-          schema: opts.schema,
-          strict: true,
-        },
+  const format = {
+    name: opts.name,
+    schema: opts.schema,
+    strict: true,
+  };
+  const via = opts.webSearch ? "openai" : "nicrron";
+  if (via === "nicrron" && !env.NICRRON_API_KEY)
+    throw new Error("NICRRON_API_KEY is not configured");
+  const res = await fetch(
+    opts.webSearch
+      ? "https://api.openai.com/v1/responses"
+      : `${DEFAULT_NICRRON_URL}/chat/completions`,
+    {
+      signal: opts.signal,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${opts.webSearch ? env.OPENAI_API_KEY : env.NICRRON_API_KEY}`,
+        "Content-Type": "application/json",
       },
-    }),
-  });
-  const body: any = await res.json();
+      body: JSON.stringify(
+        opts.webSearch
+          ? {
+              model,
+              reasoning: { effort: opts.effort || "high" },
+              instructions: opts.instructions,
+              input: opts.input,
+              tools: [{ type: "web_search", search_context_size: "low" }],
+              max_tool_calls: opts.webSearch,
+              // Parallel calls in one turn can overshoot max_tool_calls.
+              parallel_tool_calls: false,
+              max_output_tokens: 16000,
+              text: { format: { type: "json_schema", ...format } },
+            }
+          : {
+              model,
+              reasoning_effort: opts.effort || "high",
+              messages: [
+                {
+                  role: "system",
+                  content: withJsonSchema(opts.instructions, opts.schema),
+                },
+                { role: "user", content: opts.input },
+              ],
+              response_format: { type: "json_schema", json_schema: format },
+            },
+      ),
+    },
+  );
+  const body = (await res.json()) as {
+    output_text?: string;
+    output?: {
+      type: string;
+      content?: { type: string; text?: string }[];
+    }[];
+    choices?: { message?: { content?: string | null } }[];
+    usage?: {
+      input_tokens?: number;
+      output_tokens?: number;
+      prompt_tokens?: number;
+      completion_tokens?: number;
+    };
+  };
   opts.signal?.throwIfAborted();
   if (!res.ok)
     throw new Error(
-      `openai ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
+      `${via} ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
     );
   if (opts.webSearch) {
     const calls =
@@ -100,17 +140,34 @@ async function llmCall<T>(
     if (!calls) throw new Error("Online source search did not run");
     opts.onSearchCalls?.(calls);
   }
-  const text =
-    body.output_text ??
-    body.output
-      ?.flatMap((o: any) => o.content || [])
-      .find((c: any) => c.type === "output_text")?.text;
+  const text = opts.webSearch
+    ? (body.output_text ??
+      body.output
+        ?.flatMap((o) => o.content || [])
+        .find((c) => c.type === "output_text")?.text)
+    : body.choices?.[0]?.message?.content;
+  if (typeof text !== "string") throw new Error(`${via} returned no content`);
   set?.({
     "output.value": text,
-    "llm.token_count.prompt": body.usage?.input_tokens || 0,
-    "llm.token_count.completion": body.usage?.output_tokens || 0,
+    "llm.token_count.prompt":
+      body.usage?.input_tokens ?? body.usage?.prompt_tokens ?? 0,
+    "llm.token_count.completion":
+      body.usage?.output_tokens ?? body.usage?.completion_tokens ?? 0,
   });
-  return JSON.parse(text) as T;
+  let value: unknown;
+  try {
+    value = parseJsonReply(text);
+  } catch {
+    throw new Error(`${via} returned invalid JSON: ${text.slice(0, 200)}`);
+  }
+  const parsed = z
+    .fromJSONSchema(opts.schema as z.core.JSONSchema.JSONSchema)
+    .safeParse(value);
+  if (!parsed.success)
+    throw new Error(
+      `${via} returned output that does not match ${opts.name} schema: ${parsed.error.message}`,
+    );
+  return parsed.data as T;
 }
 
 // --- SurrealDB Agent Memory: observations and decisions with their sources ---
@@ -172,7 +229,9 @@ export async function recall(
     },
     body: JSON.stringify({ query, k: 10, lens: [[scope]] }),
   });
-  return res.ok ? ((await res.json()) as any).context || "" : "";
+  return res.ok
+    ? ((await res.json()) as { context?: string }).context || ""
+    : "";
 }
 
 // --- Page HTML for route discovery (Anchor when set, else a plain fetch) ---

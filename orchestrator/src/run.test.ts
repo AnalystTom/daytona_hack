@@ -1,6 +1,7 @@
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { Daytona } from "./daytona";
 import { inspectBackend } from "./inspect";
+import { chatReply, NICRRON_URL } from "./nicrron-fixtures";
 import type { Env, Evidence, Task } from "./types";
 
 vi.mock("cloudflare:workers", () => ({
@@ -75,18 +76,18 @@ function stubFetch(
 ) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-    if (input === "https://api.openai.com/v1/responses") {
+    if (input === NICRRON_URL) {
       const body = JSON.parse(String(init?.body));
-      const name = body.text.format.name;
+      const name = body.response_format.json_schema.name;
       calls.push({
         name,
-        instructions: body.instructions,
-        input: JSON.parse(body.input),
+        instructions: body.messages[0].content,
+        input: JSON.parse(body.messages[1].content),
       });
       const queue = answers[name] ?? [
         { pass: true, summary: "ok", findings: [] },
       ];
-      return Response.json({ output_text: JSON.stringify(queue.shift()) });
+      return chatReply(JSON.stringify(queue.shift()));
     }
     if (bundles[input]) return new Response(bundles[input]);
     if (input.startsWith(SITE))
@@ -142,6 +143,7 @@ async function plannedRun(
     ctx as unknown as DurableObjectState,
     {
       ORCHESTRATOR_MODEL: "m",
+      NICRRON_API_KEY: "k",
     } as Env,
   );
   await ctx.ready;
@@ -275,7 +277,7 @@ describe("run scope", () => {
       const ctx = context();
       const run = new Run(
         ctx as unknown as DurableObjectState,
-        { ORCHESTRATOR_MODEL: "m" } as Env,
+        { ORCHESTRATOR_MODEL: "m", NICRRON_API_KEY: "k" } as Env,
       );
       await ctx.ready;
       await run.start("run-1", SITE, `${scope} only`);

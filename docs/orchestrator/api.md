@@ -66,7 +66,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 - Each task gets its own git worktree and branch `task/<id>`. A Codex worker runs there; model, reasoning and concurrency follow the [agent configuration](spec.md#4-agents) and [scheduling rules](spec.md#7-orchestration).
   Codex's own sandbox cannot start inside the Daytona container, so the Daytona sandbox is the isolation boundary.
 - A task is dispatched when all its dependencies are merged, up to `MAX_WORKERS` at once. The Durable Object alarm polls every 10 s.
-- When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
+- When a worker exits, the orchestrator commits its worktree, and the reviewer checks the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview on port 3000 shows it (`npx serve` for frontend scope, the Node.js service for backend or combined scope; see [`previewCommand`](../../orchestrator/src/scope.ts)). Reject → one revision with the review findings, then `failed` with the reason.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<id>`.
 
@@ -103,7 +103,7 @@ For browser evidence, the orchestrator uses Reversy's evidence capture (`src/wor
 npm install
 npm install --prefix orchestrator
 cd orchestrator
-# .dev.vars: OPENAI_API_KEY, DAYTONA_API_KEY, SPECTRON_URL, SPECTRON_CONTEXT_ID, SPECTRON_API_KEY, ANCHORBROWSER_API_KEY,
+# .dev.vars: NICRRON_API_KEY, OPENAI_API_KEY, DAYTONA_API_KEY, SPECTRON_URL, SPECTRON_CONTEXT_ID, SPECTRON_API_KEY, ANCHORBROWSER_API_KEY,
 #            SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD
 npx wrangler dev
 ```
