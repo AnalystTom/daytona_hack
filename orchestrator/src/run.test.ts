@@ -323,6 +323,24 @@ describe("run scope", () => {
     },
   );
 
+  it("announces the return to planned when sandbox setup fails, so Start build is offered again", async () => {
+    vi.spyOn(Daytona.prototype, "create").mockRejectedValue(
+      new Error("daytona POST /api/sandbox 401: Invalid credentials"),
+    );
+    const { run } = await plannedRun("frontend", "Rebuild the page.", [
+      task("t01", ["index.html"]),
+    ]);
+    await run.startBuild();
+    await run.alarm();
+    const state = await run.getState();
+    expect(state.phase).toBe("planned");
+    expect(state.error).toContain("Invalid credentials");
+    const events = await run.events(0);
+    const phases = events.filter((e) => e.type === "phase");
+    expect(phases.at(-1)?.data).toEqual({ phase: "planned" });
+    expect(events.at(-1)?.type).toBe("error");
+  });
+
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",
     async (scope) => {

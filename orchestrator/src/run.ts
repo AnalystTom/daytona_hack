@@ -679,7 +679,10 @@ export class Run extends DurableObject<Env> {
           );
         } catch (e) {
           if (this.s.pending === "stop") throw e;
-          if (this.s.phase !== "stopped") this.s.phase = "planned";
+          if (this.s.phase !== "stopped") {
+            this.s.phase = "planned";
+            await this.emit("phase", { phase: "planned" });
+          }
           if (this.s.sandboxId)
             await this.daytona.remove(this.s.sandboxId).catch(() => {});
           this.s.sandboxId = undefined;
