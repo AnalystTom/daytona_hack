@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../index";
 
-// Test fixtures only: a minimal evidence pack, plan and mocked Nicrron responses.
+// Test fixtures only: a minimal evidence pack, plan and mocked OpenAI responses.
 const evidenceItem = (id: string) => ({
   id,
   kind: "screenshot",
@@ -61,7 +61,7 @@ const mockModel = (response: Response) => {
   return fetchMock;
 };
 
-const env = { NICRRON_API_KEY: "test-key", VERIFIER_TOKEN: "test-token" };
+const env = { OPENAI_API_KEY: "test-key", VERIFIER_TOKEN: "test-token" };
 
 const callVerify = (
   body: unknown,
@@ -86,8 +86,8 @@ afterEach(() => {
 
 describe("POST /api/v1/runs/:id/verify", () => {
   it.each([
-    ["VERIFIER_TOKEN", { NICRRON_API_KEY: "test-key" }],
-    ["NICRRON_API_KEY", { VERIFIER_TOKEN: "test-token" }],
+    ["VERIFIER_TOKEN", { OPENAI_API_KEY: "test-key" }],
+    ["OPENAI_API_KEY", { VERIFIER_TOKEN: "test-token" }],
   ])(
     "returns 503 naming a missing %s without calling the model",
     async (name, bindings) => {
@@ -172,7 +172,7 @@ describe("POST /api/v1/runs/:id/verify", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("calls Nicrron at high effort with structured output and returns a pass", async () => {
+  it("calls OpenAI at high effort with structured output and returns a pass", async () => {
     const fetchMock = mockModel(
       modelReply(
         JSON.stringify({
@@ -197,13 +197,15 @@ describe("POST /api/v1/runs/:id/verify", () => {
       string,
       RequestInit,
     ];
-    expect(url).toBe("https://api.nicrron.ai/v1/chat/completions");
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
     expect(new Headers(init.headers).get("authorization")).toBe(
       "Bearer test-key",
     );
     const sent = JSON.parse(init.body as string);
-    expect(sent.model).toBe("nicrron/auto");
+    expect(sent.model).toBe("gpt-6-luna");
     expect(sent.reasoning_effort).toBe("high");
+    expect(sent.max_completion_tokens).toBe(16000);
+    expect(sent).not.toHaveProperty("max_tokens");
     expect(sent.response_format.type).toBe("json_schema");
     expect(sent.messages[1].content).toContainEqual({
       type: "image_url",

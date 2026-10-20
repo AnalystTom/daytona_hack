@@ -113,7 +113,7 @@ printenv OPENAI_API_KEY | codex login --with-api-key
 mkdir -p "$HOME/.codex"
 if [ ! -f "$HOME/.codex/config.toml" ]; then
   cat >"$HOME/.codex/config.toml" <<EOF
-model = "gpt-6.1-sol"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 
 [projects."$FM_HOME"]
@@ -126,7 +126,7 @@ fi
 mkdir -p "$FM_HOME/config" "$FM_HOME/data" "$FM_HOME/projects"
 printf 'codex\n' >"$FM_HOME/config/crew-harness"
 cat >"$FM_HOME/config/crew-dispatch.json" <<'EOF'
-{ "default": { "harness": "codex", "model": "gpt-6.1-sol", "effort": "high" } }
+{ "default": { "harness": "codex", "model": "gpt-6-luna", "effort": "high" } }
 EOF
 if [ ! -f "$FM_HOME/data/projects.md" ]; then
   printf '# Projects\n\n- rebuild [no-mistakes +yolo forge=forgejo] - Reversy rebuild for run %s (added %s)\n' \
