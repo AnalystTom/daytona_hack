@@ -1,6 +1,7 @@
 // Network gateway for the run sandbox. On Daytona Tier 1/2 the sandbox cannot reach Anchor or SurrealDB,
-// so Firstmate's crew calls these routes (via the `reversy` CLI) instead. Keys stay on Cloudflare either way:
-// the sandbox only holds GATEWAY_TOKEN. Also relays captain (user) messages into the first mate's tmux pane.
+// so Firstmate's crew calls these routes (via the `reversy` CLI) instead.
+// Credential boundaries: docs/orchestrator/spec.md#8-access-and-network.
+// Also relays captain (user) messages into the first mate's tmux pane.
 import { Daytona } from "./daytona";
 import { recall, remember } from "./services";
 import type { Env } from "./types";

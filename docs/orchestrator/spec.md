@@ -41,8 +41,10 @@ Daytona run sandbox (Tier 3 or higher, full internet access)
    Variant pods (three landing-page alternatives), independent after the fork
 
 Outside the sandbox: Anchor (browser), SurrealDB (records and Agent Memory), Arize (traces)
-Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys stay on Cloudflare.
+Sandbox calls to the gateway (Anchor, Agent Memory) go through our site.
 ```
+
+Credential boundaries are defined in [Access and network](#8-access-and-network).
 
 ## 4. Agents
 
@@ -51,7 +53,7 @@ Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys st
 | Orchestrator | Durable Object on Cloudflare | OpenAI (`ORCHESTRATOR_MODEL`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
 | Workers | Codex in the Daytona sandbox | `WORKER_MODEL`, reasoning from `WORKER_EFFORT` (deployment values in [`wrangler.jsonc`](../../orchestrator/wrangler.jsonc)) | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
 | Reviewer | Orchestrator, on Cloudflare | OpenAI (`ORCHESTRATOR_MODEL`) | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
-| Verifier | Cloudflare, outside the sandbox | OpenAI (`ORCHESTRATOR_MODEL`) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
+| Verifier | Cloudflare, outside the sandbox | OpenAI (model selection below) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
 
 Every model call uses the OpenAI API (`https://api.openai.com/v1`, defined in [`src/shared/openai.ts`](../../src/shared/openai.ts)) with `OPENAI_API_KEY` on the orchestrator Worker. Chat, planning and review use `ORCHESTRATOR_MODEL`, the orchestrator verifier uses `VERIFIER_MODEL` (falling back to `ORCHESTRATOR_MODEL`), and report source web search uses the Responses API. Sandbox Codex workers use `WORKER_MODEL` and also require the Responses API.
 
@@ -204,7 +206,7 @@ A failed or stopped task stays on the board with its reason and next action.
   Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#who-can-use-runs).
 - The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
-  The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
+  Anchor, SurrealDB and Daytona keys stay on Cloudflare. Gateway callers authenticate with `GATEWAY_TOKEN`; Codex run sandboxes receive `OPENAI_API_KEY` to authenticate directly to OpenAI (see [`setupSandbox`](../../orchestrator/src/run.ts)).
 - Knowing a run ID is not enough to view or use a run.
   Run authentication and workspace ownership follow the [README's access policy](../../README.md#who-can-use-runs).
 

@@ -107,7 +107,7 @@ git config --global credential.helper store
 tea login delete reversy >/dev/null 2>&1 || true
 tea login add --name reversy --url "$FORGEJO_URL" --token "$token"
 
-# Codex: GPT 6.1 at high reasoning for Firstmate and every worker it launches.
+# Codex: high reasoning for Firstmate and every worker it launches.
 printenv OPENAI_API_KEY | codex login --with-api-key
 # Written once: Codex records its hook trust in this file, and rewriting it would drop that.
 mkdir -p "$HOME/.codex"
