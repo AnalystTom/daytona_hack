@@ -1,10 +1,10 @@
 import { z } from "zod";
 import {
-  DEFAULT_NICRRON_MODEL,
-  DEFAULT_NICRRON_URL,
+  DEFAULT_OPENAI_MODEL,
+  OPENAI_URL,
   parseJsonReply,
   withJsonSchema,
-} from "../../shared/nicrron";
+} from "../../shared/openai";
 import {
   VerifierVerdict,
   type VerifyKind,
@@ -36,22 +36,22 @@ const CHECKS: Record<VerifyKind, string> = {
 };
 
 export async function verify(
-  env: { NICRRON_API_KEY: string; NICRRON_MODEL?: string },
+  env: { OPENAI_API_KEY: string; VERIFIER_MODEL?: string },
   request: VerifyRequest,
 ): Promise<VerifierVerdict & { model: string }> {
   const { screenshots, ...rest } = request;
   let body: ChatCompletion;
   try {
     // shortcut: non-streaming caps output at 16k tokens; a truncated verdict is reported as an error. Switch to streaming if that happens in practice.
-    const res = await fetch(`${DEFAULT_NICRRON_URL}/chat/completions`, {
+    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
       method: "POST",
       headers: {
-        Authorization: `Bearer ${env.NICRRON_API_KEY}`,
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: env.NICRRON_MODEL || DEFAULT_NICRRON_MODEL,
-        max_tokens: 16000,
+        model: env.VERIFIER_MODEL || DEFAULT_OPENAI_MODEL,
+        max_completion_tokens: 16000,
         reasoning_effort: "high",
         response_format: {
           type: "json_schema",
@@ -96,7 +96,7 @@ export async function verify(
       `Verifier model call failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return { ...parseVerdict(body, request), model: body.model ?? "nicrron" };
+  return { ...parseVerdict(body, request), model: body.model ?? "openai" };
 }
 
 interface ChatCompletion {

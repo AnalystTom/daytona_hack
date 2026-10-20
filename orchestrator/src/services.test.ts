@@ -27,7 +27,7 @@ it("caps web-search tool calls in the request and reports the provider's real co
   expect(onSearchCalls).toHaveBeenCalledWith(6);
 });
 
-it("sends non-search calls to Nicrron chat completions with strict JSON output", async () => {
+it("sends non-search calls to OpenAI chat completions with strict JSON output", async () => {
   const fetcher = vi.fn().mockResolvedValue(
     Response.json({
       choices: [{ message: { content: '```json\n{"a":1}\n```' } }],
@@ -36,15 +36,15 @@ it("sends non-search calls to Nicrron chat completions with strict JSON output",
   );
   vi.stubGlobal("fetch", fetcher);
   const out = await llmJson<{ a: number }>(
-    { NICRRON_API_KEY: "nk", OPENAI_API_KEY: "ok" } as Env,
+    { OPENAI_API_KEY: "nk", ORCHESTRATOR_MODEL: "gpt-6-luna" } as Env,
     { instructions: "i", input: "x", schema: { type: "object" }, name: "n" },
   );
   expect(out).toEqual({ a: 1 });
   const [url, init] = fetcher.mock.calls[0];
-  expect(url).toBe("https://api.nicrron.ai/v1/chat/completions");
+  expect(url).toBe("https://api.openai.com/v1/chat/completions");
   expect(init.headers.Authorization).toBe("Bearer nk");
   const body = JSON.parse(init.body);
-  expect(body.model).toBe("nicrron/auto");
+  expect(body.model).toBe("gpt-6-luna");
   expect(body.messages[0].content).toContain("i\n\nReply with only one JSON");
   expect(body.messages[1]).toEqual({ role: "user", content: "x" });
   expect(body.response_format.json_schema).toMatchObject({
@@ -53,7 +53,7 @@ it("sends non-search calls to Nicrron chat completions with strict JSON output",
   });
 });
 
-it("fails a Nicrron call that returned no content, such as a refusal", async () => {
+it("fails an OpenAI call that returned no content, such as a refusal", async () => {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue(
@@ -63,7 +63,7 @@ it("fails a Nicrron call that returned no content, such as a refusal", async () 
     ),
   );
   await expect(
-    llmJson({ NICRRON_API_KEY: "nk" } as Env, {
+    llmJson({ OPENAI_API_KEY: "nk" } as Env, {
       instructions: "i",
       input: "x",
       schema: {},
@@ -112,7 +112,7 @@ const approvalSchema = {
 };
 
 for (const webSearch of [undefined, 1]) {
-  const provider = webSearch ? "OpenAI" : "Nicrron";
+  const provider = webSearch ? "Responses" : "Chat";
   const respond = (value: unknown) =>
     vi.stubGlobal(
       "fetch",
@@ -128,7 +128,7 @@ for (const webSearch of [undefined, 1]) {
       ),
     );
   const call = (schema: object = verdictSchema) =>
-    llmJson({ NICRRON_API_KEY: "nk", OPENAI_API_KEY: "ok" } as Env, {
+    llmJson({ OPENAI_API_KEY: "ok" } as Env, {
       instructions: "i",
       input: "x",
       schema,

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Per-run setup inside the Daytona sandbox, after bootstrap.sh.
 # Starts the git host, registers the rebuild project with Firstmate (no-mistakes, forge=forgejo, +yolo),
-# configures Codex (gpt-6.1-sol, high) for the first mate, its crew and the no-mistakes reviewer,
+# configures Codex (gpt-6-luna, high) for the first mate, its crew and the no-mistakes reviewer,
 # turns on the fleet ledger for the bridge, and launches the first mate in tmux session "fm".
 #
 # Env: OPENAI_API_KEY (required), RUN_ID, TARGET_URL
@@ -16,7 +16,7 @@ log() { echo "[setup $(date +%H:%M:%S)] $*"; }
 # --- Codex: one model for the first mate, workers and reviewer ---
 mkdir -p "$HOME/.codex"
 cat > "$HOME/.codex/config.toml" <<EOF
-model = "gpt-6.1-sol"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 approval_policy = "never"
 sandbox_mode = "danger-full-access"   # the Daytona sandbox is the isolation boundary
@@ -95,7 +95,7 @@ cat > "$HOME/.no-mistakes/config.yaml" <<EOF
 agent: codex
 agent_config:
   codex:
-    model: gpt-6.1-sol
+    model: gpt-6-luna
     effort: high
 agent_timeout: "20m"
 review_agent_timeout: "20m"

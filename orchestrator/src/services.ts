@@ -1,11 +1,10 @@
-// Nicrron (structured outputs; OpenAI Responses only for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
+// OpenAI (chat completions for structured outputs; Responses for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
 import { z } from "zod";
 import {
-  DEFAULT_NICRRON_MODEL,
-  DEFAULT_NICRRON_URL,
+  OPENAI_URL,
   parseJsonReply,
   withJsonSchema,
-} from "../../src/shared/nicrron";
+} from "../../src/shared/openai";
 import type { RunTracer } from "./tracing";
 import { type Env, USER_AGENT } from "./types";
 
@@ -27,10 +26,7 @@ export async function llmJson<T>(
     model?: string;
   },
 ): Promise<T> {
-  // Nicrron serves no web search, so that one call stays on OpenAI with its own model name.
-  const model = opts.webSearch
-    ? opts.model || env.ORCHESTRATOR_MODEL
-    : env.NICRRON_MODEL || DEFAULT_NICRRON_MODEL;
+  const model = opts.model || env.ORCHESTRATOR_MODEL;
   const call = (set?: (a: Record<string, string | number>) => void) =>
     llmCall<T>(env, opts, model, set);
   return tracing.current
@@ -70,18 +66,14 @@ async function llmCall<T>(
     schema: opts.schema,
     strict: true,
   };
-  const via = opts.webSearch ? "openai" : "nicrron";
-  if (via === "nicrron" && !env.NICRRON_API_KEY)
-    throw new Error("NICRRON_API_KEY is not configured");
+  if (!env.OPENAI_API_KEY) throw new Error("OPENAI_API_KEY is not configured");
   const res = await fetch(
-    opts.webSearch
-      ? "https://api.openai.com/v1/responses"
-      : `${DEFAULT_NICRRON_URL}/chat/completions`,
+    `${OPENAI_URL}/${opts.webSearch ? "responses" : "chat/completions"}`,
     {
       signal: opts.signal,
       method: "POST",
       headers: {
-        Authorization: `Bearer ${opts.webSearch ? env.OPENAI_API_KEY : env.NICRRON_API_KEY}`,
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
         "Content-Type": "application/json",
       },
       body: JSON.stringify(
@@ -130,7 +122,7 @@ async function llmCall<T>(
   opts.signal?.throwIfAborted();
   if (!res.ok)
     throw new Error(
-      `${via} ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
+      `openai ${res.status}: ${JSON.stringify(body).slice(0, 300)}`,
     );
   if (opts.webSearch) {
     const calls =
@@ -146,7 +138,7 @@ async function llmCall<T>(
         ?.flatMap((o) => o.content || [])
         .find((c) => c.type === "output_text")?.text)
     : body.choices?.[0]?.message?.content;
-  if (typeof text !== "string") throw new Error(`${via} returned no content`);
+  if (typeof text !== "string") throw new Error(`openai returned no content`);
   set?.({
     "output.value": text,
     "llm.token_count.prompt":
@@ -158,14 +150,14 @@ async function llmCall<T>(
   try {
     value = parseJsonReply(text);
   } catch {
-    throw new Error(`${via} returned invalid JSON: ${text.slice(0, 200)}`);
+    throw new Error(`openai returned invalid JSON: ${text.slice(0, 200)}`);
   }
   const parsed = z
     .fromJSONSchema(opts.schema as z.core.JSONSchema.JSONSchema)
     .safeParse(value);
   if (!parsed.success)
     throw new Error(
-      `${via} returned output that does not match ${opts.name} schema: ${parsed.error.message}`,
+      `openai returned output that does not match ${opts.name} schema: ${parsed.error.message}`,
     );
   return parsed.data as T;
 }

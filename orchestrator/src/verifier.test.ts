@@ -55,7 +55,7 @@ function stub(html?: string) {
   const inputs: Record<string, unknown>[] = [];
   vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
     const url = String(input);
-    if (url === "https://api.nicrron.ai/v1/chat/completions") {
+    if (url === "https://api.openai.com/v1/chat/completions") {
       inputs.push(
         JSON.parse(JSON.parse(String(init?.body)).messages[1].content),
       );
@@ -98,7 +98,7 @@ function stub(html?: string) {
   return { requests, inputs };
 }
 
-const env = { ORCHESTRATOR_MODEL: "m", NICRRON_API_KEY: "k" } as Env;
+const env = { ORCHESTRATOR_MODEL: "m", OPENAI_API_KEY: "k" } as Env;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -122,7 +122,7 @@ describe("backend verification", () => {
     const inputs: Record<string, unknown>[] = [];
     vi.stubGlobal("fetch", async (input: string | URL, init?: RequestInit) => {
       const url = String(input);
-      if (url === "https://api.nicrron.ai/v1/chat/completions") {
+      if (url === "https://api.openai.com/v1/chat/completions") {
         const body = JSON.parse(String(init?.body));
         inputs.push(JSON.parse(body.messages[1].content));
         expect(String(init?.body)).not.toContain(token);

@@ -3,7 +3,7 @@ import * as inspect from "./inspect";
 import { Daytona } from "./daytona";
 import { Run } from "./run";
 import { tracing } from "./services";
-import { chatReply } from "./nicrron-fixtures";
+import { chatReply } from "./openai-fixtures";
 import type { Env, Phase, Task } from "./types";
 import orchestrator from "./index";
 import {
@@ -97,7 +97,7 @@ async function setup(
   const env = {
     RUN_MAX_MINUTES: options.minutes,
     ORCHESTRATOR_MODEL: "test",
-    NICRRON_API_KEY: "k",
+    OPENAI_API_KEY: "k",
     WORKER_MODEL: "test",
   } as Env;
   const run = new Run(ctx as unknown as DurableObjectState, env);
@@ -107,7 +107,7 @@ async function setup(
   const request = vi.fn(
     async (input: string | URL | Request, init?: RequestInit) => {
       const url = String(input);
-      if (url.includes("api.nicrron.ai")) {
+      if (url.includes("api.openai.com/v1/chat")) {
         const body = JSON.parse(String(init?.body));
         const name = body.response_format.json_schema.name;
         calls.push(name);
@@ -473,7 +473,7 @@ describe("run paid-work deadlines", () => {
       pending: "inspect",
     });
     request.mockImplementation(async (input) => {
-      if (String(input).includes("api.nicrron.ai")) {
+      if (String(input).includes("api.openai.com/v1/chat")) {
         calls.push("plan");
         expire();
         return chatReply(JSON.stringify({ tasks: [] }));
@@ -687,7 +687,7 @@ describe("run paid-work deadlines", () => {
       pending: "inspect",
     });
     request.mockImplementation(async (input) => {
-      if (String(input).includes("api.nicrron.ai")) {
+      if (String(input).includes("api.openai.com/v1/chat")) {
         calls.push("plan");
         await run.stop();
         return chatReply(JSON.stringify({ tasks: [] }));
@@ -706,7 +706,7 @@ describe("run paid-work deadlines", () => {
         phase: "building",
       });
       request.mockImplementation(async (input, init) => {
-        if (String(input).includes("api.nicrron.ai")) {
+        if (String(input).includes("api.openai.com/v1/chat")) {
           const body = JSON.parse(String(init?.body));
           calls.push(body.response_format.json_schema.name);
           if (failure === "provider")
@@ -801,7 +801,7 @@ describe("run paid-work deadlines", () => {
       const client = frontFor(context);
       client.records[0].busy = false;
       request.mockImplementation(async (input, init) => {
-        if (String(input).includes("api.nicrron.ai")) {
+        if (String(input).includes("api.openai.com/v1/chat")) {
           const body = JSON.parse(String(init?.body)) as {
             response_format: { json_schema: { name: string } };
           };

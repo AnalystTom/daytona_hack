@@ -2,8 +2,8 @@ import { VerifyRequest, type VerifyResponse } from "../../shared/verifier";
 import { VerifierError, verify } from "./verify";
 
 export interface VerifierEnv {
-  NICRRON_API_KEY?: string;
-  NICRRON_MODEL?: string; // default nicrron/auto
+  OPENAI_API_KEY?: string;
+  VERIFIER_MODEL?: string; // default gpt-6-luna
   VERIFIER_TOKEN?: string;
 }
 
@@ -38,9 +38,9 @@ export async function handleVerify(
   if (!(await tokenMatches(given, env.VERIFIER_TOKEN))) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!env.NICRRON_API_KEY) {
+  if (!env.OPENAI_API_KEY) {
     return Response.json(
-      { error: "Verifier unavailable: NICRRON_API_KEY binding is missing" },
+      { error: "Verifier unavailable: OPENAI_API_KEY binding is missing" },
       { status: 503 },
     );
   }
@@ -60,8 +60,8 @@ export async function handleVerify(
   try {
     const verdict = await verify(
       {
-        NICRRON_API_KEY: env.NICRRON_API_KEY,
-        NICRRON_MODEL: env.NICRRON_MODEL,
+        OPENAI_API_KEY: env.OPENAI_API_KEY,
+        VERIFIER_MODEL: env.VERIFIER_MODEL,
       },
       parsed.data,
     );

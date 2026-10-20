@@ -87,16 +87,16 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 
 | Binding | Used by | Without it |
 |---|---|---|
-| `NICRRON_API_KEY` (secret) | The [verifier](#verifier), `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
+| `OPENAI_API_KEY` (secret) | The [verifier](#verifier), `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
 | `VERIFIER_TOKEN` (secret) | Callers of the verify endpoint send `Authorization: Bearer <VERIFIER_TOKEN>`; a wrong or missing token gets 401 | The endpoint returns 503 naming the missing binding |
 
 Set a secret with `npx wrangler secret put <NAME>`.
 
 ## Verifier
 
-`POST /api/v1/runs/:id/verify` checks the orchestrator's output through Nicrron at high effort. Set `NICRRON_MODEL` on the web Worker to select a model; the gateway URL and default model are defined in [`src/shared/nicrron.ts`](src/shared/nicrron.ts).
+`POST /api/v1/runs/:id/verify` checks the orchestrator's output through the OpenAI API at high effort. Set `VERIFIER_MODEL` on the web Worker to select a model; the API URL and default model (`gpt-6-luna`) are defined in [`src/shared/openai.ts`](src/shared/openai.ts).
 The body is `{kind: "plan" | "task" | "final", spec, evidence, findings, screenshots, plan}`, plus `task` for `kind: "task"` and `rebuildEvidenceIds` for `kind: "final"`; the schemas are in `src/shared/verifier.ts`.
-It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs. `model` is the gateway-reported model, or `nicrron` if the gateway omits it.
+It returns `{runId, kind, model, verdict: "pass" | "fail", summary, findings}`, where each finding names a plan item (or `null` for something missing from the plan) and evidence IDs. `model` is the API-reported model, or `openai` if the API omits it.
 A model error, refusal, truncated reply or malformed verdict returns 502, never a pass.
 
 ## Run API
@@ -190,7 +190,7 @@ Without them the deploy job fails, so a merge to `main` that did not deploy show
 
 ## Run sandbox (Daytona)
 
-In the second engine (`docs/orchestrator/spec.md` section 11), each run gets one Daytona sandbox that holds Firstmate as orchestrator, Codex workers on `gpt-6.1-sol` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
+In the second engine (`docs/orchestrator/spec.md` section 11), each run gets one Daytona sandbox that holds Firstmate as orchestrator, Codex workers on `gpt-6-luna` at high reasoning, no-mistakes review, Forgejo with `tea` for pull requests, a preview server and the bridge.
 The agents run and execute code only inside that sandbox; the service stays on Cloudflare, and the sandbox keeps no durable records of its own: the bridge reports to the Worker, which owns storage.
 
 - `src/worker/daytona/`: the Daytona adapter (`client.ts`), run lifecycle (`lifecycle.ts`) and its routes (`routes.ts`).
@@ -205,7 +205,7 @@ The SDK itself is not bundled because it depends on Node-only packages that the 
 |---|---|
 | `SANDBOX_API_TOKEN` | Every sandbox route: callers send it as `Authorization: Bearer`, because these routes spend money and instruct agents that hold secrets |
 | `DAYTONA_API_KEY` | Every sandbox route |
-| `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox. Nicrron serves no OpenAI Responses endpoint, which Codex requires, so these calls stay on OpenAI |
+| `OPENAI_API_KEY` | Starting a run sandbox or a pod: Codex signs in with it inside the sandbox. |
 | `BRIDGE_TOKEN` | Starting a run sandbox or a pod: never sent to a sandbox; each run's bridge gets only `HMAC-SHA256(BRIDGE_TOKEN, runId)` (hex, `runBridgeToken` in `src/worker/daytona/bridge-token.ts`) and sends that as `Authorization: Bearer` |
 | `DAYTONA_SNAPSHOT` (optional) | Snapshot name; defaults to `reversy-run` |
 | `DAYTONA_API_URL` (optional) | Daytona API base; defaults to `https://app.daytona.io/api` |
@@ -233,7 +233,7 @@ Auto-stop is off, because agents keep working without toolbox traffic; a 12-hour
 `boot.sh` sets up, once, and then starts each of these in its own tmux session:
 
 - Forgejo on `localhost:3000` with a `reversy` admin and the `reversy/rebuild` repository, and a `tea` login for it.
-- The Firstmate home at `~/firstmate` (pinned commit of `https://github.com/kunchenguid/firstmate`) with one project, `rebuild [no-mistakes +yolo forge=forgejo]`, cloned from Forgejo and initialised for no-mistakes; workers on Codex with `gpt-6.1-sol` at high effort (`config/crew-harness`, `config/crew-dispatch.json`).
+- The Firstmate home at `~/firstmate` (pinned commit of `https://github.com/kunchenguid/firstmate`) with one project, `rebuild [no-mistakes +yolo forge=forgejo]`, cloned from Forgejo and initialised for no-mistakes; workers on Codex with `gpt-6-luna` at high effort (`config/crew-harness`, `config/crew-dispatch.json`).
 - Firstmate itself (Codex, same model) in session `firstmate`; captain input is pasted there.
 - The preview server on port 4173, serving `main` from Forgejo and rebuilding it after every merge.
 - The bridge, which every 5 seconds posts new `EventEnvelope` batches to `POST /api/v1/runs/:id/events`: `task.status` (each line of a Firstmate status file), `backlog.item` (a task changing column) and `pull_request` (a pull request opening, merging or closing). Event ids are stable, so a retried post deduplicates; events from a pod carry `pod:<podId>` in `artifactRefs` and a `<podId>/<taskId>` task id, and a new pod posts only what changes after it starts.
@@ -253,7 +253,7 @@ Daytona forks only Linux VM sandboxes, and builds from a Dockerfile only for con
 Until VM fork is enabled on the account, pods are snapshot copies: the parent is stopped for the cold snapshot and restarted afterwards.
 To use fork, push the image built from `sandbox/Dockerfile` to a registry and create the snapshot from it with `--image <image> --sandbox-class linux-vm`.
 
-Not yet verified against live services: `gpt-6.1-sol` through Codex in the sandbox, and no-mistakes against Forgejo.
+Not yet verified against live services: `gpt-6-luna` through Codex in the sandbox, and no-mistakes against Forgejo.
 
 ## Evidence capture
 

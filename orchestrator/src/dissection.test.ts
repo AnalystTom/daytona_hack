@@ -31,7 +31,10 @@ var _Flourish_data_column_names = {"data":{"label":"Country","value":["US public
 _Flourish_data_metadata = {},
 _Flourish_data = {"data":[{"label":"US","metadata":[],"value":[530,35,15]},{"label":"Global ex-US","metadata":[],"value":[234,67,138]}]},
 _Flourish_visualisation_id = 29875854;</script>`;
-const env = { ORCHESTRATOR_MODEL: "gpt-6.1-sol" } as Env;
+const env = {
+  ORCHESTRATOR_MODEL: "gpt-6-luna",
+  OPENAI_API_KEY: "k",
+} as Env;
 
 describe("observed report figures", () => {
   it("extracts the captured Goldman Sachs page before researching its sources", async () => {

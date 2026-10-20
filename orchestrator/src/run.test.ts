@@ -1,7 +1,7 @@
 import { afterEach, assert, describe, expect, it, vi } from "vitest";
 import { Daytona } from "./daytona";
 import { inspectBackend } from "./inspect";
-import { chatReply, NICRRON_URL } from "./nicrron-fixtures";
+import { chatReply, OPENAI_CHAT_URL } from "./openai-fixtures";
 import type { Env, Evidence, Task } from "./types";
 
 vi.mock("cloudflare:workers", () => ({
@@ -76,7 +76,7 @@ function stubFetch(
 ) {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-    if (input === NICRRON_URL) {
+    if (input === OPENAI_CHAT_URL) {
       const body = JSON.parse(String(init?.body));
       const name = body.response_format.json_schema.name;
       calls.push({
@@ -143,7 +143,7 @@ async function plannedRun(
     ctx as unknown as DurableObjectState,
     {
       ORCHESTRATOR_MODEL: "m",
-      NICRRON_API_KEY: "k",
+      OPENAI_API_KEY: "k",
     } as Env,
   );
   await ctx.ready;
@@ -277,7 +277,7 @@ describe("run scope", () => {
       const ctx = context();
       const run = new Run(
         ctx as unknown as DurableObjectState,
-        { ORCHESTRATOR_MODEL: "m", NICRRON_API_KEY: "k" } as Env,
+        { ORCHESTRATOR_MODEL: "m", OPENAI_API_KEY: "k" } as Env,
       );
       await ctx.ready;
       await run.start("run-1", SITE, `${scope} only`);
