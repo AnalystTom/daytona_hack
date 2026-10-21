@@ -684,7 +684,11 @@ export class Run extends DurableObject<Env> {
           this.s.sandboxId = undefined;
           if (this.s.phase !== "stopped" && !this.inspection.signal.aborted) {
             this.s.phase = "planned";
-            await this.emit("phase", { phase: "planned" }, this.inspection.signal);
+            await this.emit(
+              "phase",
+              { phase: "planned" },
+              this.inspection.signal,
+            );
           }
           throw e;
         }
