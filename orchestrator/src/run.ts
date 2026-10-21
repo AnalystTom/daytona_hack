@@ -679,13 +679,13 @@ export class Run extends DurableObject<Env> {
           );
         } catch (e) {
           if (this.s.pending === "stop") throw e;
-          const retry = this.s.phase !== "stopped";
-          if (retry) this.s.phase = "planned";
           if (this.s.sandboxId)
             await this.daytona.remove(this.s.sandboxId).catch(() => {});
           this.s.sandboxId = undefined;
-          // The workspace reads the phase from events: without this it stays on Building.
-          if (retry) await this.emit("phase", { phase: "planned" });
+          if (this.s.phase !== "stopped" && !this.inspection.signal.aborted) {
+            this.s.phase = "planned";
+            await this.emit("phase", { phase: "planned" }, this.inspection.signal);
+          }
           throw e;
         }
         await this.ctx.storage.setAlarm(Date.now() + 100);

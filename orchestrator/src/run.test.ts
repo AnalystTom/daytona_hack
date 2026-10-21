@@ -323,23 +323,87 @@ describe("run scope", () => {
     },
   );
 
-  it("announces the return to planned when sandbox setup fails, so Start build is offered again", async () => {
-    vi.spyOn(Daytona.prototype, "create").mockRejectedValue(
-      new Error("daytona POST /api/sandbox 401: Invalid credentials"),
-    );
-    const { run } = await plannedRun("frontend", "Rebuild the page.", [
-      task("t01", ["index.html"]),
-    ]);
-    await run.startBuild();
-    await run.alarm();
-    const state = await run.getState();
-    expect(state.phase).toBe("planned");
-    expect(state.error).toContain("Invalid credentials");
-    const events = await run.events(0);
-    const phases = events.filter((e) => e.type === "phase");
-    expect(phases.at(-1)?.data).toEqual({ phase: "planned" });
-    expect(events.at(-1)?.type).toBe("error");
-  });
+  it.each(["allocation", "login"] as const)(
+    "announces the return to planned when sandbox %s fails, so Start build is offered again",
+    async (failure) => {
+      const { run } = await plannedRun("frontend", "Rebuild the page.", [
+        task("t01", ["index.html"]),
+      ]);
+      const error = new Error("Invalid credentials");
+      const create = vi.spyOn(Daytona.prototype, "create");
+      if (failure === "allocation") create.mockRejectedValue(error);
+      else create.mockResolvedValue({ id: "build" });
+      vi.spyOn(Daytona.prototype, "must")
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(error);
+      const remove = vi.spyOn(Daytona.prototype, "remove").mockResolvedValue();
+      await run.startBuild();
+      await run.alarm();
+      const state = await run.getState();
+      expect(state.phase).toBe("planned");
+      expect(state.error).toContain("Invalid credentials");
+      expect(state.sandboxId).toBeUndefined();
+      expect(remove.mock.calls).toEqual(failure === "login" ? [["build"]] : []);
+      const events = await run.events(0);
+      const phases = events.filter((e) => e.type === "phase");
+      expect(phases.at(-1)?.data).toEqual({ phase: "planned" });
+      expect(events.at(-1)?.type).toBe("error");
+      expect((await run.startBuild()).phase).toBe("building");
+    },
+  );
+
+  it.each(["pending", "completed"] as const)(
+    "does not offer a build retry when cancellation is %s during sandbox cleanup",
+    async (cancellation) => {
+      const { run } = await plannedRun("frontend", "Rebuild the page.", [
+        task("t01", ["index.html"]),
+      ]);
+      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "build" });
+      vi.spyOn(Daytona.prototype, "must")
+        .mockResolvedValueOnce("")
+        .mockRejectedValueOnce(new Error("Codex login failed"));
+      let releaseStop!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        releaseStop = resolve;
+      });
+      let entered!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      vi.spyOn(Daytona.prototype, "get").mockImplementation(async () => {
+        entered();
+        if (cancellation === "pending") await blocked;
+        return { id: "build", state: "stopped" };
+      });
+      let stopping!: Promise<unknown>;
+      vi.spyOn(Daytona.prototype, "remove").mockImplementation(async () => {
+        stopping = run.stop();
+        await (cancellation === "pending" ? started : stopping);
+      });
+      const eventCount = (await run.events(0)).length;
+      await run.startBuild();
+      await run.alarm();
+      try {
+        expect((await run.getState()).phase).toBe(
+          cancellation === "pending" ? "building" : "stopped",
+        );
+        expect(
+          (await run.events(0))
+            .slice(eventCount)
+            .filter((event) => event.type === "phase")
+            .map((event) => event.data),
+        ).toEqual(
+          cancellation === "pending"
+            ? [{ phase: "building" }]
+            : [{ phase: "building" }, { phase: "stopped" }],
+        );
+        await expect(run.startBuild()).rejects.toThrow(/stopping|stopped/);
+      } finally {
+        releaseStop();
+        await stopping;
+      }
+    },
+  );
 
   it.each(["frontend", "backend", "both"] as const)(
     "requires observed content and explicit unavailable states in emitted %s agent contracts",
