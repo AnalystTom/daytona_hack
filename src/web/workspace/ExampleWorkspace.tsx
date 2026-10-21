@@ -142,11 +142,14 @@ export function ExampleRun({ example }: { example: Example }) {
               </p>
               {screenshots.map((shot) => (
                 <figure key={shot.id}>
-                  <img
-                    src={shot.src}
-                    alt={`${target}${shot.pageOrState}, captured ${exampleDate(shot.capturedAt)}`}
-                    loading="lazy"
-                  />
+                  {/* A screenshot that was not observed has no image: the caption says why. */}
+                  {shot.src && (
+                    <img
+                      src={shot.src}
+                      alt={`${target}${shot.pageOrState}, captured ${exampleDate(shot.capturedAt)}`}
+                      loading="lazy"
+                    />
+                  )}
                   <figcaption className="muted">
                     {shot.pageOrState}: {shot.limitations.join(" ")}
                   </figcaption>

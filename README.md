@@ -46,11 +46,13 @@ Use **Spec** or **Build** to work on the canvas:
 
 In a live session, **Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
 
+If sandbox allocation or Codex sign-in fails before build workers start, the error appears in chat and **Start build** becomes available again with the existing plan. Retry after resolving the underlying issue. If you choose **Stop build** during setup or cleanup, the run cannot return to a retryable plan; once stopped, start a new session to continue.
+
 ### Example run
 
 The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
 
-Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
+Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. A screenshot that was not observed keeps its caption and capture reason without an image. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
 A saved report also exposes its figures and source provenance for inspection; editing is disabled.
 
 Save or replace it with one command, after the Worker is deployed:

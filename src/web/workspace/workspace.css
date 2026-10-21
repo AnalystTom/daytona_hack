@@ -97,6 +97,7 @@
 .example-preview figcaption {
   margin-top: 0.4rem;
   font-size: 0.8125rem;
+  overflow-wrap: anywhere;
 }
 
 .ss-example {
@@ -984,8 +985,21 @@
   }
 
   .ws-header {
+    position: relative;
     gap: 0.75rem;
     padding: 0.75rem 1rem;
+  }
+
+  /* The panel spans the header's width instead of hanging off the toggle past the screen edge. */
+  .ss {
+    position: static;
+  }
+
+  .ss-panel {
+    top: calc(100% + 0.4rem);
+    right: 1rem;
+    left: 1rem;
+    width: auto;
   }
 
   .ws-canvas {
@@ -1219,6 +1233,11 @@
   .cv-tool,
   .ws-brand {
     min-height: 2.75rem;
+  }
+
+  .link-button {
+    min-height: 2.75rem;
+    min-width: 2.75rem;
   }
 
   .cv-tool {
