@@ -1,0 +1,21 @@
+[project]
+name = "daytona-hack"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "anchorbrowser>=1.0.1",
+    "arize-otel>=0.14.1",
+    "daytona>=0.224.1",
+    "elevenlabs>=2.73.0",
+    "fastapi>=0.143.3",
+    "httpx>=0.28.1",
+    "openai>=3.31.0",
+    "openinference-instrumentation-openai>=0.1.65",
+    "playwright>=1.64.0",
+    "pydantic>=2.14.1",
+    "python-dotenv>=1.2.4",
+    "surrealdb>=2.0.0",
+    "trafilatura>=2.3.1",
+    "truststore>=0.10.5",
+    "uvicorn>=0.54.0",
+]
