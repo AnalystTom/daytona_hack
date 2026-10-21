@@ -1,0 +1,290 @@
+import type {
+  CanvasEvidence,
+  DraftSpec,
+  SpecCanvas,
+} from "../../shared/workspace";
+import { notObservedReason } from "../../shared/evidence";
+import { CanvasItem } from "./Canvas";
+import { ReportCard } from "./ReportCard";
+import { useEvidenceSrc } from "./useEvidenceSrc";
+
+const NOT_CONFIRMED = "Not confirmed yet";
+
+function SpecList({ items }: { items: string[] | undefined }) {
+  if (!items?.length) return <p className="muted">{NOT_CONFIRMED}</p>;
+  return (
+    <ul className="spec-list">
+      {items.map((item, i) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: items are plain strings and may repeat
+        <li key={i}>{item}</li>
+      ))}
+    </ul>
+  );
+}
+
+export function DraftSpecCard({ spec }: { spec: DraftSpec }) {
+  return (
+    <article className="card spec-card" aria-labelledby="draft-spec-title">
+      <header className="card-head">
+        <DocIcon />
+        <h2 id="draft-spec-title" className="card-title card-title-lg">
+          Draft spec
+        </h2>
+        <span className={`spec-status spec-status-${spec.status}`}>
+          {spec.status === "approved" ? "Approved" : "Draft"}
+        </span>
+      </header>
+      <section className="spec-field">
+        <h3>Target URL</h3>
+        {spec.url ? (
+          <a href={spec.url} target="_blank" rel="noreferrer">
+            {spec.url}
+          </a>
+        ) : (
+          <p className="muted">{NOT_CONFIRMED}</p>
+        )}
+        {spec.redirectedFrom && spec.url && (
+          <p className="muted">
+            You entered {spec.redirectedFrom}; it redirects to {spec.url}.
+          </p>
+        )}
+      </section>
+      <section className="spec-field">
+        <h3>Pages and flows</h3>
+        <SpecList items={spec.pagesAndFlows} />
+      </section>
+      <section className="spec-field">
+        <h3>Open questions</h3>
+        <SpecList items={spec.openQuestions} />
+      </section>
+    </article>
+  );
+}
+
+function EvidenceCaption({ item }: { item: CanvasEvidence }) {
+  return (
+    <p className="evidence-caption">
+      <span>{item.pageOrState}</span>
+      {item.label !== "observed" && (
+        <span className="evidence-label">
+          {item.label === "inferred" ? "Inferred" : "Not observed"}
+        </span>
+      )}
+    </p>
+  );
+}
+
+function ScreenshotCard({ item }: { item: CanvasEvidence }) {
+  const { src, error } = useEvidenceSrc(item.src ?? "");
+  return (
+    <article className="card evidence-card">
+      <header className="card-head">
+        <ImageIcon />
+        <h2 className="card-title">Target screenshot</h2>
+      </header>
+      {!item.src ? (
+        <p className="muted">{notObservedReason(item.limitations.join(" "))}</p>
+      ) : error ? (
+        <p role="status">Source screenshot unavailable.</p>
+      ) : (
+        <img
+          className="evidence-media"
+          src={src}
+          alt={`Screenshot of ${item.pageOrState}`}
+        />
+      )}
+      <EvidenceCaption item={item} />
+    </article>
+  );
+}
+
+function VideoCard({ item }: { item?: CanvasEvidence }) {
+  const { src } = useEvidenceSrc(item?.src ?? "");
+  return (
+    <article className="card evidence-card">
+      <header className="card-head">
+        <VideoIcon />
+        <h2 className="card-title">Video evidence</h2>
+      </header>
+      {item ? (
+        <>
+          {/* biome-ignore lint/a11y/useMediaCaption: captured recordings have no caption track */}
+          <video className="evidence-media" src={src} controls />
+          <EvidenceCaption item={item} />
+        </>
+      ) : (
+        <p className="muted">No recording yet</p>
+      )}
+    </article>
+  );
+}
+
+const SHOWN_FINDINGS = 12;
+
+function CodeFindings({ items }: { items: CanvasEvidence[] }) {
+  return (
+    <ul className="code-findings">
+      {items.map((item) => (
+        <li key={item.id}>
+          <span>{item.summary}</span>
+          <span className="code-locator" title={item.contentHash}>
+            {item.locator ?? item.contentHash}
+            {item.label === "inferred" && (
+              <span className="evidence-label"> Inferred</span>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// One card for REA's static reading of the shipped bundles: each finding with its locator and hash.
+function CodeCard({ items }: { items: CanvasEvidence[] }) {
+  const found = items.filter((e) => e.label !== "not_observed");
+  const missing = items.find((e) => e.label === "not_observed");
+  const shown = found.slice(0, SHOWN_FINDINGS);
+  return (
+    <article className="card evidence-card">
+      <header className="card-head">
+        <CodeIcon />
+        <h2 className="card-title">Code evidence</h2>
+      </header>
+      {shown.length ? (
+        <CodeFindings items={shown} />
+      ) : (
+        <p className="muted">
+          {missing?.summary ?? "No code evidence"}
+          {missing?.limitations.length ? `: ${missing.limitations[0]}` : ""}
+        </p>
+      )}
+      {found.length > shown.length && (
+        <details>
+          <summary className="link-button">
+            Show all {found.length} findings
+          </summary>
+          <CodeFindings items={found.slice(SHOWN_FINDINGS)} />
+        </details>
+      )}
+      <p className="evidence-caption">
+        <span>Static reading by {items[0]?.tool}, not executed</span>
+      </p>
+    </article>
+  );
+}
+
+export function SpecView({
+  canvas,
+  onSaveReport,
+}: {
+  canvas: SpecCanvas;
+  onSaveReport?: React.ComponentProps<typeof ReportCard>["onSave"];
+}) {
+  const screenshots = canvas.evidence.filter((e) => e.kind === "screenshot");
+  const recordings = canvas.evidence.filter((e) => e.kind === "recording");
+  const code = canvas.evidence.filter((e) => e.kind === "bundle");
+  if (!canvas.draftSpec && !canvas.report && canvas.evidence.length === 0) {
+    return (
+      <div className="empty-state">
+        <EmptyIcon />
+        <h2>Your work starts here</h2>
+        <p>The spec and evidence appear here as you refine the brief.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="spec-board">
+      {canvas.draftSpec && (
+        <CanvasItem id="draft-spec" label="Draft spec" className="spec-card">
+          <DraftSpecCard spec={canvas.draftSpec} />
+        </CanvasItem>
+      )}
+      {canvas.report && (
+        <CanvasItem
+          id="report"
+          label="Report dissection"
+          className="report-card"
+        >
+          <ReportCard
+            report={canvas.report}
+            evidence={canvas.evidence}
+            onSave={onSaveReport}
+          />
+        </CanvasItem>
+      )}
+      <div className="evidence-column">
+        {screenshots.map((item) => (
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`screenshot of ${item.pageOrState}`}
+          >
+            <ScreenshotCard item={item} />
+          </CanvasItem>
+        ))}
+        {recordings.map((item) => (
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`recording of ${item.pageOrState}`}
+          >
+            <VideoCard item={item} />
+          </CanvasItem>
+        ))}
+        {code.length > 0 && (
+          <CanvasItem id="code-evidence" label="Code evidence">
+            <CodeCard items={code} />
+          </CanvasItem>
+        )}
+        {canvas.draftSpec && recordings.length === 0 && (
+          <CanvasItem id="video-evidence" label="Video evidence">
+            <VideoCard />
+          </CanvasItem>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function DocIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M6 3h8l4 4v14H6z M14 3v4h4 M9 12h6 M9 16h6" />
+    </svg>
+  );
+}
+
+function ImageIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 5h16v14H4z M4 16l5-5 4 4 2-2 5 5" />
+      <circle cx="15.5" cy="9" r="1.5" />
+    </svg>
+  );
+}
+
+function VideoIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3 7h12v10H3z M15 11l6-3v8l-6-3" />
+    </svg>
+  );
+}
+
+function CodeIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 7l-5 5 5 5 M16 7l5 5-5 5 M14 4l-4 16" />
+    </svg>
+  );
+}
+
+function EmptyIcon() {
+  return (
+    <svg className="empty-icon" viewBox="0 0 64 64" aria-hidden="true">
+      <path d="M16 6h22l12 12v36a4 4 0 0 1-4 4H16a4 4 0 0 1-4-4V10a4 4 0 0 1 4-4Z M38 6v12h12" />
+      <circle cx="26" cy="32" r="3" />
+      <path d="M18 50l10-10 6 6 4-4 8 8" />
+    </svg>
+  );
+}

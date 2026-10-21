@@ -1,0 +1,141 @@
+import type { EvidenceRecord } from "../../src/shared/evidence";
+import type { StoreEnv } from "../../src/worker/store";
+
+// SURREALDB_* (StoreEnv) hold evidence records and files.
+export interface Env extends StoreEnv {
+  RUNS: DurableObjectNamespace;
+  SURREALDB_URL?: string;
+  SURREALDB_NAMESPACE?: string;
+  SURREALDB_DATABASE?: string;
+  SURREALDB_USER?: string;
+  SURREALDB_PASSWORD?: string;
+  DAYTONA_API_URL: string;
+  DAYTONA_TARGET: string;
+  DAYTONA_API_KEY: string;
+  DAYTONA_SNAPSHOT?: string;
+  OPENAI_API_KEY: string; // every orchestrator model call, web search and the Codex agents in the run sandbox
+  ORCHESTRATOR_MODEL: string;
+  VERIFIER_MODEL?: string;
+  WORKER_MODEL: string;
+  WORKER_EFFORT?: string;
+  MAX_WORKERS: string;
+  RUN_MAX_MINUTES?: string; // a run is stopped this long after it started (default 120)
+  SPECTRON_URL?: string;
+  SPECTRON_CONTEXT_ID?: string;
+  SPECTRON_API_KEY?: string;
+  ANCHORBROWSER_API_KEY?: string;
+  EVENTS_WEBHOOK_URL?: string;
+  ARIZE_API_KEY?: string;
+  ARIZE_SPACE_ID?: string;
+  GATEWAY_TOKEN?: string; // the run sandbox's token for /gateway/*
+  OPERATOR_TOKEN?: string; // the backend's token for /sandboxes/*
+}
+
+export type Phase =
+  | "brief"
+  | "inspecting"
+  | "awaiting_sign_in" // a page left the scope (usually to sign in): user signs in or skips
+  | "planning"
+  | "planned"
+  | "building"
+  | "done"
+  | "stopped"
+  | "failed";
+
+// What a run reverse engineers; set from each run's brief and chat, never fixed per version.
+export type Scope = "frontend" | "backend" | "both" | "report";
+
+export type EvidenceStatus = "observed" | "inferred" | "not_observed";
+
+export interface Evidence {
+  id: string;
+  page: string; // URL path and state; includes the query for backend observations
+  kind: EvidenceRecord["kind"] | "html" | "links" | "code" | "redirects";
+  tool: string;
+  status: EvidenceStatus;
+  capturedAt: string;
+  hash: string;
+  limits: string;
+  summary: string;
+  path?: string; // where it lives in the sandbox evidence store
+  locator?: string; // code evidence: file:line:column of the finding in its bundle
+  url?: string; // where the UI can load it (screenshots and recordings)
+  routes?: string[]; // same-site API paths the evidence references, for the verifier to probe
+  response?: {
+    status: number;
+    headers: Record<string, string>;
+    shape?: unknown;
+  };
+}
+
+export interface Spec {
+  url: string;
+  goal: string;
+  redirects?: string[]; // the entered URL's redirect chain, entered URL first, when it redirected
+  scope: Scope;
+  pages: { path: string; confirmed: boolean; notes?: string }[];
+  flows: { name: string; confirmed: boolean; notes?: string }[];
+  openQuestions: string[];
+  approved: boolean;
+  revision: number;
+}
+
+export type TaskStatus =
+  | "queued"
+  | "building"
+  | "in_review"
+  | "merged"
+  | "failed"
+  | "stopped";
+
+export interface Task {
+  id: string; // t01
+  title: string;
+  brief: string;
+  outOfScope: string;
+  acceptance: string[];
+  evidence: string[];
+  owns: string[];
+  dependsOn: string[];
+  status: TaskStatus;
+  attempts: number;
+  branch: string;
+  cmdId?: string;
+  startedAt?: string;
+  finishedAt?: string;
+  review?: {
+    verdict: "approve" | "reject";
+    reason: string;
+    findings: string[];
+  };
+  diffStat?: string;
+  failure?: string;
+  nextAction?: string;
+}
+
+export interface RunEvent {
+  seq: number;
+  ts: string;
+  type:
+    | "report"
+    | "chat"
+    | "spec"
+    | "evidence"
+    | "plan"
+    | "task"
+    | "review"
+    | "preview"
+    | "phase"
+    | "verification"
+    | "error";
+  data: unknown;
+}
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  text: string;
+  ts: string;
+}
+
+// Some sites (Wikipedia) reject requests with no User-Agent, so every fetch of a target page sends this.
+export const USER_AGENT = "Mozilla/5.0 (Macintosh) Reversy-Inspector";

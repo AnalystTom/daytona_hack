@@ -1,0 +1,614 @@
+/* Shared by the landing page and Entry A: logo, buttons, icon tiles. */
+:root {
+  --muted: #6e5c72;
+  --pistachio-deep: #b2cd82;
+  --pistachio-tint: #e9f1da;
+  --persimmon-tint: #fce3d9;
+  --aubergine-tint: #ece4f0;
+  --persimmon-ink: #c4532f;
+}
+
+.icon {
+  width: 1.25em;
+  height: 1.25em;
+  flex: none;
+}
+
+:where(.landing, .start) a,
+:where(.landing, .start) button {
+  color: inherit;
+}
+
+:where(.landing, .start) :focus-visible {
+  outline: 2px solid var(--aubergine);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.logo {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  gap: 0.5rem;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-decoration: none;
+}
+
+.logo img {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.6rem 1.1rem;
+  border-radius: 0.625rem;
+  background: var(--pistachio);
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: 0 1px 0 rgb(57 37 63 / 0.12);
+}
+
+.btn:hover {
+  background: var(--pistachio-deep);
+}
+
+.btn-large {
+  padding: 0.85rem 1.75rem;
+  font-size: 1.125rem;
+}
+
+.tile {
+  display: inline-grid;
+  place-items: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 0.75rem;
+  flex: none;
+}
+
+.tile-pistachio {
+  background: var(--pistachio-tint);
+  color: #4a6526;
+}
+
+.tile-persimmon {
+  background: var(--persimmon-tint);
+  color: var(--persimmon-ink);
+}
+
+.tile-aubergine {
+  background: var(--aubergine-tint);
+  color: var(--aubergine);
+}
+
+/* Landing page */
+html {
+  scroll-padding-top: 1.5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+.landing {
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+
+.landing h1,
+.landing h2,
+.landing h3 {
+  font-family: "Fraunces", Georgia, serif;
+  font-weight: 600;
+  margin: 0;
+}
+
+.site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.25rem 0;
+}
+
+.site-nav {
+  display: flex;
+  align-items: center;
+  gap: 1.75rem;
+}
+
+.site-nav a:not(.btn) {
+  color: var(--muted);
+  text-decoration: none;
+}
+
+.site-nav a:not(.btn):hover {
+  color: var(--aubergine);
+}
+
+.hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  align-items: center;
+  gap: 2rem;
+  padding: 2.5rem 0 3rem;
+}
+
+.hero h1 {
+  font-size: clamp(3rem, 7.5vw, 5.5rem);
+  line-height: 0.98;
+  letter-spacing: -0.03em;
+}
+
+.lede {
+  max-width: 28rem;
+  margin: 1.25rem 0 2rem;
+  color: var(--muted);
+  font-size: 1.375rem;
+  line-height: 1.4;
+}
+
+.hero-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5rem 2rem;
+}
+
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  gap: 0.35rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.text-link:hover {
+  text-decoration: underline;
+}
+
+.hero-beaver {
+  width: 100%;
+  height: auto;
+  max-width: 34rem;
+  justify-self: center;
+}
+
+.band {
+  padding: 3.5rem 0 1rem;
+  text-align: center;
+}
+
+.band h2,
+.closing h2 {
+  font-size: clamp(2rem, 4.5vw, 3.25rem);
+  line-height: 1.1;
+  letter-spacing: -0.02em;
+}
+
+.band-lede {
+  margin: 0.5rem 0 2rem;
+  color: var(--muted);
+  font-size: 1.25rem;
+}
+
+.steps {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2rem;
+  margin: 2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.steps li {
+  position: relative;
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 0.6rem;
+}
+
+/* The connector between consecutive steps: they are a sequence. */
+.steps li + li::before {
+  content: "";
+  position: absolute;
+  top: 2rem;
+  right: calc(50% + 3rem);
+  width: calc(100% - 4rem);
+  border-top: 1px solid var(--line);
+}
+
+.steps .tile {
+  width: 4rem;
+  height: 4rem;
+  border-radius: 1rem;
+  font-size: 1.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.steps h3 {
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+.steps p {
+  max-width: 16rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 1.0625rem;
+  line-height: 1.45;
+}
+
+.preview-figure {
+  margin: 0 auto;
+  max-width: 62rem;
+}
+
+.preview-figure figcaption {
+  margin-top: 0.75rem;
+  color: var(--muted);
+}
+
+.starter-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1.25rem;
+  margin: 2rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.starter-links a,
+.starter-links .starter-soon {
+  display: flex;
+  font-size: 1.125rem;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1.25rem 0.85rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 0.875rem;
+  background: var(--card);
+  text-decoration: none;
+  text-align: left;
+}
+
+.starter-links a:hover {
+  border-color: var(--aubergine);
+}
+
+.starter-links .starter-soon {
+  color: var(--muted);
+}
+
+.soon-label {
+  font-size: 0.875rem;
+}
+
+.starter-links .starter-title {
+  flex: 1;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.1875rem;
+  font-weight: 600;
+}
+
+.closing {
+  display: grid;
+  justify-items: center;
+  gap: 1.25rem;
+  padding: 4rem 0 3rem;
+  text-align: center;
+}
+
+.site-footer {
+  display: grid;
+  justify-items: center;
+  gap: 0.25rem;
+  padding: 1.5rem 0 3rem;
+  border-top: 1px solid var(--line);
+}
+
+.site-footer p {
+  margin: 0;
+  color: var(--muted);
+}
+
+/* Workspace concept drawing */
+.preview {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 16rem;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 1rem;
+  background: var(--card);
+  text-align: left;
+  font-size: 0.8125rem;
+  box-shadow: 0 12px 32px -18px rgb(57 37 63 / 0.35);
+}
+
+.preview p {
+  margin: 0;
+}
+
+.pv-canvas {
+  background-color: var(--parchment);
+  background-image: radial-gradient(var(--dot) 1px, transparent 1px);
+  background-size: 16px 16px;
+  border-right: 1px solid var(--line);
+}
+
+.pv-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.6rem 1rem;
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+
+.pv-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-right: 0.5rem;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.pv-brand img,
+.pv-agent img {
+  width: 1.5rem;
+  height: 1.5rem;
+}
+
+.pv-tab {
+  padding: 0.2rem 0.7rem;
+  border-radius: 0.5rem;
+  color: var(--muted);
+}
+
+.pv-tab-active {
+  background: var(--pistachio);
+  color: var(--aubergine);
+  font-weight: 600;
+}
+
+.pv-ghost {
+  margin-left: auto;
+  padding: 0.3rem 0.8rem;
+  border-radius: 0.5rem;
+  background: #ece8e1;
+  color: #a69aa8;
+}
+
+.pv-cards {
+  display: grid;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  align-items: start;
+  gap: 1rem;
+  padding: 1.25rem;
+}
+
+.pv-stack {
+  display: grid;
+  gap: 1rem;
+}
+
+.pv-card {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--card);
+}
+
+.pv-spec {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.pv-spec hr {
+  width: 100%;
+  margin: 0.75rem 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+}
+
+.preview .pv-card-title {
+  margin-bottom: 0.5rem;
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.pv-small-title,
+.pv-label {
+  font-weight: 600;
+}
+
+.pv-url {
+  color: #2f5fb3;
+}
+
+.pv-muted {
+  color: var(--muted);
+}
+
+.pv-shot {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 0.6rem;
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  background: #111015;
+  aspect-ratio: 16 / 9;
+}
+
+.pv-shot span {
+  border-radius: 0.25rem;
+  background: #2b2a33;
+}
+
+.pv-shot-nav {
+  grid-column: 1 / -1;
+  height: 0.5rem;
+}
+
+.pv-shot .pv-shot-head {
+  height: 1.25rem;
+  width: 75%;
+  background: #e9e7ef;
+}
+
+.pv-shot .pv-shot-code {
+  grid-column: 2;
+  grid-row: 2 / span 3;
+  background: #1d1c24;
+  border: 1px solid #34323d;
+}
+
+.pv-shot-line {
+  height: 0.4rem;
+}
+
+.pv-short {
+  width: 60%;
+}
+
+.pv-shot-logos {
+  grid-column: 1 / -1;
+  height: 1.25rem;
+}
+
+.pv-video {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.pv-chat {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+}
+
+.pv-chat-title {
+  font-family: "Fraunces", Georgia, serif;
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+.pv-bubble {
+  max-width: 85%;
+  padding: 0.55rem 0.75rem;
+  border-radius: 0.75rem;
+  line-height: 1.4;
+}
+
+.pv-user {
+  align-self: flex-end;
+  background: var(--aubergine-tint);
+}
+
+.pv-agent {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  background: #f2efe9;
+}
+
+.preview .pv-hint {
+  margin-top: auto;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.pv-composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.5rem 0.6rem 0.5rem 0.85rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  color: #a69aa8;
+}
+
+.pv-send {
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 50%;
+  background: var(--persimmon);
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+    padding-top: 1rem;
+  }
+
+  .hero-beaver {
+    max-width: 22rem;
+    grid-row: 1;
+  }
+
+  .steps,
+  .starter-links {
+    grid-template-columns: 1fr;
+  }
+
+  .steps li + li::before {
+    display: none;
+  }
+
+  .preview {
+    grid-template-columns: 1fr;
+  }
+
+  .pv-canvas {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .pv-chat {
+    min-height: 14rem;
+  }
+}
+
+@media (max-width: 560px) {
+  .site-nav {
+    gap: 1rem;
+  }
+
+  .site-nav a:not(.btn) {
+    display: none;
+  }
+
+  .pv-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .pv-bar .pv-ghost {
+    display: none;
+  }
+}
