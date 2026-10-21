@@ -10,7 +10,11 @@ export interface SignIn {
 }
 
 export interface EvidenceStore {
-  putEvidence(record: EvidenceRecord, content: Uint8Array): Promise<void>;
+  putEvidence(
+    record: EvidenceRecord,
+    content: Uint8Array,
+    signal?: AbortSignal,
+  ): Promise<void>;
   getEvidence(id: string): Promise<EvidenceRecord | null>;
   getContent(id: string): Promise<Uint8Array | null>;
   saveSignIn(runId: string, signIn: SignIn): Promise<void>;
@@ -31,7 +35,7 @@ const key = (table: string, id: string, pattern: RegExp) => {
 const chunkKey = (id: string, index: number) =>
   key("evidence_chunk", `${id}_${index}`, /^ev_[0-9a-f-]{36}_\d+$/);
 
-const toBase64 = (bytes: Uint8Array) => {
+export const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
   for (let i = 0; i < bytes.length; i += 0x8000) {
     binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
@@ -47,9 +51,10 @@ export function surrealStore(db: SurrealRunStore): EvidenceStore {
     ((await db.query(sql, vars))[0] ?? []) as T[];
 
   return {
-    async putEvidence(record, content) {
+    async putEvidence(record, content, signal) {
       const chunks = Math.ceil(content.length / chunkBytes);
       for (let index = 0; index < chunks; index++) {
+        signal?.throwIfAborted();
         const data = content.subarray(
           index * chunkBytes,
           (index + 1) * chunkBytes,
@@ -58,6 +63,7 @@ export function surrealStore(db: SurrealRunStore): EvidenceStore {
           chunk: { evidence: record.id, index, data: toBase64(data) },
         });
       }
+      signal?.throwIfAborted();
       // The record is written last, so a readable record always has all its chunks.
       await query(
         `CREATE ${key("evidence", record.id, evidenceIdPattern)} CONTENT $row`,

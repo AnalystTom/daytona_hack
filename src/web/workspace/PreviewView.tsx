@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { VariantView } from "./orchestrator";
 import {
   fetchPreviewLink,
+  fetchRun,
   type RunCallError,
   type RunCallResult,
 } from "./runClient";
@@ -35,7 +36,7 @@ function VariantPreview({
       (result) => {
         if (!live) return;
         setLink(result);
-        if (!result.ok && result.error === "operator_token")
+        if (!result.ok && result.error === "access_required")
           refused.current(result);
       },
     );
@@ -96,10 +97,14 @@ export function PreviewView({
   useEffect(() => {
     let live = true;
     setLink(undefined);
-    void fetchPreviewLink(runId).then((result) => {
+    void fetchPreviewLink(runId).then(async (result) => {
       if (!live) return;
       setLink(result);
-      if (!result.ok && result.error === "operator_token") onRefused(result);
+      if (!result.ok && result.error === "access_required") onRefused(result);
+      if (!result.ok && result.error === "not_found") {
+        const owned = await fetchRun(runId);
+        if (live && !owned.ok && owned.error === "not_found") onRefused(owned);
+      }
     });
     return () => {
       live = false;

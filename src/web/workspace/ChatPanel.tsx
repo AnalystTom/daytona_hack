@@ -1,6 +1,7 @@
 import {
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
   useEffect,
   useRef,
   useState,
@@ -10,7 +11,8 @@ import { Mark } from "./Mark";
 
 const NOTICE_TITLE = {
   not_connected: "Not connected",
-  operator_token: "Operator token needed",
+  not_found: "Not found",
+  access_required: "Sign-in needed",
   failed: "Request failed",
   run_error: "Run error",
 } as const;
@@ -19,7 +21,6 @@ type Handlers = {
   pending: boolean;
   onRetry: (id: string) => void;
   onSend: (text: string) => void;
-  onSaveToken: (token: string, noticeId: string) => void;
 };
 
 function Entry({
@@ -27,7 +28,6 @@ function Entry({
   pending,
   onRetry,
   onSend,
-  onSaveToken,
 }: Handlers & { entry: ChatEntry }) {
   switch (entry.kind) {
     case "user":
@@ -65,8 +65,15 @@ function Entry({
             <p>
               <strong>{NOTICE_TITLE[entry.error]}.</strong> {entry.detail}
             </p>
-            {entry.error === "operator_token" && (
-              <TokenForm onSave={(token) => onSaveToken(token, entry.id)} />
+            {entry.error === "access_required" && (
+              <a
+                className="link-button"
+                href="/start"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Sign in in a new tab
+              </a>
             )}
           </div>
         </li>
@@ -122,8 +129,12 @@ export function ChatPanel({
   pending,
   onSend,
   onRetry,
-  onSaveToken,
-}: Handlers & { entries: ChatEntry[] }) {
+  readOnly,
+}: Handlers & {
+  entries: ChatEntry[];
+  // Shown instead of the composer when the chat cannot be written to.
+  readOnly?: ReactNode;
+}) {
   const [draft, setDraft] = useState("");
   const listRef = useRef<HTMLOListElement>(null);
   const isBrief = entries.length === 0;
@@ -171,92 +182,63 @@ export function ChatPanel({
               pending={pending}
               onRetry={onRetry}
               onSend={onSend}
-              onSaveToken={onSaveToken}
             />
           ))}
         </ol>
       )}
-      <form
-        className={`composer ${isBrief ? "composer-brief" : ""}`}
-        onSubmit={submit}
-      >
-        <p className="composer-hint" id="composer-hint">
-          {isBrief
-            ? "Send the URL and your goal in one message. You can refine the scope in conversation."
-            : "Refine the scope here. The spec updates on the canvas."}
-        </p>
-        <div className="composer-box">
-          <label htmlFor="composer-input" className="visually-hidden">
-            {isBrief ? "Your brief" : "Message"}
-          </label>
-          <textarea
-            id="composer-input"
-            aria-describedby="composer-hint"
-            rows={isBrief ? 3 : 1}
-            value={draft}
-            placeholder={
-              isBrief
-                ? "Paste a URL and describe your goal…"
-                : "Describe a change…"
-            }
-            onChange={(event) => setDraft(event.target.value)}
-            onKeyDown={onKeyDown}
-          />
-          {isBrief ? (
-            <button
-              type="submit"
-              className="button button-primary"
-              disabled={!canSend}
-            >
-              Send brief
-            </button>
-          ) : (
-            <button
-              type="submit"
-              className="send-button"
-              disabled={!canSend}
-              aria-label="Send message"
-            >
-              <svg viewBox="0 0 24 24" aria-hidden="true">
-                <path d="M12 19V5 M6 11l6-6 6 6" />
-              </svg>
-            </button>
-          )}
-        </div>
-      </form>
+      {readOnly ? (
+        <div className="composer composer-closed">{readOnly}</div>
+      ) : (
+        <form
+          className={`composer ${isBrief ? "composer-brief" : ""}`}
+          onSubmit={submit}
+        >
+          <p className="composer-hint" id="composer-hint">
+            {isBrief
+              ? "Send the URL and your goal in one message. You can refine the scope in conversation."
+              : "Refine the scope here. The spec updates on the canvas."}
+          </p>
+          <div className="composer-box">
+            <label htmlFor="composer-input" className="visually-hidden">
+              {isBrief ? "Your brief" : "Message"}
+            </label>
+            <textarea
+              id="composer-input"
+              aria-describedby="composer-hint"
+              rows={isBrief ? 3 : 1}
+              value={draft}
+              placeholder={
+                isBrief
+                  ? "Paste a URL and describe your goal…"
+                  : "Describe a change…"
+              }
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={onKeyDown}
+            />
+            {isBrief ? (
+              <button
+                type="submit"
+                className="button button-primary"
+                disabled={!canSend}
+              >
+                Send brief
+              </button>
+            ) : (
+              <button
+                type="submit"
+                className="send-button"
+                disabled={!canSend}
+                aria-label="Send message"
+              >
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 19V5 M6 11l6-6 6 6" />
+                </svg>
+              </button>
+            )}
+          </div>
+        </form>
+      )}
     </aside>
-  );
-}
-
-function TokenForm({ onSave }: { onSave: (token: string) => void }) {
-  const [token, setToken] = useState("");
-  return (
-    <form
-      className="notice-actions token-form"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (token.trim()) onSave(token.trim());
-      }}
-    >
-      <label className="visually-hidden" htmlFor="operator-token">
-        Operator token
-      </label>
-      <input
-        id="operator-token"
-        type="password"
-        autoComplete="off"
-        placeholder="Operator token"
-        value={token}
-        onChange={(event) => setToken(event.target.value)}
-      />
-      <button
-        type="submit"
-        className="button button-primary"
-        disabled={!token.trim()}
-      >
-        Sign in
-      </button>
-    </form>
   );
 }
 

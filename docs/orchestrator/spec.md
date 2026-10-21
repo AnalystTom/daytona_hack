@@ -29,7 +29,7 @@ Our Cloudflare Worker (web app + API, the only front door)
    │  service binding (private)              ▲ run events
    ▼                                         │
 Reversy orchestrator (Cloudflare Worker, one Durable Object per run)
-   │  owns chat, inspect, plan, build, review; calls the verifier (GPT, from Cloudflare)
+   │  owns chat, inspect, plan, build, review; calls the verifier from Cloudflare
    ▼
 Daytona run sandbox (Tier 3 or higher, full internet access)
    ├─ Codex workers (one task each, own git worktree and branch)
@@ -41,36 +41,56 @@ Daytona run sandbox (Tier 3 or higher, full internet access)
    Variant pods (three landing-page alternatives), independent after the fork
 
 Outside the sandbox: Anchor (browser), SurrealDB (records and Agent Memory), Arize (traces)
-Sandbox calls to the gateway (Anchor, Agent Memory) go through our site; keys stay on Cloudflare.
+Sandbox calls to the gateway (Anchor, Agent Memory) go through our site.
 ```
+
+Credential boundaries are defined in [Access and network](#8-access-and-network).
 
 ## 4. Agents
 
 | Agent | Runs in | Model | Writes code | Job |
 |---|---|---|---|---|
-| Orchestrator | Durable Object on Cloudflare | GPT 6.1 (`gpt-6.1-sol`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
-| Workers | Codex in the Daytona sandbox | GPT 6.1 (`gpt-6.1-sol`), high reasoning | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
-| Reviewer | Orchestrator, on Cloudflare | GPT 6.1 | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
-| Verifier | Cloudflare, outside the sandbox | GPT 6.1 (`VERIFIER_MODEL`) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
+| Orchestrator | Durable Object on Cloudflare | OpenAI (`ORCHESTRATOR_MODEL`) | No | Talks with the user in chat, refines the spec, runs inspection, writes the plan, dispatches workers, merges approved work |
+| Workers | Codex in the Daytona sandbox | `WORKER_MODEL`, reasoning from `WORKER_EFFORT` (deployment values in [`wrangler.jsonc`](../../orchestrator/wrangler.jsonc)) | Yes | One task each in its own git worktree and branch, running commands freely inside the sandbox |
+| Reviewer | Orchestrator, on Cloudflare | OpenAI (`ORCHESTRATOR_MODEL`) | No | Reviews each worker's diff against its task, acceptance criteria and owned files |
+| Verifier | Cloudflare, outside the sandbox | OpenAI (model selection below) | No | Checks the plan, each merged task and the final rebuild against the spec and evidence |
 
-All models are OpenAI; there is no Anthropic model in the demo.
+Every model call uses the OpenAI API (`https://api.openai.com/v1`, defined in [`src/shared/openai.ts`](../../src/shared/openai.ts)) with `OPENAI_API_KEY` on the orchestrator Worker. Chat, planning and review use `ORCHESTRATOR_MODEL`, the orchestrator verifier uses `VERIFIER_MODEL` (falling back to `ORCHESTRATOR_MODEL`), and report source web search uses the Responses API. Sandbox Codex workers use `WORKER_MODEL` and also require the Responses API.
+
+Every structured reply is validated against the supplied JSON Schema before use, including field types, required fields and rejection of unexpected properties where the schema forbids them. Invalid JSON or schema mismatches fail the call rather than approving scope or passing verification; see [`llmJson`](../../orchestrator/src/services.ts) and its [regression tests](../../orchestrator/src/services.test.ts).
 The verifier has its own instructions and runs outside the sandbox, so it stays independent of the agents it checks.
 
 ## 5. How a run works
+
+### Report dissection
+
+[Report dissection](../spec.md#financial-report-dissection) branches from the website workflow below. A brief that explicitly asks to reconstruct, rebuild or dissect a report (for example the article address plus “Reconstruct this report: …”) follows the normal brief: one question round in chat, then approval in chat or through the approve route, and then uses report dissection instead of website planning. No address or wording auto-approves scope. A bare `report` keyword does not select report dissection.
+
+The report path runs `brief` → `inspecting` → `done` (or `failed` / `stopped`). It captures the article, parses available embedded Flourish chart data without executing source JavaScript, researches original sources, confirms persistence and emits a `report` event. The product spec owns its output and failure behavior.
+
+Figure extraction ([`extractFigures`](../../orchestrator/src/dissection.ts)) reads only the report body: for a page-wide container it starts at the title, and it skips `nav`, `aside`, `footer`, script/style/template and navigation/banner/contentinfo/complementary roles. Bare years (1800–2099), year spans and day-of-month numbers beside a month name are not figures; only a single year or year span explicitly introduced by in/for/by/during in the figure's clause can become its `period`. Commas, semicolons, colons and the words and/but/while/whereas/to separate clauses for this conservative association; multiple candidate periods and coordinated year lists (including and/or/to/through/until) remain unset. Start years such as “since 2022” and ambiguous periods remain unset. Repeats merge only when the normalized value, unit, period and entire sentence agree after replacing the measured occurrence with a marker and normalizing case and whitespace. Differently worded restatements remain separate figures, as do distinct or uncertain measures. Later occurrences are `mentions`, with quantity offsets retained even within the same paragraph. Each figure has a short `label` (the research call proposes one per figure, accepted only if it is at most 70 characters and contains no number outside the figure's period; otherwise a deterministic fallback uses the words immediately after that quantity, retaining meaningful single-word context such as “globally”; with no local suffix it uses the quantity kind rather than preceding text) and keeps the full paragraph as `quote`. Chart cells carry `breakdown: {row, column}` so the canvas can group them, and the chart source's quotation uses its first extracted headline when available, otherwise its first parsed row or the iframe markup.
+
+Research requests a budget of four OpenAI web-search tool calls with parallel tool calls disabled, and fetches at most six candidate original-source URLs, in addition to up to three embedded charts. If the provider exceeds the search budget, the report retains its extracted figures, records the actual call count and budget, and discloses the overrun in its research limitations instead of failing validation. A search that executes no web-search calls still fails. Article/chart source identities are excluded before and after redirects.
+
+The bounded quote-evidence rule requires the complete independently captured HTML passage, never a model-clipped substring. After whitespace normalization, both the passage and complete figure value must exactly match the captured figure quotation and value. The shared extractor recognizes numeric tokens with currency context, signs, comma thousands separators, decimals, supported scales and ranges (`2%-5%`, `$5-10 billion`) whose two ends share one unit; token sequences it cannot parse, and ranges with mixed units, are marked not observed. A quantity that merely opens a parenthetical (`(1.3% globally)`) is read; one wrapped whole in brackets (`(2.5%)`) stays unsupported, and the matcher below never verifies a range or a value directly after an opening bracket. A parsed value alone does not establish a complete unit: matching requires that value to occur only once in each passage and end it, apart from sentence punctuation. Unconsumed suffix text remains unverified. Matching denies by default: both quotes must independently contain the same complete quantity, unit, scale and sign with an attached, unambiguous currency token (the euro symbol or a supported ISO currency code). Dollar and pound symbols alone, absent or conflicting currency, parenthesised or prefixed negatives and unsupported separators remain unverified. Bare integers have no inferred year unit; years, percentages and basis points have no currency exemption. Currency is not inferred from page context, and there is no FX conversion or numerical equivalence. The shared implementations are `reportQuantities` and `exactQuoteEvidence` in [`src/shared/report.ts`](../../src/shared/report.ts), also checked when displaying a saved match.
+
+The orchestrator needs the [agent model bindings](#4-agents) and the `SURREALDB_*` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session normally captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
+
+Only a `CodeExecutionRefused` from the report snippet triggers fallback: HTML is fetched directly and Anchor's plain screenshot tool is attempted in the same session. The fetched HTML's final URL must retain the requested origin; a different origin fails the run. Other snippet errors, including origin rejection, still fail without fallback. Fetched HTML is observed evidence, but DOM boxes and rendered content are not observed. A fallback screenshot is **inferred** because its final browser URL cannot be verified, and it has no source regions. If the screenshot tool raises an `AnchorError`, the captured HTML remains usable and the screenshot is **not observed** with the failure reason. The session closes on success or failure. See [`captureReport`](../../orchestrator/src/report-capture.ts) and its [regression tests](../../orchestrator/src/report-capture.test.ts).
 
 ### Phase 1: Brief (chat)
 
 1. The user sends a URL and a goal.
 2. Our Worker creates the run through the orchestrator, which takes a **first look**: the page HTML, its main routes and an Anchor screenshot of the start page.
    These land on the canvas at once so the conversation has something real to point at.
-3. The orchestrator asks questions in chat (which pages and flows, which interactions, what to change).
+3. The orchestrator refines the draft according to the [product scope contract](../spec.md#5-run-scope-and-first-demo-target).
    Each answer updates the **draft spec** card on the canvas; anything not agreed stays "Not confirmed yet".
 4. The user approves the spec in chat or with an explicit approve action.
 
 ### Phase 2: Inspect (evidence)
 
-1. When the spec is approved, the orchestrator captures the full **evidence pack** with Anchor for every in-scope page and flow (section 6).
-2. On a page that needs an account, inspection stops and the chat asks the user to open secure sign-in (an Anchor live session where the user types their own credentials) or skip the page.
+1. When the spec is approved, inspection follows its scope: frontend inspection for `frontend`, backend inspection for `backend`, and both for `both` (section 6). For backend work, spec pages identify routes to inspect and flows identify API behaviours.
+2. Frontend inspection that leaves the approved scope pauses for secure sign-in or skipping, as described in the [API reference](api.md#evidence-capture). Backend inspection does not use that browser session.
 3. Each capture appears on the canvas as it lands.
 
 ### Phase 3: Plan
@@ -106,18 +126,32 @@ An optional action deploys it live.
 
 Evidence is the contract between the original site and the rebuild.
 Workers build from it, reviewers judge against it, and the verifier checks claims against it.
-Anchor captures it, through our evidence capture, and SurrealDB stores it.
+Anchor captures browser evidence, through our evidence capture, and SurrealDB stores it. The demo's backend inspection uses fetch, as described below.
+Server-side page, REA bundle, robots.txt, sitemap.xml and report-source fetches send the shared [`USER_AGENT`](../../orchestrator/src/types.ts) identity, including redirect requests and report-capture fallback.
 
 **What the evidence pack holds, per page or state:**
 
 | Kind | Captured by | Used for |
 |---|---|---|
 | Screenshots at desktop and mobile widths | Anchor | Visual target and like-for-like comparison |
-| Interaction recordings (open menu, submit form, create sandbox), up to 30 seconds each | Anchor | Behaviour and motion |
+| Page-load recording of the capture session | Anchor | Observed loading and motion |
 | DOM snapshot and page structure | Anchor | Sections, components, copy, links |
 | Computed styles and design tokens (colours, type, spacing, radii) | Anchor | A shared token file built first, so every worker uses the same values |
 | Asset list (images, icons, fonts) with sources | Anchor | What to reuse with permission and what to recreate |
-| Network log (requests, response shapes) | Anchor | The mock back end's routes and data shapes |
+| Network log (requests, response shapes) | Anchor | Backend routes and data shapes |
+
+**Current demo backend inspection:** after approval, backend-only runs skip frontend captures; the initial first look still attempts a screenshot before chat sets scope (see [evidence capture](api.md#evidence-capture)).
+For each confirmed same-origin route, `inspectBackend` makes one GET without following redirects or using a browser session and records its status, allowed delivery headers and JSON shape, not JSON content values or cookies.
+Successful HTML responses are retained as evidence when their UTF-8 size is below 1,900,000 bytes; larger HTML is marked `not_observed` with the storage-cap reason.
+Observed request paths preserve their query strings. HTML references supply inferred API URLs, shipped script URLs and embedded JSON shapes; the referenced APIs and client JavaScript calls are not observed.
+HTML attribute references are decoded once before resolving URLs; script text retains its raw string contents.
+`robots.txt` and `sitemap.xml` supply listed routes only; sitemap XML references are decoded once, while robots.txt values remain literal.
+**Code decomposition with REA:** the run snapshot pins REA (`rea-agents`, version and npm integrity in `sandbox/versions.env`). Before website planning, including after **Skip sign-in**, the orchestrator scans once when no REA evidence exists. It selects the first retained, observed DOM or HTML document still in approved scope. If none is available, including with screenshot-only capture, it fetches the first approved page not recorded as needing sign-in, with a 15-second timeout, a 2 MB body cap and at most 4 redirects. The initial URL and every redirect destination must pass the [run URL checks](api.md#evidence-capture) and stay within the approved origin, paths and query constraints. Only successful `text/html` or `application/xhtml+xml` responses are accepted. This HTML is used for bundle discovery without being stored as a separate HTML evidence item; resulting code evidence notes that the page was fetched server-side, not browser-rendered, so scripts added by JavaScript are not listed.
+From the selected document, REA resolves exact `<script src>` and module-preload `href` attributes against its final URL and first `<base href>`, and decodes attribute entities once. It fetches at most 8 bundles itself (4 MB each, 12 MB in total; the run URL checks apply to every redirect hop, bodies are read only up to the byte caps) and writes them into a throwaway Daytona sandbox. Fetches do not use the browser's signed-in session. There `sandbox/rea-scan.mjs` runs `rea analyze-javascript-application` for at most 120 seconds and returns at most 60 findings (API calls and routes first, then storage use and modules). No environment secrets are passed to the sandbox; it is created to stop after 5 idle minutes and delete on stop as a cleanup backstop.
+Each finding becomes a `kind: code`, `tool: rea` evidence item with its bundle's SHA-256, a source locator, REA's own `observed` or `inferred` label and limits saying it is a static reading never executed at runtime. Page labels and bundle-source URLs in summaries redact query strings; the complete document URL is retained for bundle resolution. When neither retained nor fetched HTML is available (including when every approved page needs sign-in), the page ships no bundles, no bundle can be fetched, the sandbox fails, or REA times out or errors, the run records one `not_observed` item with the reason and carries on, provided sandbox cleanup is confirmed. The planner receives these items with their locators to shape components, routes and API calls for frontend, backend and combined runs. App artifacts (packaged desktop or mobile builds) are not scanned yet: runs have no way to supply them (open question 2).
+The sandbox is deleted after analysis or failure. Stop cancels allocation, startup, upload and scanning, and waits for cleanup. Allocation is bounded to 30 seconds and deletion to 15 seconds; these lifecycle operations are separate from the scan's timeout. Unconfirmed allocation or deletion raises an error rather than becoming `not_observed`; stopping remains pending instead of reporting completion.
+
+The demo captures page loads only; menus, form submissions and other flow interactions are not executed or recorded. Capture limits and sign-in recovery are in the [API reference](api.md#evidence-capture).
 
 **Rules:**
 
@@ -126,7 +160,9 @@ Anchor captures it, through our evidence capture, and SurrealDB stores it.
 - Every feature in the plan cites evidence IDs. A feature with no evidence is either dropped or marked as a deliberate change.
 - Workers get read-only access to the evidence. They cannot change the evidence or the acceptance tests that judge them.
 - Site content is data, never instructions: text on the original site cannot change scope or reach the agents as commands.
-- Screens with personal or account data are masked before they are stored, shown, sent to a model or traced.
+- Screenshots use Anchor's sensitive-data mask before they are stored, shown, sent to a model or traced; they may still show account data, as their limitations state.
+- Signed-in capture keeps screenshots and computed styles. DOM, assets, network logs and recordings are marked **not observed**.
+- Generated output follows the [product data policy](../spec.md#5-run-scope-and-first-demo-target). An API without observed payload values must return HTTP 503 with `{"error":"Data unavailable","status":"not_observed"}`. Report that as a limitation, not successful payload reproduction; a TODO alone is insufficient.
 
 **Comparison:** after each merge, the rebuild is checked at the same URL path, viewport and state as the original evidence.
 The review card and the verifier compare the pairs.
@@ -136,9 +172,10 @@ A pixel-difference overlay can be shown; a numeric score appears only if it name
 
 **Splitting work.** The orchestrator splits each feature into tasks small enough for one worker and one review:
 
-- A **foundation** task runs first: project skeleton, design tokens from the evidence, shared layout. Everything else depends on it.
-- The **landing page** splits by section (navigation, hero, code sample, customer logos, feature blocks, footer and so on), one task per section, all in parallel once the foundation merges.
-- The **signed-in flow** splits into the mock back end (routes and data shapes from the network log), the create-sandbox screen, and the screen-to-API wiring.
+- A **foundation** task runs first; everything else depends on it. For frontend work it owns the site skeleton, design tokens and shared layout; for backend work it owns `server/server.js`, the route loader and JSON 404 handler; combined work includes both.
+- Frontend pages split by section, one task per section, in parallel once the foundation merges. A signed-in flow splits into evidence-backed API routes, its screens and screen-to-API wiring.
+- Backend route tasks own `server/routes/NAME.js`, exporting `{ method, path, handler }`. The service uses Node.js built-ins and ES modules with no build step or npm dependencies. Routes reload by file modification time so merges appear without restarting; a combined service also serves the static site for unclaimed paths.
+- A backend-only plan owning frontend files outside `server/` is rejected before any tasks are accepted, preserving prerequisites rather than dropping tasks or dependencies. See `offScope` in [`scope.ts`](../../orchestrator/src/scope.ts) for the ownership check.
 - Each task names the files or area it owns, so parallel workers rarely touch the same lines.
 
 **What a worker receives:**
@@ -150,6 +187,7 @@ A pixel-difference overlay can be shown; a numeric score appears only if it name
 
 **Scheduling.** Tasks form a dependency graph.
 The orchestrator dispatches every task whose dependencies have merged, up to `MAX_WORKERS` at once, and re-checks the queue on a Durable Object alarm.
+Deployment values for worker concurrency and reasoning live in [`orchestrator/wrangler.jsonc`](../../orchestrator/wrangler.jsonc); unset bindings fall back to six workers and high reasoning.
 
 **Kanban mapping.** The Build view's columns follow the orchestrator's task events:
 
@@ -165,28 +203,30 @@ A failed or stopped task stays on the board with its reason and next action.
 ## 8. Access and network
 
 - The orchestrator has no public access.
-  Only our site calls it, through a Cloudflare service binding, and only we can test it, with our own operator token.
+  Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#who-can-use-runs).
 - The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
-  The sandbox holds only a gateway token; the Anchor, SurrealDB, OpenAI and Daytona keys stay on Cloudflare.
+  Anchor, SurrealDB and Daytona keys stay on Cloudflare. Gateway callers authenticate with `GATEWAY_TOKEN`; Codex run sandboxes receive `OPENAI_API_KEY` to authenticate directly to OpenAI (see [`setupSandbox`](../../orchestrator/src/run.ts)).
 - Knowing a run ID is not enough to view or use a run.
-  Every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- There are no user accounts, sign-ups or login system in the demo; the existing token gates stay.
+  Run authentication and workspace ownership follow the [README's access policy](../../README.md#who-can-use-runs).
 
 ## 9. Verifier
 
-- Runs on Cloudflare on `VERIFIER_MODEL` (OpenAI), never from inside the sandbox.
+- Runs on Cloudflare, never from inside the sandbox; model selection follows the [agent configuration](#4-agents).
 - Checks three things: the plan before build, each merged task, and the final rebuild.
 - Input: the agreed spec, the relevant evidence, and the output being checked (the plan, or a merged task with its live preview).
+- Frontend task and final checks keep the root-preview HTML comparison. Backend checks probe observed page GET paths and same-origin API paths referenced by inferred endpoint evidence; a task uses its cited evidence and the final check uses all evidence. Combined runs perform both checks.
+- Route probes are GET-only, with manual redirects and a preview-origin check, capped at 10 distinct paths, 5 seconds and 100,000 response bytes per probe. Results include status, content type, allowed delivery headers, redirect location and JSON shape (or a bounded text outline), for comparison against evidence. Inferred routes have no observed response to compare. The header allowlist is [`DELIVERY_HEADERS`](../../orchestrator/src/inspect.ts), shared by capture and probes.
+- Probes use backend request metadata to preserve route queries rather than Anchor's redacted page labels. Signed-preview authorization is forwarded with each probe and redacted from the verifier's model input and trace.
 - Output: pass or fail, with findings tied to plan items and evidence IDs, as `verification` events.
 - A failure is posted to chat as steering and shows on the canvas; a failed merged task gets a fix task (section 5, phase 4).
 
 ## 10. Steering, limits and failure
 
-- The user's chat messages reach the orchestrator at any stage.
+- Chat availability follows the [API's phase rules](api.md#phases).
 - The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
-- Each run is limited to 2 hours.
+- Run admission and lifetime limits are defined in the [README access policy](../../README.md#sign-in-with-cloudflare-access).
 - Run state and events remain in the Durable Object; external record availability follows the [API's persistence guarantees](api.md#how-a-build-runs).
 
 ## 11. Second engine (later): Firstmate in Daytona
@@ -201,13 +241,14 @@ The same evidence, verifier and records apply.
 The agents' code runs on Daytona; the service lives on Cloudflare. Current storage ownership and external projection limits are defined in the [API's persistence guarantees](api.md#how-a-build-runs).
 
 - **SurrealDB** holds external run projections, the separate evidence capture API's records and files, and Agent Memory. See the API reference for the projection guarantees and Agent Memory namespace.
+- **Report records** use `report_run` for the snapshot, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Failed runs retain their own evidence and error; no prior run is used as a fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
 ## 13. Decided
 
 - Demo engine: the Reversy orchestrator (Cloudflare Durable Object), enhanced with full Anchor capture. Firstmate in Daytona with no-mistakes is the second engine for later.
-- All models are OpenAI, including the verifier.
-- Each run is limited to 2 hours.
+- Runtime model routing follows the [agent configuration](#4-agents).
+- Run limits: see section 10.
 - A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
 - End of run: a live preview inside the app, with an optional deploy-live action.
 - Variants: the user promotes a variant and building continues from its snapshot.
@@ -215,9 +256,10 @@ The agents' code runs on Daytona; the service lives on Cloudflare. Current stora
 - Recordings are capped at 30 seconds.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - The orchestrator is private: only our site calls it, and only we test it.
-- Runs are secure: every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA (useful later for rebuilding complex interactive features from compiled JavaScript), financial reports, and user accounts, sign-ups or a login system (the existing token gates stay; spending is kept low).
+- Run access: see section 8.
+- Report dissection: see the [product scope](../spec.md#financial-report-dissection) and [report workflow](#report-dissection).
 
 ## 14. Open questions
 
 1. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
+2. How does a user provide an app artifact (upload, URL or store link), and what limits apply, so REA can decompose it alongside the website's bundles?

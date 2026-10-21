@@ -11,7 +11,9 @@ export type Override = {
 
 type Props = {
   events: readonly (EventEnvelope & { detail?: unknown })[];
-  onStopBuild: () => void;
+  // What the run is doing, shown in place of the empty board while no tasks exist yet.
+  status?: string;
+  onStopBuild?: () => void;
   onOverride?: (override: Override) => void;
 };
 
@@ -84,7 +86,7 @@ const timeFormat = new Intl.DateTimeFormat(undefined, {
   second: "2-digit",
 });
 
-export function BuildBoard({ events, onStopBuild, onOverride }: Props) {
+export function BuildBoard({ events, status, onStopBuild, onOverride }: Props) {
   const board = useMemo(() => deriveBoard(events), [events]);
   const [selectedId, setSelectedId] = useState<string>();
 
@@ -107,7 +109,7 @@ export function BuildBoard({ events, onStopBuild, onOverride }: Props) {
         <button
           type="button"
           className="bb-stop"
-          disabled={!started || board.runStopped}
+          disabled={!onStopBuild || !started || board.runStopped}
           onClick={onStopBuild}
         >
           {board.runStopped ? "Build stopped" : "Stop build"}
@@ -148,9 +150,18 @@ export function BuildBoard({ events, onStopBuild, onOverride }: Props) {
           );
         })}
         {!started && (
-          <div className="bb-empty">
-            <p className="bb-empty-title">No build started.</p>
-            <p>Tasks appear after the spec is approved.</p>
+          <div className="bb-empty" role="status">
+            {status ? (
+              <>
+                <p className="bb-empty-title">{status}</p>
+                <p>Tasks appear here as soon as the plan is ready.</p>
+              </>
+            ) : (
+              <>
+                <p className="bb-empty-title">No build started.</p>
+                <p>Tasks appear after the spec is approved.</p>
+              </>
+            )}
           </div>
         )}
       </div>

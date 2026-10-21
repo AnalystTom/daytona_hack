@@ -1,9 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SpecCanvas } from "../../shared/workspace";
 import type { Override } from "../build/BuildBoard";
+import { navigate } from "../router";
 import { BuildView } from "./BuildView";
+import { Canvas } from "./Canvas";
 import { ChatPanel } from "./ChatPanel";
-import { askForUrl, type ChatEntry, deliver, takeIncomingBrief } from "./chat";
+import {
+  askForUrl,
+  type ChatEntry,
+  deliver,
+  parseBrief,
+  takeIncomingBrief,
+} from "./chat";
 import type { WorkspaceFixture } from "./fixtures";
 import { Mark } from "./Mark";
 import { chatEntries, type OrchestratorEvent, runView } from "./orchestrator";
@@ -15,9 +23,19 @@ import {
   type RunCallError,
   type RunCallResult,
   runAction,
-  signIn,
+  saveReportEdit,
+  startSignIn,
 } from "./runClient";
+import { SessionSwitcher } from "./SessionSwitcher";
 import { SpecView } from "./SpecView";
+import {
+  type Layout,
+  forgetSession,
+  loadLayout,
+  phaseLabel,
+  rememberSession,
+  saveLayout,
+} from "./sessions";
 import "./workspace.css";
 
 type View = "spec" | "build" | "preview";
@@ -27,35 +45,52 @@ const VIEWS: { id: View; label: string }[] = [
   { id: "preview", label: "Preview" },
 ];
 
-const PHASES: Record<string, string> = {
-  brief: "Agreeing the spec",
-  inspecting: "Inspecting the site",
-  planning: "Planning tasks",
-  planned: "Plan ready",
-  building: "Building",
-  variants: "Building variants",
-  done: "Build finished",
-  stopped: "Stopped",
-  failed: "Run failed",
-};
 const POLL_MS = 2000;
 // A finished run changes only when someone acts on it, so it is checked less often.
 const IDLE_POLL_MS = 15000;
-const EVENTS_TOKEN_NOTICE = "events-token";
+const EVENTS_ACCESS_NOTICE = "events-access";
 
 const idle = (phase?: string) =>
   phase === "done" || phase === "stopped" || phase === "failed";
+// Phases with work under way, shown on the Build view until tasks exist.
+const WORKING = ["inspecting", "planning", "planned", "building"];
 
-export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
+// One session's workspace: `runId` reopens that run's session, none starts an empty one.
+export function Workspace({
+  fixture,
+  runId: routeRunId,
+}: {
+  fixture?: WorkspaceFixture;
+  runId?: string;
+}) {
   const [view, setView] = useState<View>("spec");
   const [entries, setEntries] = useState<ChatEntry[]>(fixture?.entries ?? []);
   const [pending, setPending] = useState(false);
-  const [runId, setRunId] = useState<string>();
+  // The run this session opened with; the URL gains a run ID later when a new session creates one.
+  const [initialRunId] = useState(routeRunId);
+  const [runId, setRunId] = useState(routeRunId);
+  const [confirmed, setConfirmed] = useState(false);
+  // The brief's URL, until the run's own spec names the target.
+  const [briefTarget, setBriefTarget] = useState<string>();
+  const [layout, setLayout] = useState<Layout>(() =>
+    initialRunId ? loadLayout(initialRunId) : {},
+  );
+  const layoutChanged = useRef(false);
+  // A run created after the user has switched sessions must not take over that session's URL.
+  const mounted = useRef(true);
+  useEffect(() => {
+    // StrictMode runs this twice in development, so the mount sets it again.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [events, setEvents] = useState<OrchestratorEvent[]>([]);
   const [offline, setOffline] = useState(false);
   // Set from the Start build click until the next event, so a second click cannot race the phase change.
   const [starting, setStarting] = useState(false);
   const pollSoon = useRef<() => void>(undefined);
+  const refused = useRef(false);
   // Messages sent before the brief had a URL; they are sent with it.
   const briefParts = useRef<string[]>([]);
   const run = useMemo(() => runView(runId ?? "", events), [runId, events]);
@@ -63,41 +98,95 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
   phase.current = run.phase;
   const canvas: SpecCanvas = fixture?.canvas ?? {
     draftSpec: run.draftSpec,
+    report: run.report,
     evidence: run.evidence,
   };
   const canBuild = runId !== undefined && run.phase === "planned" && !starting;
+  const signingIn = runId !== undefined && run.phase === "awaiting_sign_in";
+  const target = run.draftSpec?.url ?? briefTarget;
+
+  const refuseRun = useCallback(() => {
+    refused.current = true;
+    if (runId) forgetSession(runId);
+    setConfirmed(false);
+    setEvents([]);
+    setBriefTarget(undefined);
+    setEntries([
+      {
+        kind: "notice",
+        id: "events-not-found",
+        error: "not_found",
+        detail:
+          "This run is unavailable. Open one of your sessions or start a new session.",
+      },
+    ]);
+    setLayout({});
+    layoutChanged.current = false;
+    briefParts.current = [];
+    setView("spec");
+    setOffline(false);
+    setStarting(false);
+    setPending(false);
+    pollSoon.current = undefined;
+  }, [runId]);
+
+  // Lists this run among the browser's sessions, with its latest target and phase.
+  useEffect(() => {
+    if (runId && confirmed && !fixture && !refused.current)
+      rememberSession({ runId, target, phase: run.phase });
+  }, [runId, confirmed, target, run.phase, fixture]);
+
+  // Card positions are kept per session once there is a run to keep them under.
+  useEffect(() => {
+    if (runId && layoutChanged.current) saveLayout(runId, layout);
+  }, [runId, layout]);
+
+  const onLayout = (update: (layout: Layout) => Layout) => {
+    layoutChanged.current = true;
+    setLayout(update);
+  };
 
   // Follows the run's events from the orchestrator.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: initialRunId never changes
   useEffect(() => {
     if (!runId) return;
     let since = 0;
     let live = true;
+    // A reopened session has no chat yet, so its first batch brings the user's messages too.
+    let withUser = runId === initialRunId;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let busy = false;
     const poll = async () => {
       busy = true;
       const result = await fetchEvents(runId, since);
       busy = false;
-      if (!live) return;
-      setOffline(!result.ok && result.error !== "operator_token");
-      if (!result.ok && result.error === "operator_token") {
+      if (!live || refused.current) return;
+      if (!result.ok && result.error === "not_found") {
+        refuseRun();
+        return;
+      }
+      setOffline(!result.ok && result.error !== "access_required");
+      if (!result.ok && result.error === "access_required") {
         const { error, detail } = result;
         setEntries((list) =>
-          list.some((e) => e.id === EVENTS_TOKEN_NOTICE)
+          list.some((e) => e.id === EVENTS_ACCESS_NOTICE)
             ? list
             : [
                 ...list,
-                { kind: "notice", id: EVENTS_TOKEN_NOTICE, error, detail },
+                { kind: "notice", id: EVENTS_ACCESS_NOTICE, error, detail },
               ],
         );
       }
       if (result.ok) {
+        setConfirmed(true);
         const fresh = result.value.filter((event) => event.seq > since);
         if (fresh.length > 0) {
           since = Math.max(...fresh.map((event) => event.seq));
           setEvents((list) => [...list, ...fresh]);
           setStarting(false);
-          setEntries((list) => [...list, ...chatEntries(fresh)]);
+          const lines = chatEntries(fresh, { withUser });
+          withUser = false;
+          setEntries((list) => [...list, ...lines]);
         }
       }
       timer = setTimeout(poll, idle(phase.current) ? IDLE_POLL_MS : POLL_MS);
@@ -113,19 +202,48 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
       live = false;
       clearTimeout(timer);
     };
-  }, [runId]);
+  }, [runId, refuseRun]);
 
-  const addNotice = (error: RunCallError, id: string = crypto.randomUUID()) =>
+  const addNotice = (error: RunCallError, id: string = crypto.randomUUID()) => {
+    if (refused.current) return;
+    if (runId && error.error === "not_found") return refuseRun();
     setEntries((list) => [
       ...list,
       { kind: "notice", id, error: error.error, detail: error.detail },
     ]);
+  };
 
   const act = async (call: Promise<RunCallResult<unknown>>) => {
     const result = await call;
+    if (refused.current) return;
     if (result.ok) pollSoon.current?.();
     else {
       setStarting(false);
+      addNotice(result);
+    }
+  };
+
+  // The tab opens within the click so it is not blocked as a pop-up, and gets no handle on this page.
+  const openSignIn = async () => {
+    if (!runId) return;
+    const tab = window.open("", "_blank");
+    if (!tab) {
+      addNotice({
+        ok: false,
+        error: "failed",
+        detail: "Allow pop-ups for this site, then open secure sign-in again.",
+      });
+      return;
+    }
+    tab.opener = null;
+    const result = await startSignIn(runId);
+    if (refused.current) {
+      tab.close();
+      return;
+    }
+    if (result.ok) tab.location.href = result.value;
+    else {
+      tab.close();
       addNotice(result);
     }
   };
@@ -138,10 +256,12 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     );
 
   const send = async (id: string, text: string) => {
+    if (refused.current) return;
     setPending(true);
     const message =
       runId === undefined ? [...briefParts.current, text].join("\n") : text;
     const result = await deliver(runId, message);
+    if (refused.current) return;
     setPending(false);
     if (result.needsUrl) {
       briefParts.current.push(text);
@@ -155,7 +275,20 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
     setDelivery(id, result.error ? "failed" : "sent");
     if (result.runId && runId === undefined) {
       briefParts.current = [];
+      const briefUrl = parseBrief(message)?.url;
       setRunId(result.runId);
+      setConfirmed(true);
+      setBriefTarget(briefUrl);
+      // Recorded here too: the user may have switched sessions while the run was being created.
+      if (!fixture) rememberSession({ runId: result.runId, target: briefUrl });
+      // The run's ID goes in the URL so a refresh or a shared link reopens this session.
+      const state = window.history.state;
+      if (mounted.current)
+        navigate(
+          `/workspace/${result.runId}`,
+          { ...state, session: state?.session ?? "new" },
+          { replace: true },
+        );
     }
     const { error } = result;
     if (error) {
@@ -167,6 +300,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
   };
 
   const onSend = (text: string) => {
+    if (refused.current) return;
     const id = crypto.randomUUID();
     setEntries((list) => [
       ...list,
@@ -184,26 +318,6 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
         .map((e) => (e.id === id ? { ...entry, delivery: "sending" } : e)),
     );
     void send(id, entry.text);
-  };
-
-  // Signing in resends the message the notice stopped, if any; a refused action is pressed again.
-  const onSaveToken = async (token: string, noticeId: string) => {
-    const result = await signIn(token);
-    if (!result.ok) {
-      const { error, detail } = result;
-      setEntries((list) =>
-        list.map((e) =>
-          e.id === noticeId && e.kind === "notice"
-            ? { ...e, error, detail }
-            : e,
-        ),
-      );
-      return;
-    }
-    const messageId = noticeId.replace(/-notice$/, "");
-    if (messageId !== noticeId) return onRetry(messageId);
-    setEntries((list) => list.filter((e) => e.id !== noticeId));
-    pollSoon.current?.();
   };
 
   const onOverride = (override: Override) => {
@@ -230,6 +344,12 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
             <Mark />
             <span>Reversy</span>
           </a>
+          {!fixture && (
+            <SessionSwitcher
+              key={confirmed ? runId : "unconfirmed"}
+              current={runId && confirmed ? { runId, target } : undefined}
+            />
+          )}
           <nav className="ws-views" aria-label="Canvas view">
             {VIEWS.map(({ id, label }) => (
               <button
@@ -252,8 +372,33 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           <div className="ws-run">
             {run.phase && (
               <span className="ws-phase" role="status">
-                {PHASES[run.phase] ?? run.phase}
+                {phaseLabel(run.phase)}
               </span>
+            )}
+            {signingIn && runId && (
+              <>
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void openSignIn()}
+                >
+                  Open secure sign-in
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void act(runAction(runId, "sign-in/resume"))}
+                >
+                  Resume capture
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  onClick={() => void act(runAction(runId, "sign-in/skip"))}
+                >
+                  Skip sign-in
+                </button>
+              </>
             )}
             <button
               type="button"
@@ -274,9 +419,7 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
           className="ws-canvas"
           aria-label={`${VIEWS.find((v) => v.id === view)?.label} canvas`}
         >
-          {view === "spec" ? (
-            <SpecView canvas={canvas} />
-          ) : view === "preview" && runId ? (
+          {view === "preview" && runId ? (
             <PreviewView
               runId={runId}
               onRefused={(e) => addNotice(e)}
@@ -290,16 +433,46 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
               }
             />
           ) : (
-            <BuildView
-              draftSpec={canvas.draftSpec}
-              events={run.board}
-              onStopBuild={() => runId && void act(runAction(runId, "stop"))}
-              onOverride={onOverride}
-            />
+            <Canvas
+              key={refused.current ? "unavailable" : view}
+              layout={layout}
+              onLayout={onLayout}
+            >
+              {view === "spec" ? (
+                <SpecView
+                  canvas={canvas}
+                  onSaveReport={async (figureId, edit) => {
+                    if (!runId) return false;
+                    const result = await saveReportEdit(runId, figureId, edit);
+                    if (!result.ok) {
+                      addNotice(result);
+                      return false;
+                    }
+                    pollSoon.current?.();
+                    return true;
+                  }}
+                />
+              ) : (
+                <BuildView
+                  draftSpec={canvas.draftSpec}
+                  events={run.board}
+                  status={
+                    run.phase && WORKING.includes(run.phase)
+                      ? phaseLabel(run.phase)
+                      : undefined
+                  }
+                  onStopBuild={() =>
+                    runId && void act(runAction(runId, "stop"))
+                  }
+                  onOverride={onOverride}
+                />
+              )}
+            </Canvas>
           )}
         </main>
       </div>
       <ChatPanel
+        key={refused.current ? "unavailable" : "chat"}
         entries={
           offline
             ? [...entries, { kind: "reconnecting", id: "offline" }]
@@ -308,7 +481,6 @@ export function Workspace({ fixture }: { fixture?: WorkspaceFixture }) {
         pending={pending}
         onSend={onSend}
         onRetry={onRetry}
-        onSaveToken={onSaveToken}
       />
     </div>
   );

@@ -1,8 +1,9 @@
 import { VerifyRequest, type VerifyResponse } from "../../shared/verifier";
-import { VERIFIER_MODEL, VerifierError, verify } from "./verify";
+import { VerifierError, verify } from "./verify";
 
 export interface VerifierEnv {
-  ANTHROPIC_API_KEY?: string;
+  OPENAI_API_KEY?: string;
+  VERIFIER_MODEL?: string; // default gpt-6-luna
   VERIFIER_TOKEN?: string;
 }
 
@@ -37,9 +38,9 @@ export async function handleVerify(
   if (!(await tokenMatches(given, env.VERIFIER_TOKEN))) {
     return Response.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!env.ANTHROPIC_API_KEY) {
+  if (!env.OPENAI_API_KEY) {
     return Response.json(
-      { error: "Verifier unavailable: ANTHROPIC_API_KEY binding is missing" },
+      { error: "Verifier unavailable: OPENAI_API_KEY binding is missing" },
       { status: 503 },
     );
   }
@@ -57,11 +58,16 @@ export async function handleVerify(
     );
   }
   try {
-    const verdict = await verify(env.ANTHROPIC_API_KEY, parsed.data);
+    const verdict = await verify(
+      {
+        OPENAI_API_KEY: env.OPENAI_API_KEY,
+        VERIFIER_MODEL: env.VERIFIER_MODEL,
+      },
+      parsed.data,
+    );
     const response: VerifyResponse = {
       runId,
       kind: parsed.data.kind,
-      model: VERIFIER_MODEL,
       ...verdict,
     };
     return Response.json(response);

@@ -2,6 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 import { version } from "../../package.json";
 import { type DaytonaEnv, handleSandboxRoute } from "./daytona/routes";
 import { type EvidenceEnv, handleEvidence } from "./evidence/routes";
+import { type ExampleEnv, handleExample } from "./example/routes";
 import { handleOrchestrator, type OrchestratorEnv } from "./orchestrator/front";
 import { recordRunEvent } from "./records/records";
 import { handleRunsApi, type RunsEnv } from "./runs/api";
@@ -11,7 +12,7 @@ import { handleVerify, type VerifierEnv } from "./verifier/route";
 export default {
   async fetch(
     request: Request,
-    env: VerifierEnv & DaytonaEnv & EvidenceEnv & OrchestratorEnv,
+    env: VerifierEnv & DaytonaEnv & EvidenceEnv & OrchestratorEnv & ExampleEnv,
   ) {
     const { pathname } = new URL(request.url);
     if (request.method === "GET" && pathname === "/api/health") {
@@ -21,6 +22,9 @@ export default {
     if (request.method === "POST" && verify?.[1]) {
       return handleVerify(request, env, verify[1]);
     }
+    // The saved example is public and read-only.
+    const example = await handleExample(request, env);
+    if (example) return example;
     const sandbox = await handleSandboxRoute(request, env);
     if (sandbox) return sandbox;
     // Evidence routes run before the run API, which 404s every other /api/v1/ path.
@@ -33,7 +37,12 @@ export default {
     return Response.json({ error: "Not found" }, { status: 404 });
   },
 } satisfies ExportedHandler<
-  RunsEnv & VerifierEnv & DaytonaEnv & EvidenceEnv & OrchestratorEnv
+  RunsEnv &
+    VerifierEnv &
+    DaytonaEnv &
+    EvidenceEnv &
+    OrchestratorEnv &
+    ExampleEnv
 >;
 
 // The orchestrator's RECORDS service binding: run records into SurrealDB. Not reachable over HTTP.

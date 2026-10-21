@@ -14,6 +14,18 @@ describe("BuildBoard", () => {
     expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Stop build<\/button>/);
   });
 
+  it("shows what the run is doing while no tasks exist yet", () => {
+    const html = renderToStaticMarkup(
+      <BuildBoard
+        events={[]}
+        status="Inspecting the site"
+        onStopBuild={noop}
+      />,
+    );
+    expect(html).toContain("Inspecting the site");
+    expect(html).not.toContain("No build started.");
+  });
+
   it("keeps a failed task visible with its reason and next action", () => {
     // Test fixture only.
     const html = renderToStaticMarkup(

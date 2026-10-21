@@ -90,7 +90,7 @@ describe("Daytona shutdown", () => {
       };
       await expect(
         action === "create"
-          ? client().create({}, allocated)
+          ? client().create({}, undefined, allocated)
           : client().fork("main", allocated),
       ).rejects.toThrow("sandbox sb1 error");
       expect(owned).toEqual(["sb1"]);

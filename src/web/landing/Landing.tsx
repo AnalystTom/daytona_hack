@@ -15,7 +15,8 @@ export function Logo() {
 
 function StartLink({ className }: { className: string }) {
   return (
-    <a className={className} href="/start" onClick={followLink}>
+    // Opens the saved example run; it offers Start your own.
+    <a className={className} href="/workspace">
       Start a project
     </a>
   );
@@ -118,7 +119,7 @@ export function Landing() {
           <ul className="starter-links">
             {starterLinks.map(({ id, icon, tone }) => (
               <li key={id}>
-                <a href={`/start?starter=${id}`} onClick={followLink}>
+                <a href={`/start?starter=${id}`}>
                   <span className={`tile tile-${tone}`}>
                     <Icon name={icon} />
                   </span>

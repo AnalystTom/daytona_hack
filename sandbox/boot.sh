@@ -107,13 +107,13 @@ git config --global credential.helper store
 tea login delete reversy >/dev/null 2>&1 || true
 tea login add --name reversy --url "$FORGEJO_URL" --token "$token"
 
-# Codex: GPT 6.1 at high reasoning for Firstmate and every worker it launches.
+# Codex: high reasoning for Firstmate and every worker it launches.
 printenv OPENAI_API_KEY | codex login --with-api-key
 # Written once: Codex records its hook trust in this file, and rewriting it would drop that.
 mkdir -p "$HOME/.codex"
 if [ ! -f "$HOME/.codex/config.toml" ]; then
   cat >"$HOME/.codex/config.toml" <<EOF
-model = "gpt-6.1-sol"
+model = "gpt-6-luna"
 model_reasoning_effort = "high"
 
 [projects."$FM_HOME"]
@@ -126,7 +126,7 @@ fi
 mkdir -p "$FM_HOME/config" "$FM_HOME/data" "$FM_HOME/projects"
 printf 'codex\n' >"$FM_HOME/config/crew-harness"
 cat >"$FM_HOME/config/crew-dispatch.json" <<'EOF'
-{ "default": { "harness": "codex", "model": "gpt-6.1-sol", "effort": "high" } }
+{ "default": { "harness": "codex", "model": "gpt-6-luna", "effort": "high" } }
 EOF
 if [ ! -f "$FM_HOME/data/projects.md" ]; then
   printf '# Projects\n\n- rebuild [no-mistakes +yolo forge=forgejo] - Reversy rebuild for run %s (added %s)\n' \

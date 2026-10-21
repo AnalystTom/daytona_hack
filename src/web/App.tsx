@@ -1,18 +1,45 @@
 import { Landing } from "./landing/Landing";
-import { usePath } from "./router";
+import { useHistorySession, usePath } from "./router";
 import { Start } from "./start/Start";
+import { ExampleWorkspace } from "./workspace/ExampleWorkspace";
 import { specFixture } from "./workspace/fixtures";
 import { Workspace } from "./workspace/Workspace";
 
+// Bare /workspace shows the saved example until a session is started: Start your own, New
+// session and a brief from /start all give the history entry a session key.
+export function workspaceRoute(
+  path: string,
+  session: string | undefined,
+  fixture = false,
+): "example" | { runId?: string } | null {
+  const match = path.match(/^\/workspace(?:\/([\w-]{1,100}))?\/?$/);
+  if (!match) return null;
+  const runId = match[1];
+  if (runId === "example" || (!runId && !session && !fixture)) return "example";
+  return { runId };
+}
+
 export function App() {
   const path = usePath();
+  const session = useHistorySession();
   if (path === "/") return <Landing />;
   if (path === "/start") return <Start />;
-  if (path.replace(/\/$/, "") === "/workspace") {
-    const fixture =
-      import.meta.env.DEV &&
-      new URLSearchParams(window.location.search).get("fixture") === "spec";
-    return <Workspace fixture={fixture ? specFixture : undefined} />;
+  const fixture =
+    import.meta.env.DEV &&
+    new URLSearchParams(window.location.search).get("fixture") === "spec";
+  const workspace = workspaceRoute(path, session, fixture);
+  if (workspace === "example") return <ExampleWorkspace />;
+  if (workspace) {
+    const { runId } = workspace;
+    // Each session mounts its own workspace. A new session keeps its key when its run is
+    // created, so the URL can gain the run ID without starting over.
+    return (
+      <Workspace
+        key={session ?? runId ?? "new"}
+        runId={runId}
+        fixture={fixture ? specFixture : undefined}
+      />
+    );
   }
   // Every other path is still the placeholder shell.
   return (
