@@ -1,6 +1,12 @@
+import { createServer } from "node:http";
+import { runInNewContext } from "node:vm";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { CaptureEvent, EvidenceRecord } from "../../shared/evidence";
-import { CaptureError, captureRun } from "./capture";
+import {
+  type CaptureEvent,
+  CaptureScope,
+  type EvidenceRecord,
+} from "../../shared/evidence";
+import { CaptureError, captureRun, endSignIn, recordingCapMs } from "./capture";
 import {
   executeCodeResponse,
   fixturePageFacts,
@@ -9,12 +15,21 @@ import {
   recordingList,
 } from "./fixtures";
 import type { EvidenceStore, SignIn } from "./store";
+import * as anchor from "./anchor";
 
 const scope = { origin: "https://example.com", paths: ["/", "/pricing"] };
 
 // Fixture Anchor API: answers each endpoint with the documented response shape.
-function fakeAnchor(finalUrls: Record<string, string> = {}) {
-  const calls: { method: string; path: string; body?: unknown }[] = [];
+function fakeAnchor(
+  finalUrls: Record<string, string> = {},
+  options: { refuseCode?: boolean } = {},
+) {
+  const calls: {
+    method: string;
+    path: string;
+    body?: unknown;
+    sessionId: string | null;
+  }[] = [];
   let current = "";
   vi.stubGlobal(
     "fetch",
@@ -22,9 +37,18 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
       const url = new URL(input);
       const method = init.method ?? "GET";
       const body = init.body ? JSON.parse(String(init.body)) : undefined;
-      calls.push({ method, path: url.pathname, body });
+      calls.push({
+        method,
+        path: url.pathname,
+        body,
+        sessionId: url.searchParams.get("sessionId"),
+      });
       if (url.pathname === "/v1/sessions") return Response.json(fixtureSession);
       if (url.pathname === "/v1/tools/execute-code") {
+        if (options.refuseCode)
+          return new Response("code execution isn't enabled for this team", {
+            status: 403,
+          });
         const code: string = body.code;
         if (code.includes("page.goto")) {
           const target = JSON.parse(
@@ -37,8 +61,21 @@ function fakeAnchor(finalUrls: Record<string, string> = {}) {
           executeCodeResponse({ finalUrl: current, png: fixturePngBase64 }),
         );
       }
+      if (url.pathname === "/v1/tools/screenshot")
+        return new Response(Buffer.from(fixturePngBase64, "base64"), {
+          headers: { "content-type": "image/png" },
+        });
+      if (url.host !== "api.anchorbrowser.io") {
+        // The plain fetch that finds where a page lands: a redirect when the test names one.
+        const to = finalUrls[input];
+        return to
+          ? new Response(null, { status: 302, headers: { location: to } })
+          : new Response("<html></html>");
+      }
       if (url.pathname.endsWith("/recordings"))
         return Response.json(recordingList);
+      if (url.pathname.endsWith("/recordings/pause"))
+        return Response.json({ data: { status: "paused" } });
       if (url.pathname.endsWith("/recordings/primary/fetch")) {
         return new Response(new Uint8Array([0, 0, 0, 24]));
       }
@@ -87,6 +124,247 @@ function deps(store: EvidenceStore) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("captureRun (fixture Anchor responses)", () => {
+  it.each(["first_look", "full_pack"] as const)(
+    "preserves actual document and viewport URLs in %s artifacts",
+    async (mode) => {
+      fakeAnchor();
+      const finalUrl = "https://example.com/docs/?token=navigation";
+      const desktopUrl = "https://example.com/docs/?token=desktop";
+      const mobileUrl = "https://example.com/docs/?token=mobile";
+      const snippet = vi
+        .spyOn(anchor, "runSnippet")
+        .mockResolvedValueOnce(fixturePageFacts(finalUrl))
+        .mockResolvedValueOnce({ finalUrl: desktopUrl, png: fixturePngBase64 })
+        .mockResolvedValueOnce({ finalUrl: mobileUrl, png: fixturePngBase64 });
+      try {
+        const memory = memoryStore();
+        const { deps: d, events } = deps(memory.store);
+        await captureRun(d, "run_1", {
+          mode,
+          scope: { origin: scope.origin, paths: ["/docs"] },
+        });
+        const items = [...memory.records.values()];
+        expect(
+          items
+            .filter((item) => item.kind === "screenshot")
+            .map((item) => item.url),
+        ).toEqual(
+          mode === "full_pack" ? [desktopUrl, mobileUrl] : [desktopUrl],
+        );
+        if (mode === "full_pack") {
+          for (const kind of ["dom", "styles", "assets", "network"]) {
+            expect(items.find((item) => item.kind === kind)).toMatchObject({
+              url: finalUrl,
+              label: "observed",
+              pageOrState: "/docs",
+            });
+          }
+        }
+        expect(JSON.stringify(events)).not.toContain("token=");
+      } finally {
+        snippet.mockRestore();
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "closes the session and refuses further paid calls when the run expires between viewports (fallback=%s)",
+    async (refuseCode) => {
+      const calls = fakeAnchor({}, { refuseCode });
+      const memory = memoryStore();
+      const { deps: d } = deps(memory.store);
+      let expired = false;
+      const put = memory.store.putEvidence;
+      memory.store.putEvidence = async (record, bytes, signal) => {
+        await put(record, bytes, signal);
+        if (record.kind === "screenshot") expired = true;
+      };
+      await expect(
+        captureRun(
+          {
+            ...d,
+            beforeWork: async () => {
+              if (expired) throw new Error("Run reached its deadline");
+            },
+          },
+          "run_1",
+          { mode: "full_pack", scope },
+        ),
+      ).rejects.toThrow(/deadline/);
+      expect(
+        [...memory.records.values()].filter(
+          (record) => record.kind === "screenshot",
+        ),
+      ).toHaveLength(1);
+      expect(
+        calls.filter((call) => call.path === "/v1/tools/execute-code"),
+      ).toHaveLength(refuseCode ? 1 : 2);
+      expect(
+        calls.filter((call) => call.path === "/v1/tools/screenshot"),
+      ).toHaveLength(refuseCode ? 1 : 0);
+      expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+      expect(calls.some((call) => call.path.endsWith("/recordings"))).toBe(
+        false,
+      );
+    },
+  );
+
+  it("stores the actual query-dependent response returned to its executable navigation snippet", async () => {
+    const realFetch = globalThis.fetch;
+    const requested: string[] = [];
+    const server = createServer((request, response) => {
+      requested.push(request.url ?? "/");
+      const query = new URL(
+        request.url ?? "/",
+        "http://target.test",
+      ).searchParams.get("q");
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end(
+        query === "robots"
+          ? "<main>Robot search results</main>"
+          : query === "agents"
+            ? "<main>Agent search results</main>"
+            : "<main>Unfiltered results</main>",
+      );
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    try {
+      const address = server.address();
+      if (!address || typeof address === "string")
+        throw new Error("Missing test server address");
+      const origin = `http://127.0.0.1:${address.port}`;
+      const paths = [
+        "/search?q=robots&token=private",
+        "/search?q=agents&token=private",
+      ];
+      let current = "";
+      let html = "";
+      let viewport: { width: number; height: number } | undefined;
+      const page = {
+        setViewportSize: async (value: { width: number; height: number }) => {
+          viewport = value;
+        },
+        viewportSize: () => viewport,
+        waitForTimeout: async () => {},
+        waitForLoadState: async () => {},
+        on: () => {},
+        off: () => {},
+        goto: async (url: string) => {
+          const response = await realFetch(url);
+          current = response.url;
+          html = await response.text();
+        },
+        url: () => current,
+        content: async () => html,
+        evaluate: async (fn: () => unknown) =>
+          runInNewContext(`(${fn.toString()})()`, {
+            document: {
+              querySelectorAll: () => [],
+              styleSheets: [],
+              images: [],
+              fonts: [],
+            },
+          }),
+        screenshot: async () => Buffer.from(fixturePngBase64, "base64"),
+      };
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init: RequestInit = {}) => {
+          const url = new URL(input);
+          if (url.pathname === "/v1/sessions")
+            return Response.json(fixtureSession);
+          if (url.pathname === "/v1/tools/execute-code") {
+            const { code } = JSON.parse(String(init.body));
+            const output = await runInNewContext(
+              `(async () => {${code}})()`,
+              { page, URL, Buffer },
+              { timeout: 1000 },
+            );
+            return Response.json(executeCodeResponse(output));
+          }
+          if (init.method === "DELETE")
+            return Response.json({ data: { status: "ok" } });
+          if (url.pathname.endsWith("/recordings"))
+            return Response.json(recordingList);
+          if (url.pathname.endsWith("/recordings/primary/fetch"))
+            return new Response(new Uint8Array([0, 0, 0, 24]));
+          throw new Error(`Unexpected test request: ${url.pathname}`);
+        }),
+      );
+      const memory = memoryStore();
+      const { deps: d, events } = deps(memory.store);
+      const result = await captureRun(d, "run_1", {
+        mode: "full_pack",
+        scope: CaptureScope.parse({ origin, paths }),
+      });
+      expect(result.status).toBe("captured");
+      expect(requested).toEqual(paths);
+      const dom = [...memory.records.values()].filter(
+        (record) => record.kind === "dom",
+      );
+      expect(dom.map((record) => record.url)).toEqual(
+        paths.map((path) => origin + path),
+      );
+      expect(dom.map((record) => record.label)).toEqual([
+        "observed",
+        "observed",
+      ]);
+      expect(
+        dom.map((record) =>
+          new TextDecoder().decode(memory.content.get(record.id)),
+        ),
+      ).toEqual([
+        "<main>Robot search results</main>",
+        "<main>Agent search results</main>",
+      ]);
+      expect(JSON.stringify(events)).not.toContain("private");
+      expect(
+        events
+          .filter((event) => event.type === "evidence.page_captured")
+          .map((event) => event.message),
+      ).toEqual(["Captured /search", "Captured /search"]);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it("does not attribute a redirect into another approved query variant to the requested state", async () => {
+    const paths = [
+      "/search?q=robots&token=private",
+      "/search?q=agents&token=private",
+    ];
+    fakeAnchor({
+      [`https://example.com${paths[0]}`]: `https://example.com${paths[1]}`,
+    });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+    await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope: { origin: scope.origin, paths },
+    });
+    const requested = [...memory.records.values()].filter(
+      (record) => record.url === `https://example.com${paths[0]}`,
+    );
+    expect(requested.length).toBeGreaterThan(0);
+    expect(requested.every((record) => record.label === "not_observed")).toBe(
+      true,
+    );
+    expect(
+      [...memory.records.values()].find(
+        (record) =>
+          record.kind === "dom" &&
+          record.url === `https://example.com${paths[1]}`,
+      )?.label,
+    ).toBe("observed");
+    expect(JSON.stringify(events)).not.toContain("private");
+  });
+
   it("captures a full pack per page with hashes and a recording", async () => {
     const calls = fakeAnchor();
     const memory = memoryStore();
@@ -302,7 +580,225 @@ describe("captureRun (fixture Anchor responses)", () => {
   });
 });
 
+describe("captureRun without Anchor code execution", () => {
+  it("falls back to the screenshot tool and labels what it could not observe", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const memory = memoryStore();
+    const { deps: d, events } = deps(memory.store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "full_pack",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => `${i.kind} ${i.label}`)).toEqual([
+      "dom not_observed",
+      "styles not_observed",
+      "assets not_observed",
+      "network not_observed",
+      "screenshot inferred",
+      "screenshot inferred",
+      "recording not_observed",
+    ]);
+    for (const item of items.filter((i) => i.label === "not_observed"))
+      expect(item.limitations).toEqual([
+        "Anchor code execution is not enabled on this account",
+      ]);
+    const shot = items.find((i) => i.kind === "screenshot");
+    for (const item of items.filter((i) => i.kind === "screenshot"))
+      expect(item.limitations).toContain(
+        "captured with the fallback screenshot tool; the final page URL after scripts could not be verified, so it may show a redirect such as a sign-in page",
+      );
+    expect(memory.content.get(shot?.id ?? "")?.length).toBeGreaterThan(0);
+    const tool = calls.filter((c) => c.path === "/v1/tools/screenshot");
+    expect(tool.map((c) => c.sessionId)).toEqual([
+      fixtureSession.data.id,
+      fixtureSession.data.id,
+    ]);
+    expect(calls.find((c) => c.path === "/v1/sessions")?.body).toMatchObject({
+      browser: { sensitive_data_mask: { active: true } },
+    });
+    expect(tool.map((c) => c.body)).toEqual([
+      expect.objectContaining({ url: "https://example.com/", width: 1440 }),
+      expect.objectContaining({ url: "https://example.com/", width: 390 }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+    expect(events.at(-1)?.message).toBe(
+      "0 observed, 2 inferred, 5 not observed",
+    );
+  });
+
+  it("tries code execution once per run, not once per page", async () => {
+    const calls = fakeAnchor({}, { refuseCode: true });
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    expect(
+      result.status === "captured" && result.items.map((i) => i.label),
+    ).toEqual(["inferred", "inferred"]);
+
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/execute-code"),
+    ).toHaveLength(1);
+    expect(calls.filter((c) => c.path === "/v1/tools/screenshot")).toHaveLength(
+      2,
+    );
+    expect(
+      calls
+        .filter((c) => c.path === "/v1/tools/screenshot")
+        .map((c) => c.sessionId),
+    ).toEqual([fixtureSession.data.id, fixtureSession.data.id]);
+  });
+
+  it("still stops a page that lands outside the scope", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://login.example.net/" },
+      { refuseCode: true },
+    );
+    const { deps: d } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+  });
+});
+
+describe("captureRun landing check", () => {
+  it("marks a malformed redirect as not observed and continues to the next page", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://[" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", { mode: "first_look", scope });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed", "inferred"]);
+    expect(items[0]?.limitations).toEqual([
+      "Capture failed: the page's final URL could not be checked against the approved scope",
+    ]);
+    expect(
+      calls.filter((c) => c.path === "/v1/tools/screenshot").map((c) => c.body),
+    ).toEqual([
+      expect.objectContaining({ url: "https://example.com/pricing" }),
+    ]);
+    expect(events.map((e) => e.type)).toEqual([
+      "evidence.page_stopped",
+      "evidence.page_captured",
+      "evidence.capture_finished",
+    ]);
+    expect(calls.filter((c) => c.method === "DELETE")).toHaveLength(1);
+  });
+
+  it("refuses a redirect hop to a private host without fetching it", async () => {
+    const calls = fakeAnchor(
+      { "https://example.com/": "https://169.254.169.254/latest" },
+      { refuseCode: true },
+    );
+    const { deps: d, events } = deps(memoryStore().store);
+
+    const result = await captureRun(d, "run_1", {
+      mode: "first_look",
+      scope: { origin: "https://example.com", paths: ["/"] },
+    });
+
+    const items = result.status === "captured" ? result.items : [];
+    expect(items.map((i) => i.label)).toEqual(["not_observed"]);
+    expect(events[0]?.type).toBe("evidence.page_stopped");
+    expect(calls.some((c) => c.path === "/v1/tools/screenshot")).toBe(false);
+    expect(vi.mocked(fetch).mock.calls.map(([u]) => String(u))).not.toContain(
+      "https://169.254.169.254/latest",
+    );
+  });
+});
+
 describe("captureRun limits", () => {
+  it("pauses the recording 30 seconds into the session", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = fakeAnchor();
+      const anchorFetch = fetch;
+      // The second page load passes the 30-second mark.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init?: RequestInit) => {
+          if (String(init?.body).includes("/pricing"))
+            vi.advanceTimersByTime(recordingCapMs);
+          return anchorFetch(input, init);
+        }),
+      );
+      const { deps: d } = deps(memoryStore().store);
+
+      const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+      const paths = calls.map((c) => c.path);
+      expect(paths.filter((p) => p.endsWith("/recordings/pause"))).toHaveLength(
+        1,
+      );
+      // Paused before the session ends.
+      expect(
+        paths.findIndex((p) => p.endsWith("/recordings/pause")),
+      ).toBeLessThan(calls.findIndex((c) => c.method === "DELETE"));
+      const items = result.status === "captured" ? result.items : [];
+      expect(items.at(-1)?.limitations[0]).toContain("first 30 seconds");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never pauses a capture that ends within 30 seconds", async () => {
+    const calls = fakeAnchor();
+    const { deps: d } = deps(memoryStore().store);
+    await captureRun(d, "run_1", { mode: "full_pack", scope });
+    expect(calls.some((c) => c.path.endsWith("/recordings/pause"))).toBe(false);
+  });
+
+  it("does not fetch or keep a recording when pausing at 30 seconds fails", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const calls = fakeAnchor();
+      const anchorFetch = fetch;
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: string, init?: RequestInit) => {
+          if (input.endsWith("/recordings/pause"))
+            return new Response("pause failed", { status: 503 });
+          if (String(init?.body).includes("/pricing"))
+            await vi.advanceTimersByTimeAsync(recordingCapMs);
+          return anchorFetch(input, init);
+        }),
+      );
+      const { deps: d } = deps(memoryStore().store);
+
+      const result = await captureRun(d, "run_1", { mode: "full_pack", scope });
+
+      const items = result.status === "captured" ? result.items : [];
+      expect(items.at(-1)).toMatchObject({
+        kind: "recording",
+        label: "not_observed",
+        byteLength: 0,
+      });
+      expect(items.at(-1)?.limitations[0]).toContain(
+        "pausing it at 30 seconds failed",
+      );
+      expect(calls.some((c) => c.path.includes("recordings"))).toBe(false);
+      expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips a recording too large to store", async () => {
     fakeAnchor();
     const big = structuredClone(recordingList);
@@ -371,9 +867,71 @@ describe("captureRun limits", () => {
       captureRun(d, "run_1", { mode: "first_look", scope }),
     ).rejects.toThrow("SurrealDB request failed");
   });
+
+  it("fails the capture when recording storage fails without relabeling it", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    const putEvidence = memory.store.putEvidence;
+    memory.store.putEvidence = async (record, content) => {
+      if (record.kind === "recording" && record.label === "observed")
+        throw new Error("SurrealDB recording write failed");
+      await putEvidence(record, content);
+    };
+    const { deps: d, events } = deps(memory.store);
+
+    await expect(
+      captureRun(d, "run_1", { mode: "full_pack", scope }),
+    ).rejects.toThrow("SurrealDB recording write failed");
+
+    expect(
+      [...memory.records.values()].some((r) => r.kind === "recording"),
+    ).toBe(false);
+    expect(events.some((e) => e.type === "evidence.capture_finished")).toBe(
+      false,
+    );
+    expect(calls.some((c) => c.method === "DELETE")).toBe(true);
+  });
 });
 
 describe("captureRun sign-in scope", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "requires sign-in again when the saved session expires at browser call %i",
+    async (failAt) => {
+      const calls = fakeAnchor();
+      const respond = vi.mocked(fetch).getMockImplementation()!;
+      let snippets = 0;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (
+          new URL(String(input)).pathname === "/v1/tools/execute-code" &&
+          ++snippets === failAt
+        )
+          return new Response("Session expired", { status: 404 });
+        return respond(input, init);
+      });
+      const memory = memoryStore();
+      memory.signIns.set("run_1", {
+        sessionId: "expired-session",
+        origin: scope.origin,
+      });
+      const { deps: d, events } = deps(memory.store);
+      await expect(
+        captureRun(d, "run_1", { mode: "full_pack", scope, signIn: "resume" }),
+      ).rejects.toMatchObject({
+        status: 409,
+        message: expect.stringContaining("open secure sign-in again"),
+      });
+      expect(memory.signIns.has("run_1")).toBe(false);
+      expect(calls.at(-1)).toMatchObject({
+        method: "DELETE",
+        path: "/v1/sessions/expired-session",
+      });
+      expect(snippets).toBe(failAt);
+      expect(events.some((e) => e.type === "evidence.capture_finished")).toBe(
+        false,
+      );
+    },
+  );
+
   it("refuses to resume a sign-in session on a different origin", async () => {
     const calls = fakeAnchor();
     const memory = memoryStore();
@@ -393,6 +951,54 @@ describe("captureRun sign-in scope", () => {
 });
 
 describe("captureRun session cleanup", () => {
+  it.each([1, 2, 3, 4, 5, 6])(
+    "closes on cancellation at browser call %i and discards its late result",
+    async (stopAt) => {
+      const calls = fakeAnchor();
+      const respond = vi.mocked(fetch).getMockImplementation()!;
+      let enter!: () => void;
+      const entered = new Promise<void>((done) => {
+        enter = done;
+      });
+      let release!: () => void;
+      const pending = new Promise<void>((done) => {
+        release = done;
+      });
+      let snippets = 0;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        if (
+          new URL(String(input)).pathname === "/v1/tools/execute-code" &&
+          ++snippets === stopAt
+        ) {
+          enter();
+          await pending;
+        }
+        return respond(input, init);
+      });
+      const memory = memoryStore();
+      const { deps: d, events } = deps(memory.store);
+      const controller = new AbortController();
+      const result = captureRun({ ...d, signal: controller.signal }, "run_1", {
+        mode: "full_pack",
+        scope,
+      });
+      await entered;
+      const ids = [...memory.records.keys()];
+      const emitted = [...events];
+      controller.abort();
+      expect(calls.at(-1)).toMatchObject({
+        method: "DELETE",
+        path: `/v1/sessions/${fixtureSession.data.id}`,
+      });
+      release();
+      await expect(result).rejects.toMatchObject({ name: "AbortError" });
+      expect([...memory.records.keys()]).toEqual(ids);
+      expect(events).toEqual(emitted);
+      expect(snippets).toBe(stopAt);
+      expect(calls.filter((call) => call.method === "DELETE")).toHaveLength(1);
+    },
+  );
+
   it("ends the new sign-in session when saving it fails", async () => {
     const calls = fakeAnchor();
     const { store } = memoryStore();
@@ -445,5 +1051,24 @@ describe("captureRun session cleanup", () => {
       }),
     );
     expect(memory.signIns.get("run_1")?.sessionId).toBe(fixtureSession.data.id);
+  });
+
+  it("ends and forgets a run's saved sign-in session", async () => {
+    const calls = fakeAnchor();
+    const memory = memoryStore();
+    memory.signIns.set("run_1", {
+      sessionId: "old-session",
+      origin: "https://example.com",
+    });
+
+    await endSignIn({ anchorApiKey: "key", store: memory.store }, "run_1");
+
+    expect(calls).toEqual([
+      expect.objectContaining({
+        method: "DELETE",
+        path: "/v1/sessions/old-session",
+      }),
+    ]);
+    expect(memory.signIns.has("run_1")).toBe(false);
   });
 });

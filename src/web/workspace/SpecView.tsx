@@ -1,32 +1,12 @@
-import { useEffect, useState } from "react";
 import type {
   CanvasEvidence,
   DraftSpec,
   SpecCanvas,
 } from "../../shared/workspace";
-import { fetchEvidence } from "./runClient";
-
-// Run evidence needs the operator token, so it is fetched and shown from a blob URL.
-function useEvidenceSrc(src: string) {
-  const fromRun = src.startsWith("/api/");
-  const [blobUrl, setBlobUrl] = useState<string>();
-  useEffect(() => {
-    if (!fromRun) return;
-    let url: string | undefined;
-    let live = true;
-    void fetchEvidence(src).then((result) => {
-      if (!live || !result.ok) return;
-      url = URL.createObjectURL(result.value);
-      setBlobUrl(url);
-    });
-    return () => {
-      live = false;
-      if (url) URL.revokeObjectURL(url);
-      setBlobUrl(undefined);
-    };
-  }, [src, fromRun]);
-  return fromRun ? blobUrl : src;
-}
+import { notObservedReason } from "../../shared/evidence";
+import { CanvasItem } from "./Canvas";
+import { ReportCard } from "./ReportCard";
+import { useEvidenceSrc } from "./useEvidenceSrc";
 
 const NOT_CONFIRMED = "Not confirmed yet";
 
@@ -63,6 +43,11 @@ export function DraftSpecCard({ spec }: { spec: DraftSpec }) {
         ) : (
           <p className="muted">{NOT_CONFIRMED}</p>
         )}
+        {spec.redirectedFrom && spec.url && (
+          <p className="muted">
+            You entered {spec.redirectedFrom}; it redirects to {spec.url}.
+          </p>
+        )}
       </section>
       <section className="spec-field">
         <h3>Pages and flows</h3>
@@ -90,24 +75,31 @@ function EvidenceCaption({ item }: { item: CanvasEvidence }) {
 }
 
 function ScreenshotCard({ item }: { item: CanvasEvidence }) {
-  const src = useEvidenceSrc(item.src);
+  const { src, error } = useEvidenceSrc(item.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">
         <ImageIcon />
         <h2 className="card-title">Target screenshot</h2>
       </header>
-      <img
-        className="evidence-media"
-        src={src}
-        alt={`Screenshot of ${item.pageOrState}`}
-      />
+      {!item.src ? (
+        <p className="muted">{notObservedReason(item.limitations.join(" "))}</p>
+      ) : error ? (
+        <p role="status">Source screenshot unavailable.</p>
+      ) : (
+        <img
+          className="evidence-media"
+          src={src}
+          alt={`Screenshot of ${item.pageOrState}`}
+        />
+      )}
       <EvidenceCaption item={item} />
     </article>
   );
 }
 
 function VideoCard({ item }: { item?: CanvasEvidence }) {
+  const { src } = useEvidenceSrc(item?.src ?? "");
   return (
     <article className="card evidence-card">
       <header className="card-head">
@@ -117,7 +109,7 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
       {item ? (
         <>
           {/* biome-ignore lint/a11y/useMediaCaption: captured recordings have no caption track */}
-          <video className="evidence-media" src={item.src} controls />
+          <video className="evidence-media" src={src} controls />
           <EvidenceCaption item={item} />
         </>
       ) : (
@@ -127,10 +119,71 @@ function VideoCard({ item }: { item?: CanvasEvidence }) {
   );
 }
 
-export function SpecView({ canvas }: { canvas: SpecCanvas }) {
+const SHOWN_FINDINGS = 12;
+
+function CodeFindings({ items }: { items: CanvasEvidence[] }) {
+  return (
+    <ul className="code-findings">
+      {items.map((item) => (
+        <li key={item.id}>
+          <span>{item.summary}</span>
+          <span className="code-locator" title={item.contentHash}>
+            {item.locator ?? item.contentHash}
+            {item.label === "inferred" && (
+              <span className="evidence-label"> Inferred</span>
+            )}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// One card for REA's static reading of the shipped bundles: each finding with its locator and hash.
+function CodeCard({ items }: { items: CanvasEvidence[] }) {
+  const found = items.filter((e) => e.label !== "not_observed");
+  const missing = items.find((e) => e.label === "not_observed");
+  const shown = found.slice(0, SHOWN_FINDINGS);
+  return (
+    <article className="card evidence-card">
+      <header className="card-head">
+        <CodeIcon />
+        <h2 className="card-title">Code evidence</h2>
+      </header>
+      {shown.length ? (
+        <CodeFindings items={shown} />
+      ) : (
+        <p className="muted">
+          {missing?.summary ?? "No code evidence"}
+          {missing?.limitations.length ? `: ${missing.limitations[0]}` : ""}
+        </p>
+      )}
+      {found.length > shown.length && (
+        <details>
+          <summary className="link-button">
+            Show all {found.length} findings
+          </summary>
+          <CodeFindings items={found.slice(SHOWN_FINDINGS)} />
+        </details>
+      )}
+      <p className="evidence-caption">
+        <span>Static reading by {items[0]?.tool}, not executed</span>
+      </p>
+    </article>
+  );
+}
+
+export function SpecView({
+  canvas,
+  onSaveReport,
+}: {
+  canvas: SpecCanvas;
+  onSaveReport?: React.ComponentProps<typeof ReportCard>["onSave"];
+}) {
   const screenshots = canvas.evidence.filter((e) => e.kind === "screenshot");
   const recordings = canvas.evidence.filter((e) => e.kind === "recording");
-  if (!canvas.draftSpec && canvas.evidence.length === 0) {
+  const code = canvas.evidence.filter((e) => e.kind === "bundle");
+  if (!canvas.draftSpec && !canvas.report && canvas.evidence.length === 0) {
     return (
       <div className="empty-state">
         <EmptyIcon />
@@ -141,15 +194,53 @@ export function SpecView({ canvas }: { canvas: SpecCanvas }) {
   }
   return (
     <div className="spec-board">
-      {canvas.draftSpec && <DraftSpecCard spec={canvas.draftSpec} />}
+      {canvas.draftSpec && (
+        <CanvasItem id="draft-spec" label="Draft spec" className="spec-card">
+          <DraftSpecCard spec={canvas.draftSpec} />
+        </CanvasItem>
+      )}
+      {canvas.report && (
+        <CanvasItem
+          id="report"
+          label="Report dissection"
+          className="report-card"
+        >
+          <ReportCard
+            report={canvas.report}
+            evidence={canvas.evidence}
+            onSave={onSaveReport}
+          />
+        </CanvasItem>
+      )}
       <div className="evidence-column">
         {screenshots.map((item) => (
-          <ScreenshotCard key={item.id} item={item} />
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`screenshot of ${item.pageOrState}`}
+          >
+            <ScreenshotCard item={item} />
+          </CanvasItem>
         ))}
         {recordings.map((item) => (
-          <VideoCard key={item.id} item={item} />
+          <CanvasItem
+            key={item.id}
+            id={`evidence-${item.id}`}
+            label={`recording of ${item.pageOrState}`}
+          >
+            <VideoCard item={item} />
+          </CanvasItem>
         ))}
-        {canvas.draftSpec && recordings.length === 0 && <VideoCard />}
+        {code.length > 0 && (
+          <CanvasItem id="code-evidence" label="Code evidence">
+            <CodeCard items={code} />
+          </CanvasItem>
+        )}
+        {canvas.draftSpec && recordings.length === 0 && (
+          <CanvasItem id="video-evidence" label="Video evidence">
+            <VideoCard />
+          </CanvasItem>
+        )}
       </div>
     </div>
   );
@@ -176,6 +267,14 @@ function VideoIcon() {
   return (
     <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
       <path d="M3 7h12v10H3z M15 11l6-3v8l-6-3" />
+    </svg>
+  );
+}
+
+function CodeIcon() {
+  return (
+    <svg className="icon" viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M8 7l-5 5 5 5 M16 7l5 5-5 5 M14 4l-4 16" />
     </svg>
   );
 }

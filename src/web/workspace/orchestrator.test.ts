@@ -56,15 +56,25 @@ const events = [
   ev("evidence", {
     id: "ev_002",
     page: "/",
-    kind: "html",
-    tool: "fetch",
+    kind: "dom",
+    tool: "anchor",
     status: "observed",
     capturedAt: "2026-10-16T12:00:00.000Z",
     hash: "sha256:def",
     limits: "",
-    summary: "Landing HTML",
+    summary: "dom of /",
   }),
-  ev("evidence", { id: "routes", page: "/", kind: "links", routes: ["/"] }),
+  ev("evidence", {
+    id: "ev_003",
+    page: "session: /",
+    kind: "recording",
+    tool: "anchor",
+    status: "observed",
+    capturedAt: "2026-10-16T12:00:00.000Z",
+    hash: "sha256:fed",
+    limits: "First 30 seconds",
+    url: "/runs/r1/evidence/ev_003",
+  }),
   ev("spec", spec),
   ev("chat", { role: "assistant", text: "Which pages should we include?" }),
   ev("spec", { ...spec, approved: true, revision: 1 }),
@@ -124,6 +134,17 @@ describe("chatEntries", () => {
       { kind: "agent", id: "run-24", text: "Task t02 failed review twice." },
     ]);
   });
+
+  it("brings back the user's messages for a reopened session", () => {
+    const lines = chatEntries(events, { withUser: true });
+    expect(lines.filter((line) => line.kind === "user")).not.toHaveLength(0);
+    expect(lines.find((line) => line.kind === "user")).toMatchObject({
+      delivery: "sent",
+    });
+    expect(lines.filter((line) => line.kind !== "user")).toEqual(
+      chatEntries(events),
+    );
+  });
 });
 
 describe("runView", () => {
@@ -142,7 +163,7 @@ describe("runView", () => {
     });
   });
 
-  it("shows screenshots through the run API and leaves other evidence out", () => {
+  it("shows screenshots and recordings through the run API and leaves other evidence out", () => {
     expect(view.evidence).toEqual([
       {
         id: "ev_001",
@@ -155,6 +176,48 @@ describe("runView", () => {
         limitations: ["Desktop viewport only"],
         src: "/api/v1/runs/r1/evidence/ev_001",
       },
+      {
+        id: "ev_003",
+        kind: "recording",
+        label: "observed",
+        pageOrState: "session: /",
+        tool: "anchor",
+        capturedAt: "2026-10-16T12:00:00.000Z",
+        contentHash: "sha256:fed",
+        limitations: ["First 30 seconds"],
+        src: "/api/v1/runs/r1/evidence/ev_003",
+      },
+    ]);
+  });
+
+  it("shows the entered URL's redirect and a card for a screenshot that was not observed", () => {
+    const redirected = runView("r2", [
+      ev("spec", {
+        ...spec,
+        url: "https://www.wikipedia.org/",
+        redirects: ["https://www.wikipedia.com/", "https://www.wikipedia.org/"],
+      }),
+      ev("evidence", {
+        id: "ev_009",
+        page: "/ @ desktop 1440",
+        kind: "screenshot",
+        tool: "anchor",
+        status: "not_observed",
+        capturedAt: "2026-10-16T12:00:00.000Z",
+        hash: "sha256:00",
+        limits: "Capture failed: Anchor POST sessions failed with 403",
+      }),
+    ]);
+    expect(redirected.draftSpec).toMatchObject({
+      url: "https://www.wikipedia.org/",
+      redirectedFrom: "https://www.wikipedia.com/",
+    });
+    expect(redirected.evidence).toEqual([
+      expect.objectContaining({
+        id: "ev_009",
+        label: "not_observed",
+        src: undefined,
+      }),
     ]);
   });
 
@@ -273,5 +336,23 @@ describe("runView", () => {
     expect(later.board.at(-1)?.message).toBe(
       "GPT verifier (gpt-6.1-sol) failed: Off",
     );
+  });
+  it("shows unavailable replacements as not observed", () => {
+    const screenshot = events.find((e) => e.type === "evidence");
+    expect(screenshot).toBeDefined();
+    if (!screenshot) throw new Error("Missing screenshot event");
+    const replaced = runView("r1", [
+      screenshot,
+      ev("evidence", {
+        ...(screenshot.data as Record<string, unknown>),
+        status: "not_observed",
+        url: undefined,
+      }),
+    ]).evidence;
+    expect(replaced).toHaveLength(1);
+    expect(replaced[0]).toMatchObject({
+      label: "not_observed",
+      src: undefined,
+    });
   });
 });

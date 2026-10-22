@@ -2,9 +2,9 @@ import { expect, it, vi } from "vitest";
 import orchestrator from "../src/index";
 import type { Env } from "../src/types";
 import { handleOrchestrator } from "../../src/worker/orchestrator/front";
-import { fetchPreviewLink, signIn } from "../../src/web/workspace/runClient";
+import { fetchPreviewLink } from "../../src/web/workspace/runClient";
 
-it("obtains preview links only after signing in through the session API", async () => {
+it("obtains variant preview links only through an authenticated run route", async () => {
   const forwarded: string[] = [];
   const url = "https://3000-signed.proxy.daytona.works/";
   const previewLink = vi.fn(
@@ -22,33 +22,26 @@ it("obtains preview links only after signing in through the session API", async 
       },
     } as unknown as Fetcher,
   };
-  let cookie = "";
+  let authorized = false;
   const fetchImpl = (async (input: string, init: RequestInit = {}) => {
     const headers = new Headers(init.headers);
     headers.set("origin", "https://reversy.test");
-    if (cookie) headers.set("cookie", cookie);
+    if (authorized) headers.set("authorization", "Bearer operator-secret");
     const response = await handleOrchestrator(
       new Request(`https://reversy.test${input}`, { ...init, headers }),
       env,
     );
     if (!response) throw new Error("Unknown route");
-    const setCookie = response.headers.get("set-cookie");
-    if (setCookie) cookie = setCookie.split(";")[0]!;
     return response;
   }) as typeof fetch;
   expect(await fetchPreviewLink("r1", undefined, fetchImpl)).toMatchObject({
     ok: false,
-    error: "operator_token",
   });
   expect(await fetchPreviewLink("r1", "v1", fetchImpl)).toMatchObject({
     ok: false,
-    error: "operator_token",
   });
   expect(forwarded).toEqual([]);
-  expect(await signIn("operator-secret", fetchImpl)).toEqual({
-    ok: true,
-    value: undefined,
-  });
+  authorized = true;
   expect(await fetchPreviewLink("r1", undefined, fetchImpl)).toEqual({
     ok: true,
     value: url,
@@ -72,7 +65,6 @@ it("obtains preview links only after signing in through the session API", async 
   env.OPERATOR_TOKEN = "rotated";
   expect(await fetchPreviewLink("r1", "v1", fetchImpl)).toMatchObject({
     ok: false,
-    error: "operator_token",
   });
   expect(previewLink).toHaveBeenCalledTimes(2);
 });

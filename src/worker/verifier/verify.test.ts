@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../index";
 
-// Test fixtures only: a minimal evidence pack, plan and mocked Anthropic responses.
+// Test fixtures only: a minimal evidence pack, plan and mocked OpenAI responses.
 const evidenceItem = (id: string) => ({
   id,
   kind: "screenshot",
@@ -44,16 +44,15 @@ const taskBody = {
   },
 };
 
-const modelReply = (text: string, stopReason = "end_turn") =>
+const modelReply = (text: string, finishReason = "stop") =>
   Response.json({
-    id: "msg_1",
-    type: "message",
-    role: "assistant",
-    model: "claude-opus-5-5",
-    content: [{ type: "text", text }],
-    stop_reason: stopReason,
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 10 },
+    model: "anthropic/claude-opus-5-5",
+    choices: [
+      {
+        message: { role: "assistant", content: text },
+        finish_reason: finishReason,
+      },
+    ],
   });
 
 const mockModel = (response: Response) => {
@@ -62,7 +61,7 @@ const mockModel = (response: Response) => {
   return fetchMock;
 };
 
-const env = { ANTHROPIC_API_KEY: "test-key", VERIFIER_TOKEN: "test-token" };
+const env = { OPENAI_API_KEY: "test-key", VERIFIER_TOKEN: "test-token" };
 
 const callVerify = (
   body: unknown,
@@ -87,8 +86,8 @@ afterEach(() => {
 
 describe("POST /api/v1/runs/:id/verify", () => {
   it.each([
-    ["VERIFIER_TOKEN", { ANTHROPIC_API_KEY: "test-key" }],
-    ["ANTHROPIC_API_KEY", { VERIFIER_TOKEN: "test-token" }],
+    ["VERIFIER_TOKEN", { OPENAI_API_KEY: "test-key" }],
+    ["OPENAI_API_KEY", { VERIFIER_TOKEN: "test-token" }],
   ])(
     "returns 503 naming a missing %s without calling the model",
     async (name, bindings) => {
@@ -173,7 +172,7 @@ describe("POST /api/v1/runs/:id/verify", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("calls Opus 5.5 at high effort with structured output and returns a pass", async () => {
+  it("calls OpenAI at high effort with structured output and returns a pass", async () => {
     const fetchMock = mockModel(
       modelReply(
         JSON.stringify({
@@ -188,7 +187,7 @@ describe("POST /api/v1/runs/:id/verify", () => {
     expect(await response.json()).toEqual({
       runId: "run_1",
       kind: "plan",
-      model: "claude-opus-5-5",
+      model: "anthropic/claude-opus-5-5",
       verdict: "pass",
       summary: "Plan traces.",
       findings: [],
@@ -198,16 +197,19 @@ describe("POST /api/v1/runs/:id/verify", () => {
       string,
       RequestInit,
     ];
-    expect(url).toBe("https://api.anthropic.com/v1/messages");
-    expect(new Headers(init.headers).get("x-api-key")).toBe("test-key");
+    expect(url).toBe("https://api.openai.com/v1/chat/completions");
+    expect(new Headers(init.headers).get("authorization")).toBe(
+      "Bearer test-key",
+    );
     const sent = JSON.parse(init.body as string);
-    expect(sent.model).toBe("claude-opus-5-5");
-    expect(sent.output_config.effort).toBe("high");
-    expect(sent.output_config.format.type).toBe("json_schema");
-    expect(sent.thinking).toBeUndefined();
-    expect(sent.messages[0].content).toContainEqual({
-      type: "image",
-      source: { type: "base64", media_type: "image/png", data: "iVBORw0K" },
+    expect(sent.model).toBe("gpt-6-luna");
+    expect(sent.reasoning_effort).toBe("high");
+    expect(sent.max_completion_tokens).toBe(16000);
+    expect(sent).not.toHaveProperty("max_tokens");
+    expect(sent.response_format.type).toBe("json_schema");
+    expect(sent.messages[1].content).toContainEqual({
+      type: "image_url",
+      image_url: { url: "data:image/png;base64,iVBORw0K" },
     });
   });
 
@@ -268,7 +270,7 @@ describe("POST /api/v1/runs/:id/verify", () => {
     expect(await response.json()).not.toHaveProperty("verdict");
   });
 
-  it.each(["max_tokens", "refusal"])(
+  it.each(["length", "content_filter"])(
     "reports a %s stop as an error, never a pass",
     async (stopReason) => {
       mockModel(
@@ -286,10 +288,7 @@ describe("POST /api/v1/runs/:id/verify", () => {
   it("reports a model API error as an error, never a pass", async () => {
     mockModel(
       Response.json(
-        {
-          type: "error",
-          error: { type: "authentication_error", message: "invalid x-api-key" },
-        },
+        { error: { message: "invalid api key", code: 401 } },
         { status: 401 },
       ),
     );

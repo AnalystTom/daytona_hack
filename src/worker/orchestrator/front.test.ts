@@ -129,17 +129,11 @@ describe("run routes", () => {
     expect(await call("/api/health")).toBeNull();
   });
 
-  it("creates a run with the operator token and a checked URL", async () => {
+  it("creates a run with a checked URL", async () => {
     const { env, seen } = setup(() =>
       Response.json({ id: "r1" }, { status: 201 }),
     );
     const goal = "Rebuild the landing page";
-    const anonymous = await call(
-      "/api/v1/runs",
-      { method: "POST", json: { url: "https://example.com", goal } },
-      env,
-    );
-    expect(anonymous?.status).toBe(401);
     const local = await call(
       "/api/v1/runs",
       {
@@ -170,7 +164,7 @@ describe("run routes", () => {
     });
   });
 
-  it("guards every action that steers a run", async () => {
+  it("refuses every action that steers a run unless it comes from our own origin", async () => {
     const { env, seen } = setup();
     for (const action of [
       "messages",
@@ -180,13 +174,16 @@ describe("run routes", () => {
       "override",
       "variants",
       "promote",
+      "sign-in",
+      "sign-in/resume",
+      "sign-in/skip",
     ]) {
       const response = await call(
         `/api/v1/runs/r1/${action}`,
         { method: "POST", json: {} },
         env,
       );
-      expect(response?.status).toBe(401);
+      expect(response?.status).toBe(403);
     }
     expect(seen).toHaveLength(0);
   });
@@ -216,9 +213,18 @@ describe("run routes", () => {
     expect(
       (await post("override", { taskId: "t02", verdict: "maybe" }))?.status,
     ).toBe(400);
-    for (const action of ["approve", "build", "stop", "variants"]) {
+    for (const action of [
+      "approve",
+      "build",
+      "stop",
+      "variants",
+      "sign-in",
+      "sign-in/resume",
+      "sign-in/skip",
+    ]) {
       expect((await post(action))?.status).toBe(200);
     }
+    expect((await post("sign-in/other"))?.status).toBe(404);
     expect((await post("promote", { variantId: "v2" }))?.status).toBe(200);
     expect((await post("promote", { variantId: "../x" }))?.status).toBe(400);
     expect((await post("delete"))?.status).toBe(404);
@@ -231,18 +237,21 @@ describe("run routes", () => {
       "POST /runs/r1/build {}",
       "POST /runs/r1/stop {}",
       "POST /runs/r1/variants {}",
+      "POST /runs/r1/sign-in {}",
+      "POST /runs/r1/sign-in/resume {}",
+      "POST /runs/r1/sign-in/skip {}",
       'POST /runs/r1/promote {"variantId":"v2"}',
     ]);
   });
 
-  it("needs the operator token to read state, events and evidence", async () => {
+  it("refuses a wrong token and cannot name an owner without a store", async () => {
     const { env, seen } = setup();
     for (const path of [
       "/api/v1/runs/r1",
       "/api/v1/runs/r1/events?since=0",
       "/api/v1/runs/r1/evidence/ev_001",
     ]) {
-      expect((await call(path, {}, env))?.status).toBe(401);
+      expect((await call(path, {}, env))?.status).toBe(503);
       expect(
         (await call(path, { headers: { authorization: "Bearer nope" } }, env))
           ?.status,
@@ -265,6 +274,9 @@ describe("run routes", () => {
     const shot = await get("/api/v1/runs/r1/evidence/ev_001");
     expect(shot?.headers.get("content-type")).toBe("image/png");
     expect(await shot?.text()).toBe("png");
+    // Captured site content must never run on this origin.
+    expect(shot?.headers.get("content-security-policy")).toContain("sandbox");
+    expect(shot?.headers.get("x-content-type-options")).toBe("nosniff");
     expect((await get("/api/v1/runs/r1/events?since=x"))?.status).toBe(400);
     expect((await get("/api/v1/runs/r1/evidence/../x"))?.status).toBe(404);
     expect(seen.map((s) => s.url)).toEqual([
@@ -302,6 +314,37 @@ describe("run routes", () => {
     expect(await built?.json()).toEqual({ id: "r1", phase: "building" });
   });
 
+  it.each(["/api/v1/runs", "/api/v1/orchestrator/runs"])(
+    "preserves JSON evidence bytes through %s",
+    async (prefix) => {
+      const bytes = new TextEncoder().encode(
+        '{\n  "sandboxId": "string", "nested": {"sandboxId": "number"}\n}\n',
+      );
+      const { env } = setup(
+        () =>
+          new Response(bytes, {
+            headers: {
+              "content-type": "application/json",
+              "access-control-allow-origin": "*",
+            },
+          }),
+      );
+      const response = await call(
+        `${prefix}/r1/evidence/ev_001`,
+        { headers: operator },
+        env,
+      );
+      expect(response?.status).toBe(200);
+      expect(new Uint8Array(await response!.arrayBuffer())).toEqual(bytes);
+      expect(response?.headers.get("content-type")).toBe("application/json");
+      expect(response?.headers.get("content-security-policy")).toContain(
+        "sandbox",
+      );
+      expect(response?.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(response?.headers.get("access-control-allow-origin")).toBeNull();
+    },
+  );
+
   it("answers 404 for a run the orchestrator does not know", async () => {
     const { env } = setup(() => new Response(undefined, { status: 200 }));
     const response = await call(
@@ -329,4 +372,32 @@ describe("run routes", () => {
       message: reason,
     });
   });
+});
+
+it("validates and forwards report edits behind the existing operator gate", async () => {
+  const { env, seen } = setup();
+  const path = "/api/v1/runs/report-run/report-edit";
+  const json = { figureId: "f1", edit: { label: "User label", value: "580" } };
+  expect((await call(path, { method: "POST", json }, env))?.status).toBe(403);
+  expect(seen).toHaveLength(0);
+  expect(
+    (await call(path, { method: "POST", headers: operator, json }, env))
+      ?.status,
+  ).toBe(200);
+  expect(seen[0]?.url).toBe("https://orchestrator/runs/report-run/report-edit");
+  expect(JSON.parse(seen[0]?.body ?? "")).toEqual(json);
+  expect(
+    (
+      await call(
+        path,
+        {
+          method: "POST",
+          headers: operator,
+          json: { ...json, edit: { label: "", value: "1" } },
+        },
+        env,
+      )
+    )?.status,
+  ).toBe(400);
+  expect(seen).toHaveLength(1);
 });

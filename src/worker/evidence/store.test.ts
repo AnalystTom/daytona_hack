@@ -58,6 +58,33 @@ function fakeSurreal(responses: unknown[]) {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("surrealStore (fixture SurrealDB responses)", () => {
+  it.each([3, 2 * 1024 * 1024 + 1])(
+    "stops a cancelled %i-byte upload before further chunks or its record",
+    async (size) => {
+      const controller = new AbortController();
+      const requests = fakeSurreal([]);
+      const respond = vi.mocked(fetch).getMockImplementation()!;
+      vi.mocked(fetch).mockImplementation(async (input, init) => {
+        const response = await respond(input, init);
+        if (requests.length === 1) controller.abort();
+        return response;
+      });
+      await expect(
+        surrealStore(db()).putEvidence(
+          { ...record, byteLength: size },
+          new Uint8Array(size),
+          controller.signal,
+        ),
+      ).rejects.toMatchObject({ name: "AbortError" });
+      expect(requests).toHaveLength(1);
+      expect(requests[0]?.vars.chunk).toMatchObject({
+        evidence: record.id,
+        index: 0,
+      });
+      expect(requests[0]?.vars.row).toBeUndefined();
+    },
+  );
+
   it("writes content chunks before the record, with namespace and auth headers", async () => {
     const requests = fakeSurreal([]);
     await surrealStore(db()).putEvidence(record, new Uint8Array([60, 104, 62]));

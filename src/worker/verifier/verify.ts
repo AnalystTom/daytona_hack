@@ -1,12 +1,17 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
+import { z } from "zod";
+import {
+  DEFAULT_OPENAI_MODEL,
+  OPENAI_URL,
+  parseJsonReply,
+  withJsonSchema,
+} from "../../shared/openai";
 import {
   VerifierVerdict,
   type VerifyKind,
   type VerifyRequest,
 } from "../../shared/verifier";
 
-export const VERIFIER_MODEL = "claude-opus-5-5";
+const verdictSchema = z.toJSONSchema(VerifierVerdict);
 
 // Any failure to get a valid verdict. Callers report it as an error, never as a pass.
 export class VerifierError extends Error {}
@@ -31,69 +36,91 @@ const CHECKS: Record<VerifyKind, string> = {
 };
 
 export async function verify(
-  apiKey: string,
+  env: { OPENAI_API_KEY: string; VERIFIER_MODEL?: string },
   request: VerifyRequest,
-): Promise<VerifierVerdict> {
-  const client = new Anthropic({ apiKey });
+): Promise<VerifierVerdict & { model: string }> {
   const { screenshots, ...rest } = request;
-  let message: Anthropic.Message;
+  let body: ChatCompletion;
   try {
     // shortcut: non-streaming caps output at 16k tokens; a truncated verdict is reported as an error. Switch to streaming if that happens in practice.
-    message = await client.messages.create({
-      model: VERIFIER_MODEL,
-      max_tokens: 16000,
-      system: SYSTEM,
-      output_config: {
-        effort: "high",
-        format: zodOutputFormat(VerifierVerdict),
+    const res = await fetch(`${OPENAI_URL}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
       },
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: JSON.stringify(rest, null, 2) },
-            ...screenshots.flatMap((shot): Anthropic.ContentBlockParam[] => [
-              {
-                type: "text",
-                text: `Screenshot for evidence ${shot.evidenceId}:`,
-              },
-              {
-                type: "image",
-                source: {
-                  type: "base64",
-                  media_type: shot.mediaType,
-                  data: shot.data,
-                },
-              },
-            ]),
-            { type: "text", text: CHECKS[request.kind] },
-          ],
+      body: JSON.stringify({
+        model: env.VERIFIER_MODEL || DEFAULT_OPENAI_MODEL,
+        max_completion_tokens: 16000,
+        reasoning_effort: "high",
+        response_format: {
+          type: "json_schema",
+          json_schema: {
+            name: "verdict",
+            strict: true,
+            schema: verdictSchema,
+          },
         },
-      ],
+        messages: [
+          {
+            role: "system",
+            content: withJsonSchema(SYSTEM, verdictSchema),
+          },
+          {
+            role: "user",
+            content: [
+              { type: "text", text: JSON.stringify(rest, null, 2) },
+              ...screenshots.flatMap((shot) => [
+                {
+                  type: "text",
+                  text: `Screenshot for evidence ${shot.evidenceId}:`,
+                },
+                {
+                  type: "image_url",
+                  image_url: {
+                    url: `data:${shot.mediaType};base64,${shot.data}`,
+                  },
+                },
+              ]),
+              { type: "text", text: CHECKS[request.kind] },
+            ],
+          },
+        ],
+      }),
     });
+    body = (await res.json()) as ChatCompletion;
+    if (!res.ok)
+      throw new Error(`${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
   } catch (error) {
     throw new VerifierError(
       `Verifier model call failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  return parseVerdict(message, request);
+  return { ...parseVerdict(body, request), model: body.model ?? "openai" };
+}
+
+interface ChatCompletion {
+  model?: string;
+  choices?: {
+    message?: { content?: string | null };
+    finish_reason?: string;
+  }[];
 }
 
 function parseVerdict(
-  message: Anthropic.Message,
+  body: ChatCompletion,
   request: VerifyRequest,
 ): VerifierVerdict {
-  if (message.stop_reason !== "end_turn") {
+  const choice = body.choices?.[0];
+  if (choice?.finish_reason !== "stop") {
     throw new VerifierError(
-      `Verifier model stopped with ${message.stop_reason}, no verdict`,
+      `Verifier model stopped with ${choice?.finish_reason}, no verdict`,
     );
   }
-  const text = message.content
-    .flatMap((block) => (block.type === "text" ? [block.text] : []))
-    .join("");
+  const text = choice.message?.content ?? "";
   let json: unknown;
   try {
-    json = JSON.parse(text);
+    json = parseJsonReply(text);
   } catch {
     throw new VerifierError("Verifier model returned malformed JSON");
   }

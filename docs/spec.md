@@ -1,7 +1,7 @@
 # Reversy: product spec
 
 Reversy ("Take it apart. Make it yours.") is a reverse-engineering assistant.
-The user gives a site and a goal in chat, refines the scope in conversation, and watches agents inspect the site and rebuild it on a shared canvas.
+The user gives a URL and a goal in chat, refines the scope in conversation, and watches agents work on a shared canvas.
 Daytona HackSprint, New York, 16 October 2026.
 
 This file and [`orchestrator/spec.md`](orchestrator/spec.md) sit alongside *Reversy implementation specification, Revision 2* (the detailed handoff: routes, schemas, limits, security and acceptance tests).
@@ -11,13 +11,13 @@ That board revision replaces the earlier confirmation form, six-stage stepper an
 
 ## 1. Public landing page and app entry
 
-The path into the product: public landing page → chat start (Entry A) → Spec canvas → Build and review.
+Product entry and session navigation follow the [workspace usage guide](../README.md#workspace). Website runs move through the Spec canvas to Build and review; the [financial report dissection](#financial-report-dissection) stays in Spec.
 
 ### Public landing page
 
 ![Public landing page](screens/board-landing.png)
 
-The landing page introduces Reversy, explains the workflow and leads into chat.
+The landing page introduces Reversy and explains the workflow.
 
 - **Header:** Reversy (beaver logo), "How it works" (scrolls to the workflow), "Workspace" (scrolls to the workspace preview), and **Start a project**.
 - **Hero:** "Take it apart. Make it yours." with "Turn a website into a clear spec, captured evidence, and a build you can review.", **Start a project**, "See how it works", and the chainsaw beaver.
@@ -28,7 +28,7 @@ The landing page introduces Reversy, explains the workflow and leads into chat.
 
 Rules:
 
-- Every **Start a project** button opens Entry A. There is no separate questionnaire or duplicate brief entry.
+- Every **Start a project** button follows the [workspace entry behavior](../README.md#workspace). There is no separate questionnaire or duplicate brief entry.
 - A starter link opens Entry A with an editable draft. Choosing a starter never begins capture or a build; a missing URL or file is asked for in chat.
 - The page stays honest: the workspace preview is labelled as a concept until real app media replaces it, and there are no invented users, testimonials, scores, results or speed claims.
 
@@ -37,31 +37,33 @@ Rules:
 ![Entry A: chat start with the beaver and starter prompts](screens/board-entry-a.png)
 
 - A centred greeting ("What would you like to make yours?", "Share a website and a goal. We'll refine the rest in chat."), one composer and the beaver.
-- Four starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Work from screenshots, Inspect a website.
+- Three starters, which are prompt suggestions rather than past projects: Rebuild Daytona's landing page (`https://www.daytona.io/`), Recreate one interaction, Inspect a website.
 - A starter fills an editable draft; Send carries the same brief into the workspace chat.
 - Keep attachments and typed edits through validation or session failures, never ask for them twice, prevent duplicate submissions, and keep Send disabled while empty.
 
-### Entry B: direct entry into an empty workspace
+### Entry B: empty workspace
 
 ![Entry B: empty workspace with the chat ready](screens/board-entry-b.png)
 
-- Opening the workspace directly shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
+- An empty session shows an empty canvas ("Your work starts here: the spec and evidence appear here as you refine the brief.") with the chat on the right asking for a URL and goal in one message.
 - No questionnaire or input form, and no spec, capture or task card until it actually exists.
 - A brief sent from the landing page or Entry A arrives already in the chat instead of this empty state.
 
-## 2. One workspace: canvas on the left, chat on the right
+## 2. Session workspaces: canvas on the left, chat on the right
 
-The app shell is minimal: a canvas plus a right-hand chat.
+Each run has its own workspace: a canvas plus a right-hand chat.
 There is no left navigation sidebar, giant title, numbered stepper, decorative mascot scene or separate Compare screen.
-The header holds the Reversy name, three canvas views (**Spec**, **Build** and **Preview**) and a **Start build** button.
+The header holds the Reversy name, session menu, **Spec**, **Build** and **Preview** views, and a **Start build** button.
+Session navigation, browser persistence and canvas controls are documented in the [workspace usage guide](../README.md#workspace).
 
 **Chat is how the user and Reversy talk.**
 The user gives a URL and a goal, then refines the scope in conversation; questions and follow-ups stay in the chat panel, not in a form.
 Answers update the living spec on the canvas.
 The chat stays visible while Reversy inspects, plans and builds, and is where the user steers and clarifies scope.
+Reversy addresses the user as "you", without a title or nickname.
 
 **The canvas holds the work.**
-Spec, Build and Preview show different objects in the same environment; [workspace usage](../README.md#run-api) describes the preview and promotion controls.
+Spec, Build and Preview show different objects in the same environment; [workspace usage](../README.md#workspace) describes the preview and promotion controls.
 
 ## 3. Spec view: refine the brief in chat, build the spec on the canvas
 
@@ -70,8 +72,9 @@ Spec, Build and Preview show different objects in the same environment; [workspa
 The canvas is the specification and evidence surface:
 
 - **Draft spec** card: the target URL, pages and flows, and open questions. Anything not yet agreed is shown as "Not confirmed yet".
-- **Target screenshot** cards: real screenshots captured from the site.
-- **Video evidence** cards: real recordings of interactions, or "No recording yet".
+- **Target screenshot** cards follow the [workspace guide's screenshot and unavailable-evidence behavior](../README.md#workspace).
+- **Video evidence** cards: real recordings from the [evidence contract](orchestrator/spec.md#6-evidence), or "No recording yet".
+- **Code evidence** card follows the [workspace guide's findings and unavailable-analysis behavior](../README.md#workspace).
 - Each piece of evidence links to its page or flow.
 
 The board's raster is a layout reference only; the live canvas shows the original captured artifacts.
@@ -81,7 +84,7 @@ When a page needs an account, an inline state asks the user to open secure sign-
 
 ![Build view: kanban with Queued, Building, In review and Merged](screens/workspace-build-review.png)
 
-- **Start build** needs an approved, saved spec. Until then the board reads "No build started: tasks appear after the spec is approved."
+- **Start build** is enabled when the run reaches `planned`. Before tasks arrive, the board shows the run's inspection, planning, plan-ready or building phase; otherwise it reads "No build started. Tasks appear after the spec is approved."
 - The kanban has four columns, **Queued**, **Building**, **In review** and **Merged**, driven by real task events. **Stop build** halts the work.
 - Selecting a task opens its log, preview and review on the canvas.
 - A submitted task links to its real diff and visual evidence. The reviewer's verdict and reason appear only once recorded.
@@ -93,26 +96,38 @@ When a page needs an account, an inline state asks the user to open secure sign-
 **Steering:** the user can message the orchestrator at any time and override a review verdict.
 A message that changes the approved spec becomes a proposed change; applying it creates a new spec revision for approval rather than editing a running build.
 
-## 5. Scope for this version
+## 5. Run scope and first demo target
 
-Demo target: `https://www.daytona.io/` (Daytona has agreed).
-Two pieces of work run in parallel, each split into tasks on the kanban:
+Website runs take their scope from the user's brief and chat, with at most one round of short clarification questions: **frontend** (pages and interactions), **backend** (routes, APIs, response shapes and content delivery), or **both**. Report briefs use the separate [report scope](#financial-report-dissection).
+A backend-only run does not copy or build the frontend. Any site can be the target; the first demo does not limit other runs.
+The agent system's [evidence rules](orchestrator/spec.md#6-evidence) describe what inspection can currently observe and its limits.
 
-1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown on the canvas, of how it changes the page and the visitor's path through it.
-2. **One signed-in flow:** create a sandbox, with a mock back end that has the same routes and response shapes as the original. v2 rebuilds the back end properly.
+Product content and API payload values must come from observed real application data, never placeholder, mock, synthetic, invented or fabricated values.
+A known response shape or inferred route does not establish content values. Missing values require an explicit loading, empty, unavailable or error state; unavailable data must not be presented as an observed empty dataset.
+This applies throughout chat, planning, implementation, review and verification, including deliberate changes. Test fakes stay in tests, and capture must not expand to collect private values.
+The [agent evidence rules](orchestrator/spec.md#6-evidence) define the API response for unavailable data.
 
-The three alternatives are pods forked from the finished landing-page rebuild.
-Daytona VM fork is the target; until it is enabled on our account, pods are copies from a snapshot and labelled as copies.
-The user can promote an alternative; building then continues from that alternative's snapshot.
+First website demo target: `https://www.daytona.io/` (Daytona has agreed).
+Its two pieces of work are each split into tasks on the kanban:
 
-At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
+1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown in Preview, of how it changes the page and the visitor's path through it.
+2. **One signed-in flow:** create a sandbox, using the observed routes and response shapes subject to the data rules above.
 
-### Financial reports (not in the demo)
+Variant eligibility and promotion follow the [orchestrator API](orchestrator/api.md#variants).
 
-Financial reports are left out of the demo for now.
-Later, Reversy can reconstruct financial reports as well as websites.
-Given a published report, it rebuilds the tables, charts and key figures as an editable, working version, and every number links back to the place in the source where it was found.
-It uses the same loop as a site: chat to agree scope, evidence captured from the source, a plan of tasks on the kanban, review against the evidence, and verification.
+Preview controls and deployment availability follow the [workspace guide](../README.md#workspace).
+
+### Financial report dissection
+
+A user types a report's address with an instruction such as “Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.” That brief is routed to report dissection like any other brief: one question round in chat, then the user approves the plan. Nothing is hard-coded to one report; the Goldman Sachs article on global AI investment is the reference example.
+The draft spec starts with **report** scope and retains it through clarification, even if the chat model proposes a website scope.
+It captures the live article and embedded investment chart, extracts observed figures with source quotes and locations, and runs bounded online research into the original reports and datasets.
+The [extraction rules](orchestrator/spec.md#report-dissection) define article filtering, periods, sentence-based deduplication, fallback names and supported quantities, including ranges such as “2%-5% of GDP”. The canvas shows short figure names and their captured locations, with repeated locations available for inspection. The chart's published data is read into an investment-breakdown table per chart source (rows by series), or listed as not observed with the reason when it cannot be read.
+The canvas shows an editable report dissection beside the spec and screenshot, with original values retained and unavailable information marked not observed.
+Selecting a figure shows its captured quotation and location, any observed screenshot region, and the full independently captured source quotation when available.
+"Observed" means read from the article or its embedded chart; it does not establish independent verification. "Exact source quote match" requires the [bounded quote-evidence rule](orchestrator/spec.md#report-dissection); uncertain comparisons show "Unverified online" with both available quotations retained.
+Edits preserve captured originals and visibly mark edited figures, including labels and values in chart cells; chart captions distinguish user edits from published data. The [records contract](orchestrator/spec.md#12-records) describes persistence. If capture, research or persistence fails, the run fails explicitly with its real error so the user can retry. Report captures are never borrowed from another run.
+This path starts no build workers or variants; REA and changes to login or account management are out of scope. The website workflow remains available separately.
 A figure Reversy could not read is marked "not observed", never filled in.
 
 ## 6. Mascot
@@ -138,29 +153,29 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Piece | Use |
 |---|---|
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
-| Daytona | Runs the Codex workers in one sandbox per run (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; VM fork for variants once enabled |
+| Daytona | Runs the Codex workers in run sandboxes (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; [variant pods](orchestrator/api.md#variants) |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | External records and Agent Memory; storage ownership and guarantees are in the [agent system's records section](orchestrator/spec.md#12-records) |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
-| GPT 6.1 via the OpenAI API | Orchestrator (also the chat agent), Codex workers, review and the verifier; all models are OpenAI |
+| Model providers | Routing and model selection follow the [agent configuration](orchestrator/spec.md#4-agents) |
 
 Decided since Revision 2, which lists these as open or says otherwise:
 
 - First site: daytona.io, with Daytona's permission.
 - Repository: new, `AnalystTom/daytona_hack`.
-- Runtime models: all OpenAI, GPT 6.1 for the agents and the verifier.
+- Runtime models: see the [agent configuration](orchestrator/spec.md#4-agents).
 - Hosting: Cloudflare Workers.
 - Build engine: the Reversy orchestrator, a Cloudflare Durable Object per run, enhanced with full Anchor capture, running Codex workers in one Daytona sandbox. Workers run commands inside their sandbox, replacing Revision 2's no-shell agent loop. Firstmate in Daytona with no-mistakes review is a second engine for later.
 - The orchestrator is private: only our site calls it, and only we can test it.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
-- Each run is limited to 2 hours.
-- A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
+- Run admission and lifetime limits are defined in the [README's access policy](../README.md#sign-in-with-cloudflare-access).
+- Verifier outcomes follow the [agent verifier contract](orchestrator/spec.md#9-verifier).
 - Recordings are capped at 30 seconds.
-- Runs are secure: a run ID alone never gives access; every run route requires the existing OPERATOR_TOKEN; after the operator enters that token once, the browser holds a signed, expiring, HttpOnly session cookie instead, so the app and event stream work.
-- Out of the demo for now: REA, financial reports, and user accounts, sign-ups or a login system (the existing token gates stay).
-- Scope: landing page plus one flow, built in parallel, with three landing-page alternatives. This replaces Revision 2's limit of two pods.
-- Storage: see the [agent system's records section](orchestrator/spec.md#12-records).
-- UI: the minimal canvas workspace described in section 2 replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
+- Run authentication and workspace ownership follow the [README's access policy](../README.md#who-can-use-runs).
+- Report scope and exclusions: see [Financial report dissection](#financial-report-dissection). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).
+- Run scope and the first demo target: see section 5.
+- Storage: see the [agent system records section](orchestrator/spec.md#12-records).
+- UI: the [session workspace](#2-session-workspaces-canvas-on-the-left-chat-on-the-right) replaces Revision 2's six screens, stepper, confirmation form and Compare screen.
 - Mascot: the chainsaw beaver replaces the cream robot.
 
 Still open: the hard spend cap, and which sponsor accounts actually work.

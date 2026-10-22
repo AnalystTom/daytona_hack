@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ReportDissection } from "../../shared/report";
 import type { BuildEvent } from "../../shared/build";
 import type { CanvasEvidence, DraftSpec } from "../../shared/workspace";
 import type { ChatEntry } from "./chat";
@@ -17,7 +18,9 @@ export type OrchestratorEvent = z.infer<typeof OrchestratorEvent>;
 const Chat = z.object({ role: z.string(), text: z.string() });
 const ErrorData = z.object({ message: z.string() });
 const Spec = z.object({
+  scope: z.enum(["frontend", "backend", "both", "report"]).optional(),
   url: z.string(),
+  redirects: z.array(z.string()).optional(),
   pages: z.array(
     z.object({
       path: z.string(),
@@ -44,6 +47,8 @@ const Evidence = z.object({
   capturedAt: z.iso.datetime({ offset: true }),
   hash: z.string(),
   limits: z.string(),
+  summary: z.string().optional(),
+  locator: z.string().optional(),
   url: z.string().optional(),
 });
 const Task = z.object({
@@ -86,6 +91,8 @@ const EVIDENCE_PATH = /^\/runs\/[\w-]+\/evidence\/[\w-]+$/;
 
 export type RunView = {
   phase?: string;
+  scope?: z.infer<typeof Spec>["scope"];
+  report?: ReportDissection;
   hasPreview: boolean;
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
@@ -93,14 +100,22 @@ export type RunView = {
   variants: VariantView[];
 };
 
-// Chat lines for new events. The user's own messages are already in the chat, so they are skipped.
-export function chatEntries(events: readonly OrchestratorEvent[]): ChatEntry[] {
+// Chat lines for new events. The user's own messages are already in the chat, so they are
+// skipped unless `withUser` is set (a session reopened from its link starts with an empty chat).
+export function chatEntries(
+  events: readonly OrchestratorEvent[],
+  { withUser = false } = {},
+): ChatEntry[] {
   return events.flatMap((event): ChatEntry[] => {
     const id = `run-${event.seq}`;
     if (event.type === "chat") {
       const chat = Chat.safeParse(event.data);
-      return chat.success && chat.data.role === "assistant"
-        ? [{ kind: "agent", id, text: chat.data.text }]
+      if (!chat.success) return [];
+      if (chat.data.role === "assistant") {
+        return [{ kind: "agent", id, text: chat.data.text }];
+      }
+      return withUser && chat.data.role === "user"
+        ? [{ kind: "user", id, text: chat.data.text, delivery: "sent" }]
         : [];
     }
     if (event.type === "error") {
@@ -150,30 +165,53 @@ export function runView(
   for (const event of events) {
     const { data } = event;
     switch (event.type) {
+      case "report": {
+        const report = ReportDissection.safeParse(data);
+        if (report.success) view.report = report.data;
+        break;
+      }
       case "spec": {
         const spec = Spec.safeParse(data);
-        if (spec.success) view.draftSpec = draftSpec(spec.data);
+        if (spec.success) {
+          view.draftSpec = draftSpec(spec.data);
+          view.scope = spec.data.scope;
+        }
         break;
       }
       case "evidence": {
         const item = Evidence.safeParse(data);
         if (!item.success) break;
         const e = item.data;
-        // Only screenshots have a card; other evidence feeds the plan.
-        if (e.kind !== "screenshot" || !e.url || !EVIDENCE_PATH.test(e.url)) {
-          break;
-        }
-        view.evidence = view.evidence.filter((x) => x.id !== e.id);
-        view.evidence.push({
+        const base = {
           id: e.id,
-          kind: "screenshot",
           label: e.status,
           pageOrState: e.page,
           tool: e.tool,
           capturedAt: e.capturedAt,
           contentHash: e.hash || "unknown",
           limitations: e.limits ? [e.limits] : [],
-          src: `/api/v1${e.url}`,
+        };
+        view.evidence = view.evidence.filter((x) => x.id !== e.id);
+        // REA's static reading of the shipped bundles: no file, just what was found and where.
+        if (e.kind === "code") {
+          view.evidence.push({
+            ...base,
+            kind: "bundle",
+            summary: e.summary,
+            locator: e.locator,
+          });
+          break;
+        }
+        // Screenshots and recordings have a card; other evidence feeds the plan.
+        const kind = e.kind === "recording" ? "recording" : "screenshot";
+        // A screenshot that was not observed still gets a card saying why.
+        const missing = e.status === "not_observed" && kind === "screenshot";
+        if (e.kind !== kind) break;
+        if (!missing && !(e.url && EVIDENCE_PATH.test(e.url))) break;
+        view.evidence.push({
+          ...base,
+          kind,
+          src: missing ? undefined : `/api/v1${e.url}`,
         });
         break;
       }
@@ -297,6 +335,10 @@ function draftSpec(spec: z.infer<typeof Spec>): DraftSpec {
   ];
   return {
     url: isWebLink(spec.url) ? spec.url : undefined,
+    redirectedFrom:
+      spec.redirects?.[0] && isWebLink(spec.redirects[0])
+        ? spec.redirects[0]
+        : undefined,
     pagesAndFlows: pagesAndFlows.length ? pagesAndFlows : undefined,
     openQuestions: spec.openQuestions.length ? spec.openQuestions : undefined,
     status: spec.approved ? "approved" : "draft",
