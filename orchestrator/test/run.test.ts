@@ -1435,7 +1435,9 @@ describe("Run", () => {
         summary: pass ? "Verified" : "Needs repair",
         findings: [],
       });
-      vi.spyOn(services,"remember").mockRejectedValue(new Error("memory unavailable"));
+      const memoryWrite = vi
+        .spyOn(services, "remember")
+        .mockRejectedValue(new Error("memory unavailable"));
       const dependent = pass && !variantId;
       const { run, persisted, ready, scheduled } = fakeRun(
         {
@@ -1455,6 +1457,7 @@ describe("Run", () => {
       await expect(run.override("t1", "approve", "Accept")).rejects.toThrow(
         "memory unavailable",
       );
+      memoryWrite.mockRestore();
       const active = !pass || dependent;
       const phase = active ? (variantId ? "variants" : "building") : "done";
       const view = runView("run-1", await run.events(0));
@@ -1518,14 +1521,18 @@ describe("Run", () => {
     vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
     mockFetch({ pass: true, summary: "Verified", findings: [] });
     const report =
-        stage === "plan" || stage === "final"
-          ? `Verifier on ${stage}`
-          : stage.startsWith("review")
-            ? "Review of"
-            : stage === "build_setup"
-              ? "Build started"
-              : "Variants from";
-    vi.spyOn(services,"remember").mockImplementation(async (_env,_scope,text)=>{if(text.startsWith(report)) throw new Error("memory unavailable");});
+      stage === "plan" || stage === "final"
+        ? `Verifier on ${stage}`
+        : stage.startsWith("review")
+          ? "Review of"
+          : stage === "build_setup"
+            ? "Build started"
+            : "Variants from";
+    vi.spyOn(services, "remember").mockImplementation(
+      async (_env, _scope, text) => {
+        if (text.startsWith(report)) throw new Error("memory unavailable");
+      },
+    );
     const provider = fetch;
     vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
@@ -1752,14 +1759,29 @@ describe("Run", () => {
     const entered = deferred();
     const release = deferred();
     mockFetch({ pass: false, summary: "Needs repair", findings: [] });
-    const report=target === "promotion" ? "Promoted variant" : `Verifier on ${target === "task" ? "t1" : target}`;
-    vi.spyOn(services,"remember").mockImplementation(async (_env,_scope,text)=>{
-      if(delay.startsWith("report") && text.startsWith(report)) {entered.resolve();await release.promise;if(delay === "report_error") throw new Error("memory unavailable");}
-    });
+    const report =
+      target === "promotion"
+        ? "Promoted variant"
+        : `Verifier on ${target === "task" ? "t1" : target}`;
+    vi.spyOn(services, "remember").mockImplementation(
+      async (_env, _scope, text) => {
+        if (delay.startsWith("report") && text.startsWith(report)) {
+          entered.resolve();
+          await release.promise;
+          if (delay === "report_error") throw new Error("memory unavailable");
+        }
+      },
+    );
     const provider = fetch;
     vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
-      if(delay === "verifier" && body.response_format?.json_schema?.name === "verify_plan") {entered.resolve();await release.promise;}
+      if (
+        delay === "verifier" &&
+        body.response_format?.json_schema?.name === "verify_plan"
+      ) {
+        entered.resolve();
+        await release.promise;
+      }
       if (body.response_format?.json_schema?.name === "plan")
         return reply({ output_text: JSON.stringify({ tasks: [] }) });
       return provider(input, init);

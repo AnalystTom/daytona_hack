@@ -150,7 +150,7 @@ export async function primaryRecording(
   const primary =
     data?.items?.find((item) => item.is_primary) ?? data?.items?.[0];
   if (!primary) return null;
-  // The file is held in memory and base64-encoded for SurrealDB, within a 128 MB Worker.
+  // The file is held in memory and uploaded to private R2, within a 128 MB Worker.
   const checkSize = (bytes: number) => {
     if (bytes > maxRecordingBytes) {
       throw new AnchorError(

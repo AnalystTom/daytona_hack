@@ -37,7 +37,10 @@ const record = (over: Partial<EvidenceRecord> = {}): EvidenceRecord => ({
   ...over,
 });
 
-afterEach(() => {vi.unstubAllGlobals();vi.restoreAllMocks();});
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
+});
 
 describe("captureScope", () => {
   it("keeps the site's origin and unique paths, capped at ten", () => {
@@ -217,9 +220,16 @@ describe("capture", () => {
       }),
     );
     const originalRows = D1RunStore.prototype.rows;
-    vi.spyOn(D1RunStore.prototype,"rows").mockImplementation(async function(this:D1RunStore,sql:string,...values:unknown[]) {
-      if(sql.startsWith("INSERT INTO evidence")) {enter();await pending;}
-      return originalRows.call(this,sql,...values);
+    vi.spyOn(D1RunStore.prototype, "rows").mockImplementation(async function (
+      this: D1RunStore,
+      sql: string,
+      ...values: unknown[]
+    ) {
+      if (sql.startsWith("INSERT INTO evidence")) {
+        enter();
+        await pending;
+      }
+      return originalRows.call(this, sql, ...values);
     });
     const controller = new AbortController();
     const landed = vi.fn();
@@ -265,7 +275,6 @@ describe("capture", () => {
   });
 
   it("stores each record in Cloudflare and hands it on as it lands", async () => {
-
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string, init: RequestInit = {}) => {
@@ -300,7 +309,9 @@ describe("capture", () => {
     );
 
     expect(result.status).toBe("captured");
-    expect(await new D1RunStore(cloudflare.DB).rows("SELECT id FROM evidence")).toHaveLength(1);
+    expect(
+      await new D1RunStore(cloudflare.DB).rows("SELECT id FROM evidence"),
+    ).toHaveLength(1);
     expect(landed).toHaveLength(1);
     expect(landed[0]).toMatchObject({
       kind: "screenshot",

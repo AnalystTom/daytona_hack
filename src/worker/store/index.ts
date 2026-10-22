@@ -7,7 +7,9 @@ export interface StoreEnv {
 
 export const storageBindings = ["DB", "BLOBS"] as const;
 
-export function resolveStore(env: StoreEnv): {store: D1RunStore} | {missing: string[]} {
-  if (!env.DB) return {missing: ["DB"]};
-  return {store: new D1RunStore(env.DB, env.BLOBS)};
+export function resolveStore(
+  env: StoreEnv,
+): { store: D1RunStore } | { missing: string[] } {
+  if (!env.DB) return { missing: ["DB"] };
+  return { store: new D1RunStore(env.DB, env.BLOBS) };
 }

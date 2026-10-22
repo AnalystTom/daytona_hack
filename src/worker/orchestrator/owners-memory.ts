@@ -1,6 +1,6 @@
 import type { Owners, RunOwner } from "./owners";
 
-// The SurrealDB owner store's behaviour, in memory.
+// The D1 owner store's behaviour, in memory.
 export function memoryOwners(): Owners {
   const runs: (RunOwner & {
     active: boolean;

@@ -14,8 +14,8 @@ import { AUD, accessJwt, certs, TEAM } from "../orchestrator/access-fixtures";
 
 const cloudflare = testStorage();
 const stores: [string, () => RunStore][] = [
- ["memory", () => new MemoryRunStore()],
- ["d1", () => new D1RunStore(cloudflare.DB,cloudflare.BLOBS)],
+  ["memory", () => new MemoryRunStore()],
+  ["d1", () => new D1RunStore(cloudflare.DB, cloudflare.BLOBS)],
 ];
 
 // Event timestamps retain their original representation.
@@ -415,7 +415,9 @@ describe("D1 run owners", () => {
     expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
     const abandoned = await owners.get(original.runId);
     assert(abandoned);
-    vi.spyOn(store,"batch").mockRejectedValueOnce(new StoreError("test database unavailable"));
+    vi.spyOn(store, "batch").mockRejectedValueOnce(
+      new StoreError("test database unavailable"),
+    );
     await expect(
       owners.finish(original.runId, original.owner),
     ).rejects.toBeInstanceOf(StoreError);
@@ -504,7 +506,11 @@ describe("D1 run owners", () => {
     const newRun = rows.find((row) => row.id !== original.runId);
     assert(newRun);
     const newDay = newRun.createdAt.slice(0, 10);
-    const [charged] = await store.rows<{runs:number}>("SELECT runs FROM run_quota WHERE scope=? AND day=?",`owner:${original.owner}`,day);
+    const [charged] = await store.rows<{ runs: number }>(
+      "SELECT runs FROM run_quota WHERE scope=? AND day=?",
+      `owner:${original.owner}`,
+      day,
+    );
     expect(Number(charged?.runs)).toBe(day === newDay ? 2 : 1);
   });
 });

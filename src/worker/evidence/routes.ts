@@ -3,7 +3,11 @@ import { resolveStore, type StoreEnv, storageBindings } from "../store";
 import type { D1RunStore } from "../store/d1";
 import { AnchorError } from "./anchor";
 import { CaptureError, captureRun } from "./capture";
-import { evidenceIdPattern, runIdPattern, cloudflareEvidenceStore } from "./store";
+import {
+  evidenceIdPattern,
+  runIdPattern,
+  cloudflareEvidenceStore,
+} from "./store";
 
 export type EvidenceEnv = StoreEnv &
   Partial<Record<"OPERATOR_TOKEN" | "ANCHOR_API_KEY", string>>;

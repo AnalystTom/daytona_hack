@@ -166,27 +166,48 @@ async function llmCall<T>(
 
 // --- Agent Memory: source-grounded observations and decisions in D1 ---
 export async function remember(
-  env: Env, scope: string, text: string, observedAt?: string,
-  beforeWork?: () => Promise<void>, signal?: AbortSignal,
+  env: Env,
+  scope: string,
+  text: string,
+  observedAt?: string,
+  beforeWork?: () => Promise<void>,
+  signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
   if (!env.DB) return;
   await beforeWork?.();
   signal?.throwIfAborted();
-  await abortable(new D1RunStore(env.DB).rows(
-    "INSERT INTO agent_memory(id,scope,text,observed_at) VALUES (?,?,?,?)",
-    crypto.randomUUID(),scope,text,observedAt ?? new Date().toISOString()),signal);
+  await abortable(
+    new D1RunStore(env.DB).rows(
+      "INSERT INTO agent_memory(id,scope,text,observed_at) VALUES (?,?,?,?)",
+      crypto.randomUUID(),
+      scope,
+      text,
+      observedAt ?? new Date().toISOString(),
+    ),
+    signal,
+  );
   signal?.throwIfAborted();
 }
 
-export async function recall(env: Env, scope: string, query: string, beforeWork?: () => Promise<void>): Promise<string> {
+export async function recall(
+  env: Env,
+  scope: string,
+  query: string,
+  beforeWork?: () => Promise<void>,
+): Promise<string> {
   if (!env.DB) return "";
   await beforeWork?.();
   // Exact scope boundaries prevent another run's facts leaking into this context.
-  const rows = await new D1RunStore(env.DB).rows<{text:string}>(
+  const rows = await new D1RunStore(env.DB).rows<{ text: string }>(
     `SELECT text FROM agent_memory WHERE (scope=? OR substr(scope,1,length(?)+1)=? || '/')
-     ORDER BY (instr(lower(text),lower(?))>0) DESC,observed_at DESC LIMIT 10`,scope,scope,scope,query);
-  return rows.map(row => row.text).join("\n");
+     ORDER BY (instr(lower(text),lower(?))>0) DESC,observed_at DESC LIMIT 10`,
+    scope,
+    scope,
+    scope,
+    query,
+  );
+  return rows.map((row) => row.text).join("\n");
 }
 
 // --- Page HTML for route discovery (Anchor when set, else a plain fetch) ---

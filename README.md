@@ -133,7 +133,7 @@ A signed-in user (or, without Access, an anonymous visitor session) sees and act
 
 Legacy-run timestamps and missing-time recovery follow the [orchestrator lifecycle](docs/orchestrator/api.md#phases).
 
-Owners, active reservations and daily counts are stored together in a D1 atomic batch (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `DB` and `BLOBS` bindings; without them their run routes answer 503.
+Owners, active reservations and daily counts are stored together in a D1 atomic batch (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `DB` binding; without it their run routes answer 503.
 With both Access bindings configured, run routes require Access identity even if an operator bearer or visitor cookie is supplied, and the `/api/v1/orchestrator/*` proxy is disabled.
 With neither Access binding, run routes accept `Authorization: Bearer <OPERATOR_TOKEN>` or the anonymous visitor cookie. Setting only one of them answers 503 naming the other.
 
@@ -159,7 +159,7 @@ Errors are `{code, message, retryable, requestId}`.
 
 ### Bindings
 
-Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
+Configure resource bindings in Wrangler and secrets or variables in the Worker settings (for local secrets, use `.dev.vars`):
 
 | Binding | Used for |
 |---|---|
@@ -176,7 +176,7 @@ An operator bearer request with a missing or wrong token answers 401; visitors d
 
 See [the access policy](#who-can-use-runs) for run authentication and ownership; the separate evidence routes stay operator-only.
 
-The store tests also run against a local D1 and R2 through Miniflare, without credentials or optional external services.
+The store tests run against local D1 and R2 through Miniflare, without credentials or optional external services.
 
 ## Cloudflare storage migration
 
@@ -270,7 +270,7 @@ Not yet verified against live services: `gpt-6-luna` through Codex in the sandbo
 `src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores records in D1 with their files in R2.
 It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `POST /v1/tools/screenshot`, `POST /v1/sessions/{id}/recordings/pause`, `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
 Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
-For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
+For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `DB` and `BLOBS` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
 
 | Endpoint | What it does |
 |---|---|
@@ -287,7 +287,7 @@ Stored files are served with a sandboxing Content-Security-Policy, so a captured
 Worker bindings (secrets, set with `wrangler secret put`):
 
 - `ANCHOR_API_KEY`
-- the run API's `OPERATOR_TOKEN` and `SURREALDB_*` bindings above
+- the run API's `OPERATOR_TOKEN` and `DB` and `BLOBS` bindings above
 
 Without them the endpoints answer `503` and list the missing names.
 Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's documented shapes; storage integration tests run against local D1 and R2 rather than recorded from live calls.

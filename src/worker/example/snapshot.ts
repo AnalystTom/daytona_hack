@@ -53,25 +53,35 @@ export interface ExampleStore {
 export function cloudflareExampleStore(db: D1RunStore): ExampleStore {
   return {
     async get(key) {
-      const [row] = await db.rows<{value:string|null;blob_key:string|null}>("SELECT value,blob_key FROM example WHERE key=?",key);
+      const [row] = await db.rows<{
+        value: string | null;
+        blob_key: string | null;
+      }>("SELECT value,blob_key FROM example WHERE key=?", key);
       if (!row) return undefined;
       if (row.value !== null) return JSON.parse(row.value);
-      if (!db.blobs) throw new Error("Example storage is not configured: missing BLOBS");
+      if (!db.blobs)
+        throw new Error("Example storage is not configured: missing BLOBS");
       const object = row.blob_key ? await db.blobs.get(row.blob_key) : null;
       if (!object) throw new Error("Example content is missing");
       return JSON.parse(await object.text());
     },
-    async put(key,value) {
+    async put(key, value) {
       const json = JSON.stringify(value);
       const large = new TextEncoder().encode(json).byteLength > 128_000;
       const blobKey = large ? `example/${crypto.randomUUID()}` : null;
       if (blobKey) {
-        if (!db.blobs) throw new Error("Example storage is not configured: missing BLOBS");
-        await db.blobs.put(blobKey,json);
+        if (!db.blobs)
+          throw new Error("Example storage is not configured: missing BLOBS");
+        await db.blobs.put(blobKey, json);
       }
       try {
-        await db.rows("INSERT INTO example(key,value,blob_key) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,blob_key=excluded.blob_key",key,large?null:json,blobKey);
-      } catch(error) {
+        await db.rows(
+          "INSERT INTO example(key,value,blob_key) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,blob_key=excluded.blob_key",
+          key,
+          large ? null : json,
+          blobKey,
+        );
+      } catch (error) {
         if (blobKey) await db.blobs?.delete(blobKey);
         throw error;
       }

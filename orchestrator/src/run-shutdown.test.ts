@@ -163,7 +163,9 @@ describe("shutdown edge regressions", () => {
 
   it("sends no later Agent Memory request when the first scope POST returns after cancellation", async () => {
     const first = deferred<never[]>();
-    const writingRows = vi.spyOn(D1RunStore.prototype,"rows").mockReturnValueOnce(first.promise);
+    const writingRows = vi
+      .spyOn(D1RunStore.prototype, "rows")
+      .mockReturnValueOnce(first.promise);
     const controller = new AbortController();
     const writing = remember(
       {

@@ -40,10 +40,7 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("evidence routes", () => {
   it("names every missing binding instead of capturing", async () => {
-    const response = await post(
-      {},
-      body,
-    );
+    const response = await post({}, body);
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: "Missing Worker bindings",
@@ -104,9 +101,9 @@ describe("evidence routes", () => {
     );
     expect(capture.status).toBe(400);
     expect((await call("/api/v1/evidence/%E0", cloudflare)).status).toBe(404);
-    expect((await call("/api/v1/evidence/%E0/content", cloudflare)).status).toBe(
-      404,
-    );
+    expect(
+      (await call("/api/v1/evidence/%E0/content", cloudflare)).status,
+    ).toBe(404);
   });
 
   it("rejects a scope that is not a bare origin", async () => {
@@ -133,7 +130,12 @@ describe("evidence routes", () => {
       contentType: "text/html",
       byteLength: 3,
     };
-    await cloudflareEvidenceStore(new D1RunStore(cloudflare.DB,cloudflare.BLOBS)).putEvidence(record as import("../../shared/evidence").EvidenceRecord,new Uint8Array([60,104,62]));
+    await cloudflareEvidenceStore(
+      new D1RunStore(cloudflare.DB, cloudflare.BLOBS),
+    ).putEvidence(
+      record as import("../../shared/evidence").EvidenceRecord,
+      new Uint8Array([60, 104, 62]),
+    );
 
     const json = await call(`/api/v1/evidence/${id}`, cloudflare);
     expect(await json.json()).toEqual(record);
@@ -147,7 +149,16 @@ describe("evidence routes", () => {
 
   // Fixture SurrealDB and Anchor behind one fetch: run_1 exists only when `runExists`.
   async function fakeBackends(runExists: boolean) {
-    if(runExists) await new D1RunStore(cloudflare.DB).createRun({id:"run_1",url:"https://example.com/",goal:"Rebuild it",status:"active",createdAt:"2026-10-16T10:00:00.000Z",updatedAt:"2026-10-16T10:00:00.000Z",specApprovedAt:null});
+    if (runExists)
+      await new D1RunStore(cloudflare.DB).createRun({
+        id: "run_1",
+        url: "https://example.com/",
+        goal: "Rebuild it",
+        status: "active",
+        createdAt: "2026-10-16T10:00:00.000Z",
+        updatedAt: "2026-10-16T10:00:00.000Z",
+        specApprovedAt: null,
+      });
     const anchorCalls: string[] = [];
     vi.stubGlobal(
       "fetch",
@@ -181,8 +192,12 @@ describe("evidence routes", () => {
     await fakeBackends(true);
     const response = await post({ ANCHOR_API_KEY: "k", ...cloudflare }, body);
     expect(response.status).toBe(200);
-    const envelopes = await new D1RunStore(cloudflare.DB).listEvents("run_1",0,100);
-    for(const envelope of envelopes) EventEnvelope.parse(envelope);
+    const envelopes = await new D1RunStore(cloudflare.DB).listEvents(
+      "run_1",
+      0,
+      100,
+    );
+    for (const envelope of envelopes) EventEnvelope.parse(envelope);
     expect(envelopes.map((e) => [e.runId, e.type])).toEqual([
       ["run_1", "evidence.page_captured"],
       ["run_1", "evidence.capture_finished"],

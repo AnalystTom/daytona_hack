@@ -1,7 +1,7 @@
 // TEST FIXTURES ONLY. Never served as a live result.
 // Anchor responses below are hand-built from Anchor's published OpenAPI schemas
 // (docs.anchorbrowser.io, 2026-10-16), not recorded from a live call: no ANCHOR_API_KEY
-// was available to this task. SurrealDB responses follow its documented RPC result shape.
+// was available to this task.
 
 import type { PageFacts } from "./anchor";
 
@@ -62,8 +62,3 @@ export const recordingList = {
     ],
   },
 };
-
-export const surrealOk = (result: unknown[]) => ({
-  id: 1,
-  result: [{ status: "OK", time: "52.1µs", result }],
-});

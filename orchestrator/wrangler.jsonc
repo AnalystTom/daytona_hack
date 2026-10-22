@@ -1,8 +1,15 @@
 {
   "name": "reversy-orchestrator",
   "main": "src/index.ts",
-  "d1_databases": [{"binding":"DB","database_name":"reversy-storage","database_id":"e28beeb6-5419-4f49-8c55-1af47e9739d8","migrations_dir":"../migrations"}],
-  "r2_buckets": [{"binding":"BLOBS","bucket_name":"reversy-evidence"}],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "reversy-storage",
+      "database_id": "e28beeb6-5419-4f49-8c55-1af47e9739d8",
+      "migrations_dir": "../migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "reversy-evidence" }],
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   // Private: reached only through the `reversy` Worker's ORCHESTRATOR service binding.
@@ -28,7 +35,7 @@
     "RUN_MAX_MINUTES": "120"
   }
   // secrets (wrangler secret put / .dev.vars): OPENAI_API_KEY, DAYTONA_API_KEY,
-  // SPECTRON_URL, SPECTRON_CONTEXT_ID, SPECTRON_API_KEY, ANCHORBROWSER_API_KEY (evidence capture),
+  // ANCHORBROWSER_API_KEY (evidence capture),
   // Report storage bindings: see docs/orchestrator/spec.md#report-dissection.
   // EVENTS_WEBHOOK_URL (optional: backend endpoint that receives run events)
 }

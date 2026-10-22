@@ -450,9 +450,12 @@ describe("run paid-work deadlines", () => {
   });
 
   it("does not invoke the model after memory recall crosses the deadline", async () => {
-    const { run, env, request, calls, expire } = await setup();
+    const { run, env, calls, expire } = await setup();
     env.DB = {} as D1Database;
-    vi.spyOn(D1RunStore.prototype,"rows").mockImplementationOnce(async () => {expire();return [];});
+    vi.spyOn(D1RunStore.prototype, "rows").mockImplementationOnce(async () => {
+      expire();
+      return [];
+    });
     await expect(run.message("hello")).rejects.toThrow(/limit/);
     expect(calls).toEqual([]);
   });

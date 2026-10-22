@@ -108,9 +108,7 @@ describe("run API configuration", () => {
   it("answers 503 naming every missing SurrealDB binding", async () => {
     const response = await call("/runs/x", {}, {}, null);
     const body = await expectError(response, 503, "not_configured");
-    expect(body.message).toBe(
-      "Missing Worker bindings: DB.",
-    );
+    expect(body.message).toBe("Missing Worker bindings: DB.");
     expect(body.retryable).toBe(false);
   });
 

@@ -38,45 +38,65 @@ export const toBase64 = (bytes: Uint8Array) => {
 export const fromBase64 = (text: string) =>
   Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 
-
 export function cloudflareEvidenceStore(db: D1RunStore): EvidenceStore {
   return {
-    async putEvidence(record,content,signal) {
-      valid(record.id,evidenceIdPattern,"evidence");
-      if (!db.blobs) throw new Error("Evidence storage is not configured: missing BLOBS");
+    async putEvidence(record, content, signal) {
+      valid(record.id, evidenceIdPattern, "evidence");
+      if (!db.blobs)
+        throw new Error("Evidence storage is not configured: missing BLOBS");
       const key = `evidence/${record.id}/${crypto.randomUUID()}`;
       signal?.throwIfAborted();
       try {
-        await db.blobs.put(key,content);
+        await db.blobs.put(key, content);
         signal?.throwIfAborted();
-        await db.rows("INSERT INTO evidence(id,run_id,record,blob_key) VALUES (?,?,?,?)",record.id,record.runId,JSON.stringify(record),key);
+        await db.rows(
+          "INSERT INTO evidence(id,run_id,record,blob_key) VALUES (?,?,?,?)",
+          record.id,
+          record.runId,
+          JSON.stringify(record),
+          key,
+        );
       } catch (error) {
         await db.blobs.delete(key);
         throw error;
       }
     },
     async getEvidence(id) {
-      valid(id,evidenceIdPattern,"evidence");
-      const [row] = await db.rows<{record:string}>("SELECT record FROM evidence WHERE id=?",id);
+      valid(id, evidenceIdPattern, "evidence");
+      const [row] = await db.rows<{ record: string }>(
+        "SELECT record FROM evidence WHERE id=?",
+        id,
+      );
       return row ? EvidenceRecord.parse(JSON.parse(row.record)) : null;
     },
     async getContent(id) {
-      valid(id,evidenceIdPattern,"evidence");
-      const [row] = await db.rows<{blob_key:string}>("SELECT blob_key FROM evidence WHERE id=?",id);
+      valid(id, evidenceIdPattern, "evidence");
+      const [row] = await db.rows<{ blob_key: string }>(
+        "SELECT blob_key FROM evidence WHERE id=?",
+        id,
+      );
       if (!row) return null;
-      if (!db.blobs) throw new Error("Evidence storage is not configured: missing BLOBS");
+      if (!db.blobs)
+        throw new Error("Evidence storage is not configured: missing BLOBS");
       const object = await db.blobs.get(row.blob_key);
       if (!object) throw new Error("Evidence content is missing");
       return new Uint8Array(await object.arrayBuffer());
     },
-    async saveSignIn(runId,signIn) {
-      valid(runId,runIdPattern,"sign_in");
-      await db.rows("INSERT INTO sign_in(run_id,data) VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET data=excluded.data",runId,JSON.stringify(signIn));
+    async saveSignIn(runId, signIn) {
+      valid(runId, runIdPattern, "sign_in");
+      await db.rows(
+        "INSERT INTO sign_in(run_id,data) VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET data=excluded.data",
+        runId,
+        JSON.stringify(signIn),
+      );
     },
     async takeSignIn(runId) {
-      valid(runId,runIdPattern,"sign_in");
-      const [row] = await db.rows<{data:string}>("DELETE FROM sign_in WHERE run_id=? RETURNING data",runId);
-      return row ? JSON.parse(row.data) as SignIn : null;
+      valid(runId, runIdPattern, "sign_in");
+      const [row] = await db.rows<{ data: string }>(
+        "DELETE FROM sign_in WHERE run_id=? RETURNING data",
+        runId,
+      );
+      return row ? (JSON.parse(row.data) as SignIn) : null;
     },
   };
 }
