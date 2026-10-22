@@ -47,6 +47,8 @@ Use **Spec** or **Build** to work on the canvas:
 
 In a live session, **Preview** becomes available after the run emits a preview event. It stays outside the pannable canvas and scrolls independently in short windows.
 
+In **Preview**, use **Reload** for a fresh rebuild link. Once a frontend or combined build finishes, **Make three variants** starts the alternatives; their previews appear when ready. Choose **Promote this variant**, describe the next changes in chat, approve the follow-up spec, then press **Start build**. **Deploy live** is disabled until deployment is set up.
+
 If sandbox allocation or Codex sign-in fails before build workers start, the error appears in chat and **Start build** becomes available again with the existing plan. Retry after resolving the underlying issue. If you choose **Stop build** during setup or cleanup, the run cannot return to a retryable plan; once stopped, start a new session to continue.
 
 ### Example run
@@ -90,7 +92,7 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 
 | Binding | Used by | Without it |
 |---|---|---|
-| `OPENAI_API_KEY` (secret) | The [verifier](#verifier), `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
+| `OPENAI_API_KEY` (secret) | The [standalone verifier](#standalone-verifier), `POST /api/v1/runs/:id/verify` | The endpoint returns 503 naming the missing binding |
 | `VERIFIER_TOKEN` (secret) | Callers of the verify endpoint send `Authorization: Bearer <VERIFIER_TOKEN>`; a wrong or missing token gets 401 | The endpoint returns 503 naming the missing binding |
 
 Set a secret with `npx wrangler secret put <NAME>`.
@@ -129,7 +131,7 @@ A signed-in user (or, without Access, an anonymous visitor session) sees and act
 | `ACTIVE_RUNS` | `1` | Active reservations per user or visitor session, including pending startup and continuation cleanup; idle completed runs release their slots on the next admission check (`active_run_limit`) |
 | `RUN_MAX_MINUTES` | `120` | Set the same value on both Workers: paid work is refused at the original admission deadline; expired slots require confirmed cancellation (or no stored run state) and successful storage cleanup |
 
-Existing runs keep their stored creation timestamp (ISO text or epoch milliseconds), falling back to the original first-chat timestamp. A run with neither valid timestamp stops with an explicit error and immediate sandbox cleanup.
+Legacy-run timestamps and missing-time recovery follow the [orchestrator lifecycle](docs/orchestrator/api.md#phases).
 
 Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `SURREALDB_*` bindings; without them their run routes answer 503.
 With both Access bindings configured, run routes require Access identity even if an operator bearer or visitor cookie is supplied, and the `/api/v1/orchestrator/*` proxy is disabled.
@@ -154,8 +156,6 @@ Its store is still what evidence capture reads and writes.
 
 For the active run API's event storage and external projection guarantees, see [How a build runs](docs/orchestrator/api.md#how-a-build-runs).
 Errors are `{code, message, retryable, requestId}`.
-
-In the workspace's Preview tab, use **Reload** for a fresh rebuild link. Once the build finishes, **Make three variants** starts the alternatives; their previews appear when ready. Choose **Promote this variant**, describe the next changes in chat, approve the follow-up spec, then press **Start build**. **Deploy live** is disabled until deployment is set up.
 
 ### Bindings
 

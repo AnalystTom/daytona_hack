@@ -63,7 +63,7 @@ The chat stays visible while Reversy inspects, plans and builds, and is where th
 Reversy addresses the user as "you", without a title or nickname.
 
 **The canvas holds the work.**
-Spec, Build and Preview show different objects in the same environment; [workspace usage](../README.md#run-api) describes the preview and promotion controls.
+Spec, Build and Preview show different objects in the same environment; [workspace usage](../README.md#workspace) describes the preview and promotion controls.
 
 ## 3. Spec view: refine the brief in chat, build the spec on the canvas
 
@@ -110,14 +110,12 @@ The [agent evidence rules](orchestrator/spec.md#6-evidence) define the API respo
 First website demo target: `https://www.daytona.io/` (Daytona has agreed).
 Its two pieces of work are each split into tasks on the kanban:
 
-1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown on the canvas, of how it changes the page and the visitor's path through it.
+1. **Landing page, in detail.** A faithful rebuild of the daytona.io landing page, plus three alternative versions of it. Each alternative comes with a short explanation, shown in Preview, of how it changes the page and the visitor's path through it.
 2. **One signed-in flow:** create a sandbox, using the observed routes and response shapes subject to the data rules above.
 
-The three alternatives are pods forked from the finished landing-page rebuild.
-Daytona VM fork is the target; until it is enabled on our account, pods are copies from a snapshot and labelled as copies.
-The user can promote an alternative; building then continues from that alternative's snapshot.
+Variant eligibility and promotion follow the [orchestrator API](orchestrator/api.md#variants).
 
-At the end of a run, the user gets the rebuild as a live preview inside the app, with an optional action to deploy it live.
+Preview controls and deployment availability follow the [workspace guide](../README.md#workspace).
 
 ### Financial report dissection
 
@@ -155,7 +153,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Piece | Use |
 |---|---|
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
-| Daytona | Runs the Codex workers in one sandbox per run (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; VM fork for variants once enabled |
+| Daytona | Runs the Codex workers in run sandboxes (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; [variant pods](orchestrator/api.md#variants) |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
 | SurrealDB | External records and Agent Memory; storage ownership and guarantees are in the [agent system's records section](orchestrator/spec.md#12-records) |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
@@ -171,7 +169,7 @@ Decided since Revision 2, which lists these as open or says otherwise:
 - The orchestrator is private: only our site calls it, and only we can test it.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
 - Run admission and lifetime limits are defined in the [README's access policy](../README.md#sign-in-with-cloudflare-access).
-- A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
+- Verifier outcomes follow the [agent verifier contract](orchestrator/spec.md#9-verifier).
 - Recordings are capped at 30 seconds.
 - Run authentication and workspace ownership follow the [README's access policy](../README.md#who-can-use-runs).
 - Report scope and exclusions: see [Financial report dissection](#financial-report-dissection). REA availability is covered by the [agent evidence rules](orchestrator/spec.md#6-evidence).

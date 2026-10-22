@@ -15,7 +15,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 |---|---|---|
 | `POST /runs` | `{url, goal, id?, startedAt?}` | Creates a run, takes a first look and returns state with the first chat reply; report dissection starts after approval as described in the [workflow](spec.md#report-dissection) |
 | `GET /runs/:id` | | Run state (`State` in [`run.ts`](../../orchestrator/src/run.ts)), with sandbox IDs removed by the front door, including an optional report defined by [`ReportDissection`](../../src/shared/report.ts) |
-| `GET /runs/:id/preview` | | `{url}`: a 30-minute signed link to the private sandbox preview; 404 before the build serves one or after the run stops |
+| `GET /runs/:id/preview` | | Optional `?variant=v1` selects a variant. Returns `{url}` with a 30-minute signed link and `Cache-Control: no-store`; 404 before a preview is available, for an unknown or failed variant, or after the run stops or expires |
 | `GET /runs/:id/events?since=N` | | Events after `seq` N, oldest first |
 | `GET /runs/:id/evidence/:evId` | | One of the run's evidence files (PNG, MP4, HTML or JSON), served sandboxed so captured pages never run |
 | `POST /runs/:id/messages` | `{text}` | User chat message. The orchestrator replies and updates the spec. If the user clearly approves, it starts inspection |
@@ -27,7 +27,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 | `POST /runs/:id/report-edit` | `{figureId, edit: ReportEdit}` | Saves an edit to a known figure on a `done` report, emits `report`, and returns the updated `ReportDissection`; 500 for an incomplete report or unknown figure. Body validation is owned by [`runRoute`](../../src/worker/orchestrator/front.ts) and [`ReportEdit`](../../src/shared/report.ts) |
 | `POST /runs/:id/stop` | | Stops the run: aborts backend fetches and body reads before further crawl requests, cancels active website inspection/planning and report capture/research, waits for [REA cleanup](spec.md#6-evidence), closes active Anchor sessions and saved sign-in sessions, and confirms worker cancellation or an already stopped, archived or deleted sandbox, then marks open tasks `stopped`; provider-read or cancellation failures keep `pending: "stop"` |
 | `POST /runs/:id/override` | `{taskId, verdict: "approve"\|"reject", reason}` | User overrides a review verdict |
-| `POST /runs/:id/variants` | | Needs phase `done`. Builds three landing-page variants from a snapshot of the merged rebuild (phase `variants`, back to `done` when they finish) |
+| `POST /runs/:id/variants` | | Needs phase `done`, scope `frontend` or `both`, a rebuild sandbox and no existing variant batch. Builds three landing-page variants from the merged rebuild (phase `variants`, back to `done` when they finish) |
 | `POST /runs/:id/promote` | `{variantId}` | Needs phase `done` and a `ready` variant. Returns to `brief` for follow-up instructions; the next approved plan builds in the promoted sandbox. One promotion per run |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
 | `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to SurrealDB Agent Memory (Bearer `GATEWAY_TOKEN`) |
@@ -39,7 +39,7 @@ If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq
 
 `brief` → `inspecting` → `planning` → `planned` → `building` → `done` (→ `variants` → `done`), or `stopped` / `failed`.
 
-Each run is limited to `RUN_MAX_MINUTES` (default 120 minutes) from its creation. At the limit the orchestrator stops the workers and every sandbox of the run,
+Each run follows the [README's lifetime policy](../../README.md#sign-in-with-cloudflare-access). At the deadline the orchestrator stops the workers and every sandbox of the run,
 emits `phase {phase: "stopped", reason: "time_limit"}`, and refuses further actions. Sandboxes also auto-stop after 60 idle minutes.
 Foreground alarm work is cancelled at the deadline even if a provider remains stalled. Sandbox shutdown and worker termination run independently, with bounded waits and durable retries. Agent Memory stops between requests on cancellation; a sign-in saved after cancellation is forgotten independently of Anchor shutdown.
 
@@ -49,8 +49,8 @@ Allocated sandbox IDs are saved before startup polling. Failed cleanup stays pen
 
 Build setup can return `building` → `planned`; retry and cancellation behavior follow the [workspace guide](../../README.md#workspace).
 Frontend inspection can pause in `awaiting_sign_in`; recovery is described under [Evidence capture](#evidence-capture).
-Before paid work and on each alarm, the orchestrator applies the [README's lifetime policy](../../README.md#sign-in-with-cloudflare-access). Expiry persists pending sandbox cleanup and retries it by alarm. Stopped and failed runs refuse chat messages. Final verification completes before the phase becomes `done`; a final verification error marks the run `failed` unless cancellation is underway.
-Overriding a completed run returns it to `building` when a task needs merging or requeuing. If verification or lifecycle persistence fails, the run becomes `failed` and retains only its cleanup/deadline alarm, so paid verification is not retried automatically. Agent Memory reporting failures preserve completed lifecycle progress; active-slot retirement follows the [admission policy](../../README.md#sign-in-with-cloudflare-access).
+The deadline is checked before paid work and on each alarm. Expiry persists pending sandbox cleanup and retries it by alarm. Stopped and failed runs refuse chat messages. Final verification completes before the phase becomes `done`; a final verification error marks the run `failed` unless cancellation is underway.
+Overriding a completed run returns it to `building` for a main task or `variants` for a variant task when merging or requeuing is needed. If verification or lifecycle persistence fails, the run becomes `failed` and retains only its cleanup/deadline alarm, so paid verification is not retried automatically. Agent Memory reporting failures preserve completed lifecycle progress; active-slot retirement follows the [admission policy](../../README.md#sign-in-with-cloudflare-access).
 For report phases see [Report dissection](spec.md#report-dissection).
 
 ## Events
@@ -69,7 +69,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 | `preview` | `{sandboxId?, mergedTask?, promoted?}` | The integration branch's preview changed (Daytona port 3000, private); fetch `GET /runs/:id/preview` for a signed link |
 | `phase` | `{phase, ...}` | Header state; enable Start build on `planned` |
 | `verification` | `{target, taskId?, pass, summary, findings, model}` | GPT verifier verdict on the plan, a merged task, or the final rebuild |
-| `variant` | `{id, title, change, explanation, pod: "fork"\|"copy", snapshot, status}` | Variant card on the Preview tab; `status` is `building`, `ready`, `failed` or `promoted` |
+| `variant` | `Variant` from [`types.ts`](../../orchestrator/src/types.ts), with sandbox IDs removed by the front door | Variant card on the Preview tab |
 | `error` | `{message}` | Inline error state |
 
 ## How a build runs
@@ -81,7 +81,7 @@ For report phases see [Report dissection](spec.md#report-dissection).
 - A task is dispatched when all its dependencies are merged, up to `MAX_WORKERS` at once. The Durable Object alarm polls every 10 s.
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview (scope-specific preview on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
-- If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it, publishes task/variant outcomes, and schedules the build loop before reporting to Agent Memory. Reporting failures do not block the next build step or roll back merged work.
+- If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it, publishes task/variant outcomes, and schedules the build loop before reporting to Agent Memory. A fix task cannot generate another fix task. Reporting failures do not block the next build step or roll back merged work.
 - Observations, plans and review verdicts are written to SurrealDB Agent Memory under `org/reversy/run/<first 12 characters of the run ID>`.
 - Events remain in the run's Durable Object event log. External SurrealDB run records (run, events, tasks, steering, approvals)
   use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
@@ -93,10 +93,11 @@ For report phases see [Report dissection](spec.md#report-dissection).
 Three landing-page alternatives, each one task built and reviewed like any other, in a pod started from the merged rebuild's commit.
 A pod is a Daytona fork of the run sandbox where the account allows it, otherwise a copy of the repo inside the run sandbox
 (`/home/daytona/variants/<id>`, previewed on port 3001-3003), labelled `copy`. Each pod runs at most 2 workers at once.
+Pods use the same scope-aware preview startup as the main rebuild ([`previewCommand`](../../orchestrator/src/scope.ts)); starting a follow-up build restarts its preview for the newly approved scope.
 Promoting a copy merges it into `main`; promoting a fork makes it the run's sandbox and stops the other pods.
 A variant becomes `ready` only when all its tasks are merged and verification passes, including any required fix task.
 A failed review, failed fix verification, or unavailable verifier prevents promotion; existing `ready` status alone is insufficient.
-Variant previews use the same operator-guarded `GET /runs/:id/preview?variant=v1` endpoint as the rebuild. Signed links last 30 minutes and remain only in the requesting client; state, events, projections, model inputs and traces contain no preview capabilities. The run deadline still shuts the sandboxes down.
+Variant previews use the [preview route](#routes) under the same [run access policy](../../README.md#who-can-use-runs) as the rebuild. Signed links remain only in the requesting client; state, events, projections, model inputs and traces contain no preview capabilities. The run deadline still shuts the sandboxes down.
 Promotion returns to the brief so the user can describe the next changes and approve a follow-up plan.
 Starting that plan reuses the promoted sandbox and its merged files instead of creating a new sandbox.
 
@@ -130,7 +131,7 @@ For browser evidence, the orchestrator uses Reversy's evidence capture (`src/wor
 ## Not built yet
 
 - Website capture limitations are described under [evidence capture](../../README.md#evidence-capture); report capture has its own [limits](spec.md#report-dissection).
-- Deploy live: the Preview tab shows a disabled control until there is a deploy target.
+- Deployment availability follows the [workspace guide](../../README.md#workspace).
 
 ## Run locally
 

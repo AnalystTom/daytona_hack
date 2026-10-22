@@ -66,7 +66,7 @@ export function stackRule(scope: Scope) {
   return "Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the task explicitly needs them.";
 }
 
-/** How the sandbox serves the integration branch on port 3000. */
+/** How the sandbox serves the integration branch on its assigned preview port. */
 export function previewCommand(scope: Scope, app: string, port = 3000) {
   // the service appears once the foundation merges, so retry until it starts
   return scope === "backend" || scope === "both"

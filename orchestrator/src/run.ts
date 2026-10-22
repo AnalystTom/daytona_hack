@@ -65,7 +65,7 @@ const TICK_MS = 10_000;
 // Verifier links are short-lived and separate from the app's working session.
 const PREVIEW_LINK_SECONDS = 30 * 60;
 const PREVIEW_CHECK_SECONDS = 120;
-// Each run is limited to 2 hours (docs/orchestrator/spec.md section 10): then workers and sandboxes stop.
+// Default lifetime when RUN_MAX_MINUTES is unset or invalid; see docs/orchestrator/api.md#phases.
 const RUN_LIMIT_MS = 2 * 60 * 60 * 1000;
 const VARIANT_WORKERS = 2; // per variant pod
 const LANDING_FILES = ["index.html", "sections/", "styles/", "assets/"];
@@ -604,7 +604,7 @@ export class Run extends DurableObject<Env> {
 
   /** A signed link to the private sandbox preview, or undefined before the build serves one. */
   async previewLink(seconds = PREVIEW_LINK_SECONDS, variantId?: string) {
-    // An unknown run has no state; a stopped one has no sandbox.
+    // Stopped sandboxes may remain allocated, but their preview links must not be renewed.
     if (
       !this.s?.sandboxId ||
       this.s.expired ||

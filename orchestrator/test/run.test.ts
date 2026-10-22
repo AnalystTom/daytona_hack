@@ -1628,7 +1628,16 @@ describe("Run", () => {
         ? Date.now() + 2 * 3600_000
         : Date.now() + 100;
     expect(scheduled()).toBe(next);
-    expect(calls.some((call) => call.startsWith("DELETE"))).toBe(false);
+    expect(calls.filter((call) => call.startsWith("DELETE"))).toEqual(
+      stage === "build_setup"
+        ? ["DELETE https://toolbox.test/sb1/process/session/preview"]
+        : stage === "variants_setup"
+          ? [1, 2, 3].map(
+              (n) =>
+                `DELETE https://toolbox.test/sb1/process/session/preview-v${n}`,
+            )
+          : [],
+    );
     if (stage !== "plan" && stage !== "final") {
       const queued = persisted().tasks.filter(
         (t: Task) => t.status === "queued",
