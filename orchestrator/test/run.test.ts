@@ -7,6 +7,9 @@ function reply(body: Record<string, unknown>, init?: ResponseInit) {
   );
 }
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { Run } from "../src/run";
 import { runView } from "../../src/web/workspace/orchestrator";
 import { recordRunEvent } from "../../src/worker/records/records";
@@ -1124,7 +1127,8 @@ describe("Run", () => {
       vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
       const main = stage.startsWith("main");
       let forks = 1;
-      let orphanStops = 0;
+      let allowDeletion = false;
+      let deletions = 0;
       const stopped = new Set<string>();
       vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
         calls.push(`${init.method ?? "GET"} ${input}`);
@@ -1140,11 +1144,13 @@ describe("Run", () => {
           });
         if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
           return reply({ id: main ? "sb2" : `sb${++forks}` });
-        if (init.method === "DELETE")
-          return new Response("delete unavailable", { status: 503 });
+        if (init.method === "DELETE") {
+          deletions++;
+          return allowDeletion
+            ? reply({})
+            : new Response("delete unavailable", { status: 503 });
+        }
         if (input.endsWith("/stop")) {
-          if (input.endsWith("/sb2/stop") && ++orphanStops === 1)
-            return new Response("stop unavailable", { status: 503 });
           stopped.add(input.slice(0, -5));
         }
         if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
@@ -1197,11 +1203,13 @@ describe("Run", () => {
       expect(restored.persisted().stoppingSandboxIds).toContain("sb2");
       expect(restored.state().expired).toBeUndefined();
       expect(restored.scheduled()).toBe(retryAt + 10_000);
+      allowDeletion = true;
       vi.setSystemTime(retryAt + 10_000);
       await restored.run.alarm();
       expect(restored.persisted().stoppingSandboxIds).toEqual([]);
-      expect(orphanStops).toBe(2);
-      expect(stopped.has("https://daytona.test/sandbox/sb2")).toBe(true);
+      expect(restored.persisted().deletingSandboxIds).toEqual([]);
+      expect(restored.persisted().sandboxIds).not.toContain("sb2");
+      expect(deletions).toBeGreaterThan(2);
     },
   );
 
@@ -1279,6 +1287,7 @@ describe("Run", () => {
       const entered = deferred();
       const release = deferred();
       let paused = false;
+      const stopped = new Set<string>();
       vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
         calls.push(`${init.method ?? "GET"} ${input}`);
         const name =
@@ -1330,10 +1339,11 @@ describe("Run", () => {
           });
         if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
           return reply({ id: "sb2" });
+        if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
         if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
           return reply({
             id: input.split("/").pop(),
-            state: "started",
+            state: stopped.has(input) ? "stopped" : "started",
           });
         if (input.endsWith("/toolbox-proxy-url"))
           return reply({ url: "https://toolbox.test" });
@@ -1945,5 +1955,522 @@ describe("Run", () => {
     expect(await run.previewLink(undefined, "v1")).toBe(
       "https://fresh-preview.test/",
     );
+  });
+  it.each(["worker", "main preview", "fork preview", "copy preview"])(
+    "requires sandbox shutdown while a %s launch POST is unresolved",
+    async (stage) => {
+      const launched = deferred();
+      const releaseLaunch = deferred();
+      const stopping = deferred();
+      const releaseStop = deferred();
+      let active = false;
+      let stopped = false;
+      let sandbox = "";
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (/\/process\/session\/[^/]+\/exec$/.test(input)) {
+          sandbox = input.includes("/sb2/") ? "sb2" : "sb1";
+          launched.resolve();
+          await releaseLaunch.promise;
+          active = !stopped;
+          return reply({ cmdId: "late-command" });
+        }
+        if (input.endsWith("/stop")) {
+          stopping.resolve();
+          await releaseStop.promise;
+          stopped = true;
+          active = false;
+          return reply({});
+        }
+        if (init.method === "DELETE") {
+          active = false;
+          return reply({});
+        }
+        if (input === "https://daytona.test/sandbox")
+          return reply({ id: "sb1" });
+        if (input.endsWith("/fork")) return reply({ id: "sb2" });
+        if (
+          input.startsWith("https://daytona.test/sandbox/") &&
+          !input.endsWith("/toolbox-proxy-url")
+        )
+          return reply({
+            id: input.split("/").pop(),
+            state: stopped ? "stopped" : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: "abc" });
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((n) => ({
+                title: `Variant ${n}`,
+                change: "Layout",
+                explanation: "Alternative layout",
+              })),
+            }),
+          });
+        return reply({});
+      });
+      const { run, ready, persisted, flush } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          stage.includes("fork") || stage.includes("copy")
+            ? "variants"
+            : "building",
+          stage === "worker" ? [task("t1", "queued")] : [],
+        ),
+        sandboxId: stage === "main preview" ? undefined : "sb1",
+        pending:
+          stage === "worker"
+            ? undefined
+            : stage === "main preview"
+              ? "build_setup"
+              : "variants",
+        forkUnavailable: stage === "copy preview",
+      });
+      await ready;
+      const alarm = run.alarm();
+      await launched.promise;
+      expect(persisted().launchingSandboxIds).toContain(sandbox);
+      let confirmed = false;
+      const cancellation = run.stop().then(() => {
+        confirmed = true;
+      });
+      await stopping.promise;
+      expect(confirmed).toBe(false);
+      expect(persisted().pending).toBe("stop");
+      releaseLaunch.resolve();
+      await alarm;
+      expect(confirmed).toBe(false);
+      releaseStop.resolve();
+      await cancellation;
+      await flush();
+      expect(stopped).toBe(true);
+      expect(active).toBe(false);
+      expect(persisted()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+        launchingSandboxIds: [],
+      });
+      expect(persisted().tasks.every((t: Task) => t.status === "stopped")).toBe(
+        true,
+      );
+    },
+  );
+
+  it("retains unresolved launch shutdown across failed confirmation and restoration", async () => {
+    let available = false;
+    let stopped = false;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/stop")) {
+        if (!available) return new Response("unavailable", { status: 503 });
+        stopped = true;
+      }
+      return reply({ state: stopped ? "stopped" : "started" });
+    });
+    const { run, ready, persisted, scheduled } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", [
+        task("t1", "queued"),
+      ]),
+      launchingSandboxIds: ["sb1"],
+    });
+    await ready;
+    await expect(run.stop()).rejects.toThrow("shutdown is unconfirmed");
+    expect(persisted()).toMatchObject({
+      pending: "stop",
+      launchingSandboxIds: ["sb1"],
+      stoppingSandboxIds: ["sb1"],
+    });
+    expect(scheduled()).not.toBeNull();
+    available = true;
+    const restored = fakeRun(persisted(), {}, scheduled());
+    await restored.ready;
+    await restored.run.alarm();
+    await expect(restored.run.stop()).resolves.toMatchObject({
+      phase: "stopped",
+      pending: undefined,
+      launchingSandboxIds: [],
+      stoppingSandboxIds: [],
+    });
+    expect(stopped).toBe(true);
+  });
+
+  it.each(["stalled", "failed"])(
+    "retains REA deletion ownership after %s cleanup at expiry",
+    async (failure) => {
+      vi.useFakeTimers();
+      const deleting = deferred();
+      const release = deferred();
+      let deletes = 0;
+      let retry = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://example.com/")
+          return new Response('<script src="/main.js"></script>', {
+            headers: { "content-type": "text/html" },
+          });
+        if (input === "https://example.com/main.js")
+          return new Response("fetch('/api/items')");
+        if (input === "https://daytona.test/sandbox")
+          return reply({ id: "rea" });
+        if (init.method === "DELETE") {
+          deletes++;
+          deleting.resolve();
+          if (failure === "stalled" && !retry) await release.promise;
+          return retry
+            ? reply({})
+            : new Response("delete unavailable", { status: 503 });
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input === "https://daytona.test/sandbox/rea")
+          return reply({ id: "rea", state: "started" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: '{"findings":[]}' });
+        return reply({});
+      });
+      const { run, ready, persisted, scheduled, flush } = fakeRun({
+        ...baseState(
+          new Date(Date.now() - 2 * 3600_000 + 1000).toISOString(),
+          "inspecting",
+          [],
+        ),
+        sandboxId: undefined,
+        evidence: [],
+        pending: "plan",
+      });
+      await ready;
+      const alarm = run.alarm();
+      await deleting.promise;
+      expect(persisted().sandboxIds).toContain("rea");
+      if (failure === "failed") {
+        await alarm;
+        await vi.advanceTimersByTimeAsync(1001);
+        await run.alarm();
+      } else {
+        await vi.advanceTimersByTimeAsync(11_001);
+        await alarm;
+      }
+      expect(persisted()).toMatchObject({
+        phase: "stopped",
+        pending: "stop",
+        deletingSandboxIds: ["rea"],
+      });
+      expect(scheduled()).not.toBeNull();
+      expect(
+        persisted().chat.some((m: { text: string }) =>
+          m.text.includes("sandboxes are shut down"),
+        ),
+      ).toBe(false);
+      retry = true;
+      const restored = fakeRun(persisted(), {}, scheduled());
+      await restored.ready;
+      await restored.run.alarm();
+      expect(restored.persisted()).toMatchObject({
+        pending: undefined,
+        deletingSandboxIds: [],
+        sandboxIds: [],
+      });
+      expect(restored.scheduled()).toBeNull();
+      expect(deletes).toBeGreaterThan(1);
+      release.resolve();
+      await flush();
+    },
+  );
+
+  it("keeps late REA allocations owned across expiry and restoration", async () => {
+    vi.useFakeTimers();
+    const allocating = deferred();
+    const release = deferred();
+    let canDelete = false;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input === "https://example.com/")
+        return new Response('<script src="/main.js"></script>', {
+          headers: { "content-type": "text/html" },
+        });
+      if (input === "https://example.com/main.js")
+        return new Response("fetch('/api/items')");
+      if (input === "https://daytona.test/sandbox") {
+        allocating.resolve();
+        await release.promise;
+        return reply({ id: "late-rea" });
+      }
+      if (init.method === "DELETE")
+        return canDelete
+          ? reply({})
+          : new Response("unavailable", { status: 503 });
+      return reply({});
+    });
+    const { run, ready, persisted, scheduled, flush } = fakeRun({
+      ...baseState(
+        new Date(Date.now() - 2 * 3600_000 + 1000).toISOString(),
+        "inspecting",
+        [],
+      ),
+      sandboxId: undefined,
+      evidence: [],
+      pending: "plan",
+    });
+    await ready;
+    const alarm = run.alarm();
+    await allocating.promise;
+    await vi.advanceTimersByTimeAsync(1001);
+    await alarm;
+    expect(persisted()).toMatchObject({
+      phase: "stopped",
+      pending: "stop",
+      reaPending: true,
+    });
+    expect(scheduled()).not.toBeNull();
+    release.resolve();
+    await flush();
+    expect(persisted()).toMatchObject({
+      pending: "stop",
+      reaPending: false,
+      sandboxIds: ["late-rea"],
+      deletingSandboxIds: ["late-rea"],
+    });
+    canDelete = true;
+    const restored = fakeRun(persisted(), {}, scheduled());
+    await restored.ready;
+    await restored.run.alarm();
+    expect(restored.persisted()).toMatchObject({
+      pending: undefined,
+      sandboxIds: [],
+      deletingSandboxIds: [],
+    });
+    expect(restored.scheduled()).toBeNull();
+  });
+
+  it("retires startup failures whose sandbox was already deleted", async () => {
+    let deleted = false;
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit = {}) => {
+      if (init.method === "POST") return reply({ id: "sb2" });
+      if (deleted) return new Response("not found", { status: 404 });
+      if (init.method === "DELETE") {
+        deleted = true;
+        return reply({});
+      }
+      return reply({ state: "error" });
+    });
+    const { run, ready, persisted } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", []),
+      sandboxId: undefined,
+      pending: "build_setup",
+    });
+    await ready;
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "planned",
+      sandboxIds: [],
+      stoppingSandboxIds: [],
+      deletingSandboxIds: [],
+    });
+    expect(persisted().sandboxId).toBeUndefined();
+    await expect(run.stop()).resolves.toMatchObject({
+      phase: "stopped",
+      pending: undefined,
+    });
+  });
+
+  it.each(["absent", "deleted", "archived"])(
+    "cancels and promotes around a sandbox that is %s",
+    async (terminal) => {
+      vi.stubGlobal("fetch", async (input: string) => {
+        if (input === "https://daytona.test/sandbox/sb1")
+          return terminal === "absent"
+            ? new Response("missing", { status: 404 })
+            : reply({ state: terminal });
+        return reply({});
+      });
+      const cancelled = fakeRun(
+        baseState(new Date().toISOString(), "done", []),
+      );
+      await cancelled.ready;
+      await expect(cancelled.run.stop()).resolves.toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      const promoted = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          verifiedVariantTask("v1"),
+        ]),
+        variants: [variant("v1")],
+      });
+      await promoted.ready;
+      await expect(promoted.run.promote("v1")).resolves.toMatchObject({
+        phase: "brief",
+        sandboxId: "sb2",
+        promoted: "v1",
+      });
+    },
+  );
+
+  it.each(["fork", "copy"] as const)(
+    "excludes review overrides during %s promotion",
+    async (pod) => {
+      const entered = deferred();
+      const release = deferred();
+      mockFetch();
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        const command = input.endsWith("/process/execute")
+          ? JSON.parse(String(init.body)).command
+          : "";
+        if (input.endsWith("/stop") || command.includes("git fetch")) {
+          entered.resolve();
+          await release.promise;
+        }
+        return provider(input, init);
+      });
+      const { run, ready, persisted } = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          verifiedVariantTask("v1"),
+        ]),
+        variants: [variant("v1", pod)],
+      });
+      await ready;
+      const promotion = run.promote("v1");
+      await entered.promise;
+      for (const verdict of ["approve", "reject"] as const)
+        await expect(
+          run.override("v1", verdict, "Change decision"),
+        ).rejects.toThrow("in progress");
+      expect(persisted().tasks[0]).toMatchObject({
+        status: "merged",
+        verification: true,
+      });
+      release.resolve();
+      await promotion;
+      expect(persisted()).toMatchObject({ phase: "brief", promoted: "v1" });
+      await run.override("v1", "approve", "Retain decision");
+    },
+  );
+
+  it("excludes promotion while a review override is awaiting verification", async () => {
+    const entered = deferred();
+    const release = deferred();
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input === "https://api.openai.com/v1/chat/completions") {
+        entered.resolve();
+        await release.promise;
+      }
+      return provider(input, init);
+    });
+    const { run, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        { ...task("v1", "in_review"), variant: "v1" },
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    const overriding = run.override("v1", "approve", "Accept");
+    await entered.promise;
+    await expect(run.promote("v1")).rejects.toThrow("in progress");
+    release.resolve();
+    await overriding;
+    await expect(run.promote("v1")).resolves.toMatchObject({ promoted: "v1" });
+  });
+
+  it("delivers a bounded diff for every file through the real review command", async () => {
+    const dir = mkdtempSync(join(process.cwd(), ".review-diff-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "review@example.test");
+      git("config", "user.name", "Review test");
+      writeFileSync(join(dir, "README.md"), "base");
+      git("add", ".");
+      git("commit", "-qm", "base");
+      git("checkout", "-qb", "task/t1");
+      const names = [
+        "00-large.txt",
+        ":(glob)*",
+        "line\nbreak.txt",
+        ...Array.from({ length: 16 }, (_, i) => `file ${i} [*].txt`),
+        "zz-last.txt",
+      ];
+      for (const [i, name] of names.entries())
+        writeFileSync(
+          join(dir, name),
+          `FILE_SENTINEL_${i}\n` +
+            "observed line\n".repeat(
+              i === 0 ? 5000 : i === names.length - 1 ? 1 : 700,
+            ),
+        );
+      git("add", ".");
+      git("commit", "-qm", "submission");
+      let submitted:
+        | { diff: string; filesOutsideOwnership: string[] }
+        | undefined;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute")) {
+          const command = JSON.parse(String(init.body)).command as string;
+          const script = command
+            .replaceAll("/home/daytona/app", dir)
+            .replaceAll("/home/daytona/wt/t1", dir);
+          return reply({
+            exitCode: 0,
+            result: execFileSync("bash", ["-c", script], {
+              encoding: "utf8",
+              maxBuffer: 2_000_000,
+            }),
+          });
+        }
+        if (input === "https://api.openai.com/v1/chat/completions") {
+          const body = JSON.parse(String(init.body));
+          if (body.response_format.json_schema.name === "review") {
+            submitted = JSON.parse(body.messages[1].content);
+            return reply({
+              output_text: JSON.stringify({
+                verdict: "reject",
+                reason: "Revise",
+                findings: [],
+              }),
+            });
+          }
+          return reply({
+            output_text: JSON.stringify({
+              pass: true,
+              summary: "Checked",
+              findings: [],
+            }),
+          });
+        }
+        return reply({});
+      });
+      const { run, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "building", [
+          { ...task("t1", "building"), attempts: 2, owns: names },
+        ]),
+      });
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/process/execute")) {
+          const command = JSON.parse(String(init.body)).command as string;
+          if (command.includes("/home/daytona/logs/"))
+            return reply({
+              exitCode: 0,
+              result: command.includes(".exit") ? "0" : "worker finished",
+            });
+        }
+        return provider(input, init);
+      });
+      await ready;
+      await run.alarm();
+      expect(submitted).toBeDefined();
+      expect(submitted!.filesOutsideOwnership).toEqual([]);
+      for (let i = 0; i < names.length; i++)
+        expect(submitted!.diff).toContain(`FILE_SENTINEL_${i}\n`);
+      expect(submitted!.diff.length).toBeGreaterThan(70_000);
+      expect(submitted!.diff.length).toBeLessThan(names.length * 5001);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

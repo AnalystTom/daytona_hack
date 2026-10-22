@@ -19,6 +19,9 @@ class DaytonaResponseError extends Error {
   }
 }
 
+export const sandboxIsStopped = (state: string | undefined) =>
+  state !== undefined && ["stopped", "archived", "deleted"].includes(state);
+
 export class Daytona {
   private toolbox = new Map<string, string>();
   constructor(private env: Env) {}
@@ -123,6 +126,19 @@ export class Daytona {
     return this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, { signal });
   }
 
+  async cleanupState(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    try {
+      return (await this.get(id, signal)).state;
+    } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404)
+        return "deleted";
+      throw error;
+    }
+  }
+
   async remove(id: string) {
     try {
       await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, {
@@ -130,24 +146,32 @@ export class Daytona {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404) return;
       throw new SandboxCleanupError(id, error);
     }
   }
 
   /** Stops the sandbox (it keeps its disk and can be started again). */
   async stop(id: string, signal?: AbortSignal) {
-    const current = await this.get(id, signal);
-    if (current.state === "stopped") return;
-    if (current.state !== "stopping")
-      await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
-        method: "POST",
-        signal,
-      });
+    const current = await this.cleanupState(id, signal);
+    if (sandboxIsStopped(current)) return;
+    if (current !== "stopping") {
+      try {
+        await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
+          method: "POST",
+          signal,
+        });
+      } catch (error) {
+        if (error instanceof DaytonaResponseError && error.status === 404)
+          return;
+        throw error;
+      }
+    }
     for (let i = 0; i < 60; i++) {
-      const s = await this.get(id, signal);
-      if (s.state === "stopped") return;
-      if (s.state === "error" || s.state === "build_failed")
-        throw new Error(`sandbox ${id} ${s.state}`);
+      const state = await this.cleanupState(id, signal);
+      if (sandboxIsStopped(state)) return;
+      if (state === "error" || state === "build_failed")
+        throw new Error(`sandbox ${id} ${state}`);
       await sleep(2000, signal);
     }
     throw new Error(`sandbox ${id} did not stop`);

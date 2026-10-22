@@ -290,6 +290,7 @@ export interface ReaSandbox {
       autoDeleteInterval?: number;
     },
     signal?: AbortSignal,
+    allocated?: (id: string) => Promise<void>,
   ): Promise<{ id: string }>;
   remove(id: string): Promise<void>;
   writeFile(
@@ -315,6 +316,10 @@ export async function reaInspect(
   base: string,
   opts: { snapshot?: string; labels?: Record<string, string> },
   signal?: AbortSignal,
+  ownership?: {
+    allocated: (id: string) => Promise<void>;
+    removed: (id: string) => Promise<void>;
+  },
 ): Promise<Fields[]> {
   const urls = scriptUrls(html, base);
   if (!urls.length)
@@ -335,6 +340,10 @@ export async function reaInspect(
           autoDeleteInterval: 0,
         },
         signal,
+        async (allocated) => {
+          id = allocated;
+          await ownership?.allocated(allocated);
+        },
       )
     ).id;
     for (const [name, body] of Object.entries(contents)) {
@@ -367,6 +376,9 @@ export async function reaInspect(
       ),
     ];
   } finally {
-    if (id) await daytona.remove(id);
+    if (id) {
+      await daytona.remove(id);
+      await ownership?.removed(id);
+    }
   }
 }

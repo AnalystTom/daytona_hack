@@ -375,23 +375,36 @@ describe("run scope", () => {
       const blocked = new Promise<void>((resolve) => {
         releaseStop = resolve;
       });
-      let entered!: () => void;
-      const started = new Promise<void>((resolve) => {
-        entered = resolve;
+      let firstCleanup!: () => void;
+      const cleanupStarted = new Promise<void>((resolve) => {
+        firstCleanup = resolve;
       });
-      vi.spyOn(Daytona.prototype, "get").mockImplementation(async () => {
-        entered();
-        if (cancellation === "pending") await blocked;
-        return { id: "build", state: "stopped" };
+      let secondCleanup!: () => void;
+      const cancellationStarted = new Promise<void>((resolve) => {
+        secondCleanup = resolve;
       });
-      let stopping!: Promise<unknown>;
+      let releaseCleanup!: () => void;
+      const cleanupBlocked = new Promise<void>((resolve) => {
+        releaseCleanup = resolve;
+      });
+      let removes = 0;
       vi.spyOn(Daytona.prototype, "remove").mockImplementation(async () => {
-        stopping = run.stop();
-        await (cancellation === "pending" ? started : stopping);
+        if (++removes === 1) {
+          firstCleanup();
+          await cleanupBlocked;
+        } else {
+          secondCleanup();
+          if (cancellation === "pending") await blocked;
+        }
       });
       const eventCount = (await run.events(0)).length;
       await run.startBuild();
-      await run.alarm();
+      const alarm = run.alarm();
+      await cleanupStarted;
+      const stopping = run.stop();
+      await cancellationStarted;
+      releaseCleanup();
+      await alarm;
       if (cancellation === "completed") await stopping;
       try {
         expect((await run.getState()).phase).toBe(

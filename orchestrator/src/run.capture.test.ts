@@ -494,7 +494,12 @@ describe("Run sign-in handoff", () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response("fetch('/api/x')"),
       );
-      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "create").mockImplementation(
+        async (_opts, _signal, allocated) => {
+          await allocated?.("rea");
+          return { id: "rea" };
+        },
+      );
       vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
       const scanning = deferred<void>();
       vi.spyOn(Daytona.prototype, "exec").mockImplementation(
@@ -527,7 +532,9 @@ describe("Run sign-in handoff", () => {
       expect((await run.getState()).pending).toBe("stop");
       release.resolve();
       if (fails) {
-        expect(await stop).toEqual(new Error("cleanup unconfirmed"));
+        expect(await stop).toEqual(
+          new Error("Sandbox shutdown is unconfirmed and will be retried."),
+        );
         expect((await run.getState()).pending).toBe("stop");
       } else {
         expect(await stop).toBeUndefined();

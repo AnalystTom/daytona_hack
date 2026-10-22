@@ -338,7 +338,7 @@ describe("provider-confirmed run cancellation", () => {
             ? 502
             : 429,
       );
-    expect(get).toHaveBeenCalledWith("sb1");
+    expect(get.mock.calls.map(([id]) => id)).toContain("sb1");
     expect(data.get("state")).toMatchObject({
       phase: confirmed || mode !== "explicit" ? "stopped" : phase,
       pending: confirmed ? undefined : "stop",
