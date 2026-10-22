@@ -36,7 +36,7 @@ Daytona run sandbox (Tier 3 or higher, full internet access)
    ├─ Rebuild repo (main is the integration branch)
    ├─ Evidence (read-only to workers)
    └─ Preview server (integration branch, live URL)
-        │ snapshot copy (VM fork once enabled)
+        │ Daytona fork or snapshot copy
         ▼
    Variant pods (three landing-page alternatives), independent after the fork
 
@@ -109,18 +109,15 @@ Only a `CodeExecutionRefused` from the report snippet triggers fallback: HTML is
 4. On approval, the orchestrator merges into `main` (Merged), the preview server shows it, and the verifier checks the merged task against the live preview.
 5. On rejection, the worker revises once with the review findings.
    A second rejection marks the task failed with the real reason.
-6. If the verifier fails a merged task, the orchestrator opens a fix task and the build continues; merged work is not rolled back.
+6. Merged-task verifier failures follow the [API's follow-up policy](api.md#how-a-build-runs).
 
 ### Phase 5: Variants
 
-When the landing page is merged and verified, the orchestrator offers the three alternatives.
-Each alternative is a pod started from a snapshot of that state with one change brief, built and reviewed the same way, and shown on the canvas with its explanation.
-The user can promote a variant; further building then continues from that variant's snapshot.
+Eligibility, pod selection, readiness and promotion follow the [API's variant contract](api.md#routes) and [workflow](api.md#variants). Controls and explanations appear in the [workspace preview](../../README.md#workspace).
 
 ### End of the run
 
-The user gets the finished rebuild as a live preview inside the app.
-An optional action deploys it live.
+Preview controls and deployment availability follow the [workspace guide](../../README.md#workspace).
 
 ## 6. Evidence
 
@@ -219,16 +216,15 @@ A failed or stopped task stays on the board with its reason and next action.
 - Route probes are GET-only, with manual redirects and a preview-origin check, capped at 10 distinct paths, 5 seconds and 100,000 response bytes per probe. Results include status, content type, allowed delivery headers, redirect location and JSON shape (or a bounded text outline), for comparison against evidence. Inferred routes have no observed response to compare. The header allowlist is [`DELIVERY_HEADERS`](../../orchestrator/src/inspect.ts), shared by capture and probes.
 - Probes use backend request metadata to preserve route queries rather than Anchor's redacted page labels. Signed-preview authorization is forwarded with each probe and redacted from the verifier's model input and trace.
 - Output: pass or fail, with findings tied to plan items and evidence IDs, as `verification` events.
-- A failure is posted to chat as steering and shows on the canvas; a failed merged task gets a fix task (section 5, phase 4).
+- Verdict handling, request failures and follow-up tasks follow the [API's verifier contract](api.md#verifier).
 
 ## 10. Steering, limits and failure
 
 - Chat availability follows the [API's phase rules](api.md#phases).
 - The user can override a review verdict, or stop the whole build.
 - A change to the agreed spec becomes a proposed change in chat; applying it creates a new spec revision that needs approval before new work starts.
-- Run admission and lifetime limits are defined in the [README's access policy](../../README.md#sign-in-with-cloudflare-access).
-- If the sandbox dies, the run is marked failed; the records in SurrealDB keep everything captured so far.
-- Every steer, override, approval and failure is recorded with the run.
+- Run admission and lifetime limits are defined in the [README access policy](../../README.md#sign-in-with-cloudflare-access).
+- Run state and events remain in the Durable Object; external record availability follows the [API's persistence guarantees](api.md#how-a-build-runs).
 
 ## 11. Second engine (later): Firstmate in Daytona
 
@@ -239,10 +235,9 @@ The same evidence, verifier and records apply.
 
 ## 12. Records
 
-The agents' code runs on Daytona; the service lives on Cloudflare. The demo stores run state and backend evidence files in the run's Durable Object; browser evidence records and files and Agent Memory use SurrealDB.
+The agents' code runs on Daytona; the service lives on Cloudflare. Current storage ownership and external projection limits are defined in the [API's persistence guarantees](api.md#how-a-build-runs).
 
-- **SurrealDB's target record model** links runs, evidence records, features, tasks, reviews, verifier verdicts, steering, approvals and pods as a graph (feature cites evidence, task implements feature, review judges task).
-  It is also Agent Memory: observations, plans and review verdicts with their sources, under `org/reversy/run/<id>`.
+- **SurrealDB** holds external run projections, the separate evidence capture API's records and files, and Agent Memory. See the API reference for the projection guarantees and Agent Memory namespace.
 - **Report records** use `report_run` for the snapshot, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Failed runs retain their own evidence and error; no prior run is used as a fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
@@ -251,9 +246,8 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 - Demo engine: the Reversy orchestrator (Cloudflare Durable Object), enhanced with full Anchor capture. Firstmate in Daytona with no-mistakes is the second engine for later.
 - Runtime model routing follows the [agent configuration](#4-agents).
 - Run limits: see section 10.
-- A verifier failure on a merged task opens a fix task and the build continues, with no rollback.
-- End of run: a live preview inside the app, with an optional deploy-live action.
-- Variants: the user promotes a variant and building continues from its snapshot.
+- Verifier outcomes: see section 9.
+- End of run and variants: see section 5.
 - Arize stores the traces.
 - Recordings are capped at 30 seconds.
 - Daytona Tier 3 or higher: the sandbox has full internet access.
@@ -263,5 +257,5 @@ The agents' code runs on Daytona; the service lives on Cloudflare. The demo stor
 
 ## 14. Open questions
 
-1. Get VM fork enabled on our Daytona account, then switch variants from copy to fork.
+1. Get VM fork enabled on our Daytona account; the [variant workflow](api.md#variants) defines automatic copy fallback.
 2. How does a user provide an app artifact (upload, URL or store link), and what limits apply, so REA can decompose it alongside the website's bundles?

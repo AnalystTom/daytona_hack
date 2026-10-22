@@ -66,12 +66,12 @@ export function stackRule(scope: Scope) {
   return "Keep it plain HTML/CSS/JS with no build step; only add npm dependencies if the task explicitly needs them.";
 }
 
-/** How the sandbox serves the integration branch on port 3000. */
-export function previewCommand(scope: Scope, app: string) {
+/** How the sandbox serves the integration branch on its assigned preview port. */
+export function previewCommand(scope: Scope, app: string, port = 3000) {
   // the service appears once the foundation merges, so retry until it starts
   return scope === "backend" || scope === "both"
-    ? `cd ${app} && while true; do PORT=3000 node ${SERVER}; sleep 3; done`
-    : `cd ${app} && npx -y serve -l 3000 -n .`;
+    ? `cd ${app} && while true; do PORT=${port} node ${SERVER}; sleep 3; done`
+    : `cd ${app} && npx -y serve -l ${port} -n .`;
 }
 
 const FRONTEND_FILE =

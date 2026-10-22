@@ -1,3 +1,4 @@
+import { abortable } from "../../shared/cancellation";
 import type { EvidenceItem } from "../../shared/contracts";
 import {
   type CaptureEvent,
@@ -31,6 +32,7 @@ export interface CaptureDeps {
   signal?: AbortSignal;
   beforeWork?: () => Promise<void>;
   onSession?: (close: () => Promise<void>) => void;
+  waitUntil?: (work: Promise<unknown>) => void;
   // Appends the event to the run; the caller adds the envelope (IDs, sequence, timestamp).
   emit: (event: CaptureEvent) => void | Promise<void>;
 }
@@ -109,6 +111,16 @@ export async function captureRun(
   runId: string,
   request: CaptureRequest,
 ): Promise<CaptureResult> {
+  const work = captureWork(deps, runId, request);
+  deps.waitUntil?.(work.catch(() => {}));
+  return abortable(work, deps.signal);
+}
+
+async function captureWork(
+  deps: CaptureDeps,
+  runId: string,
+  request: CaptureRequest,
+): Promise<CaptureResult> {
   deps.signal?.throwIfAborted();
   await deps.beforeWork?.();
   const { scope, mode } = request;
@@ -121,23 +133,39 @@ export async function captureRun(
       recording: false,
       signInUrl: `${scope.origin}${scope.paths[0]}`,
     });
+    let closing: Promise<void> | undefined;
+    const close = () =>
+      (closing ??= anchor.endSession(key, session.id).catch(() => {}));
+    deps.onSession?.(close);
+    const abort = () => {
+      void close();
+    };
+    deps.signal?.addEventListener("abort", abort, { once: true });
     try {
+      deps.signal?.throwIfAborted();
       await endSignIn(deps, runId);
+      deps.signal?.throwIfAborted();
       await deps.store.saveSignIn(runId, {
         sessionId: session.id,
         origin: scope.origin,
       });
+      deps.signal?.throwIfAborted();
+      await deps.emit({
+        type: "evidence.sign_in_requested",
+        state: "awaiting_sign_in",
+        message:
+          "Open secure sign-in and sign in yourself, then resume capture.",
+        artifactRefs: [],
+      });
+      deps.signal?.throwIfAborted();
+      return { status: "awaiting_sign_in", liveViewUrl: session.liveViewUrl };
     } catch (error) {
-      await anchor.endSession(key, session.id).catch(() => {});
+      // Forget a save that committed after cancellation without waiting for Anchor.
+      await Promise.all([deps.store.takeSignIn(runId), close()]);
       throw error;
+    } finally {
+      deps.signal?.removeEventListener("abort", abort);
     }
-    await deps.emit({
-      type: "evidence.sign_in_requested",
-      state: "awaiting_sign_in",
-      message: "Open secure sign-in and sign in yourself, then resume capture.",
-      artifactRefs: [],
-    });
-    return { status: "awaiting_sign_in", liveViewUrl: session.liveViewUrl };
   }
 
   const signedIn = request.signIn === "resume";
@@ -380,9 +408,8 @@ export async function captureRun(
   } finally {
     deps.signal?.removeEventListener("abort", abort);
     if (cap !== undefined) clearTimeout(cap);
-    await pausing;
-    // Anchor also ends idle sessions itself, so a failed close only costs a few idle minutes.
-    await close();
+    // Closing must still start when pausing a recording stalls.
+    await Promise.all([pausing, close()]);
   }
 
   deps.signal?.throwIfAborted();

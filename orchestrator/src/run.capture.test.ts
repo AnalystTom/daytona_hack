@@ -80,6 +80,15 @@ function fakeCtx() {
       put: async (key: string, value: unknown) => void storage.set(key, value),
       list: async ({ prefix }: { prefix: string }) =>
         new Map([...storage].filter(([k]) => k.startsWith(prefix))),
+      getAlarm: async () => null,
+      async transaction<T>(
+        fn: (storage: {
+          getAlarm: () => Promise<number | null>;
+          setAlarm: (at: number) => Promise<void>;
+        }) => Promise<T>,
+      ) {
+        return fn(this);
+      },
       setAlarm: async () => {},
       deleteAlarm: async () => {},
     },
@@ -140,6 +149,7 @@ async function persistedRun(
   if (!empty)
     await ctx.storage.put("state", {
       id: "run-1",
+      startedAt: Date.now(),
       phase,
       spec: {
         url: "https://example.com/",
@@ -484,7 +494,12 @@ describe("Run sign-in handoff", () => {
       vi.spyOn(globalThis, "fetch").mockResolvedValue(
         new Response("fetch('/api/x')"),
       );
-      vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "rea" });
+      vi.spyOn(Daytona.prototype, "create").mockImplementation(
+        async (_opts, _signal, allocated) => {
+          await allocated?.("rea");
+          return { id: "rea" };
+        },
+      );
       vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
       const scanning = deferred<void>();
       vi.spyOn(Daytona.prototype, "exec").mockImplementation(
@@ -517,7 +532,9 @@ describe("Run sign-in handoff", () => {
       expect((await run.getState()).pending).toBe("stop");
       release.resolve();
       if (fails) {
-        expect(await stop).toEqual(new Error("cleanup unconfirmed"));
+        expect(await stop).toEqual(
+          new Error("Sandbox shutdown is unconfirmed and will be retried."),
+        );
         expect((await run.getState()).pending).toBe("stop");
       } else {
         expect(await stop).toBeUndefined();
@@ -688,7 +705,10 @@ describe("Run sign-in handoff", () => {
         pending: undefined,
       });
       expect(ctx.events()).toContainEqual(
-        expect.objectContaining({ type: "phase", data: { phase: "stopped" } }),
+        expect.objectContaining({
+          type: "phase",
+          data: expect.objectContaining({ phase: "stopped" }),
+        }),
       );
     },
   );
@@ -817,7 +837,11 @@ describe("Run sign-in handoff", () => {
       expect((await run.getState()).phase).toBe("awaiting_sign_in");
 
       release.resolve();
-      await Promise.all([first, next]);
+      if (action === "stop") {
+        await expect(first).rejects.toThrow();
+        await next;
+        for (let i = 0; i < 30; i++) await Promise.resolve();
+      } else await Promise.all([first, next]);
       if (action === "replace") {
         expect(create).toHaveBeenCalledTimes(2);
         expect(live).toEqual(new Set(["session-2"]));
@@ -1182,6 +1206,7 @@ describe("Run inspection cancellation and recovery", () => {
     const events = structuredClone(ctx.events());
     release.resolve();
     await inspection;
+    for (let i = 0; i < 30; i++) await Promise.resolve();
     expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
     expect(snippet).not.toHaveBeenCalled();
     expect((await run.getState()).phase).toBe("stopped");
@@ -1214,6 +1239,7 @@ describe("Run inspection cancellation and recovery", () => {
     const events = structuredClone(ctx.events());
     release.resolve();
     await inspection;
+    for (let i = 0; i < 30; i++) await Promise.resolve();
     expect(close).toHaveBeenCalledExactlyOnceWith("test-key", "late-session");
     expect(snippet).not.toHaveBeenCalled();
     expect(memory.saved()).toBeNull();
@@ -1415,11 +1441,9 @@ describe("Run persisted evidence", () => {
       id: "sandbox-1",
     });
     vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
     const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
     vi.spyOn(Daytona.prototype, "startAsync").mockResolvedValue("preview");
-    vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
-      "https://preview.example.test",
-    );
     vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
       "https://preview.example.test/signed",
     );
@@ -1436,6 +1460,7 @@ describe("Run persisted evidence", () => {
         `/home/daytona/evidence/${path}`,
         bytes,
       );
+    expect((await run.getState()).error).toBeUndefined();
     expect((await run.getState()).phase).toBe("building");
     await run.alarm();
     expect((await run.getState()).phase).toBe("done");
@@ -1541,15 +1566,14 @@ describe("Run entered-URL redirects", () => {
       id: "sandbox-1",
     });
     vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
     const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
     const start = vi
       .spyOn(Daytona.prototype, "startAsync")
       .mockResolvedValue("cmd");
-    vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
-      "https://preview.example.test",
-    );
     await run.startBuild();
     await run.alarm();
+    expect((await run.getState()).error).toBeUndefined();
     await run.alarm();
     for (const record of memory.records.values()) {
       expect(write).toHaveBeenCalledWith(

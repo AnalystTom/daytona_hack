@@ -18,6 +18,7 @@ export type OrchestratorEvent = z.infer<typeof OrchestratorEvent>;
 const Chat = z.object({ role: z.string(), text: z.string() });
 const ErrorData = z.object({ message: z.string() });
 const Spec = z.object({
+  scope: z.enum(["frontend", "backend", "both", "report"]).optional(),
   url: z.string(),
   redirects: z.array(z.string()).optional(),
   pages: z.array(
@@ -73,18 +74,30 @@ const Verification = z.object({
   taskId: z.string().optional(),
   pass: z.boolean(),
   summary: z.string(),
+  model: z.string().optional(),
 });
+const Variant = z.object({
+  id: z.string().min(1),
+  title: z.string(),
+  explanation: z.string(),
+  pod: z.enum(["fork", "copy"]),
+  status: z.enum(["building", "ready", "failed", "promoted"]),
+});
+export type VariantView = z.infer<typeof Variant>;
+
+const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 const EVIDENCE_PATH = /^\/runs\/[\w-]+\/evidence\/[\w-]+$/;
-const isWebLink = (url: string) => /^https?:\/\//.test(url);
 
 export type RunView = {
   phase?: string;
+  scope?: z.infer<typeof Spec>["scope"];
   report?: ReportDissection;
   hasPreview: boolean;
   draftSpec?: DraftSpec;
   evidence: CanvasEvidence[];
   board: BuildEvent[];
+  variants: VariantView[];
 };
 
 // Chat lines for new events. The user's own messages are already in the chat, so they are
@@ -127,7 +140,12 @@ export function runView(
   runId: string,
   events: readonly OrchestratorEvent[],
 ): RunView {
-  const view: RunView = { hasPreview: false, evidence: [], board: [] };
+  const view: RunView = {
+    hasPreview: false,
+    evidence: [],
+    board: [],
+    variants: [],
+  };
   const envelope = (
     event: OrchestratorEvent,
     fields: Pick<BuildEvent, "state" | "message"> &
@@ -154,7 +172,10 @@ export function runView(
       }
       case "spec": {
         const spec = Spec.safeParse(data);
-        if (spec.success) view.draftSpec = draftSpec(spec.data);
+        if (spec.success) {
+          view.draftSpec = draftSpec(spec.data);
+          view.scope = spec.data.scope;
+        }
         break;
       }
       case "evidence": {
@@ -275,9 +296,19 @@ export function runView(
           envelope(event, {
             taskId: check.data.taskId,
             state: "verification",
-            message: `Verifier ${check.data.pass ? "passed" : "failed"}: ${check.data.summary}`,
+            // The verifier is a GPT model; its label says so.
+            message: `GPT verifier${check.data.model ? ` (${check.data.model})` : ""} ${check.data.pass ? "passed" : "failed"}: ${check.data.summary}`,
           }),
         );
+        break;
+      }
+      case "variant": {
+        const variant = Variant.safeParse(data);
+        if (!variant.success) break;
+        const v = variant.data;
+        view.variants = view.variants.filter((x) => x.id !== v.id);
+        view.variants.push(v);
+        view.variants.sort((a, b) => a.id.localeCompare(b.id));
         break;
       }
       case "phase": {

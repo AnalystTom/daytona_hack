@@ -172,6 +172,8 @@ describe("run routes", () => {
       "build",
       "stop",
       "override",
+      "variants",
+      "promote",
       "sign-in",
       "sign-in/resume",
       "sign-in/skip",
@@ -215,6 +217,7 @@ describe("run routes", () => {
       "approve",
       "build",
       "stop",
+      "variants",
       "sign-in",
       "sign-in/resume",
       "sign-in/skip",
@@ -222,6 +225,8 @@ describe("run routes", () => {
       expect((await post(action))?.status).toBe(200);
     }
     expect((await post("sign-in/other"))?.status).toBe(404);
+    expect((await post("promote", { variantId: "v2" }))?.status).toBe(200);
+    expect((await post("promote", { variantId: "../x" }))?.status).toBe(400);
     expect((await post("delete"))?.status).toBe(404);
     expect(
       seen.map((s) => `${s.method} ${new URL(s.url).pathname} ${s.body}`),
@@ -231,9 +236,11 @@ describe("run routes", () => {
       "POST /runs/r1/approve {}",
       "POST /runs/r1/build {}",
       "POST /runs/r1/stop {}",
+      "POST /runs/r1/variants {}",
       "POST /runs/r1/sign-in {}",
       "POST /runs/r1/sign-in/resume {}",
       "POST /runs/r1/sign-in/skip {}",
+      'POST /runs/r1/promote {"variantId":"v2"}',
     ]);
   });
 

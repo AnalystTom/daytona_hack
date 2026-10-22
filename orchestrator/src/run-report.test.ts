@@ -85,6 +85,15 @@ function createRun(env: Partial<Env> = {}) {
         new Map(
           [...data].filter(([key]) => key.startsWith(prefix) && key >= start),
         ),
+      getAlarm: async () => null,
+      async transaction<T>(
+        fn: (storage: {
+          getAlarm: () => Promise<number | null>;
+          setAlarm: (at: number) => Promise<void>;
+        }) => Promise<T>,
+      ) {
+        return fn(this);
+      },
       setAlarm: vi.fn(),
       deleteAlarm: vi.fn(),
     },
@@ -410,14 +419,20 @@ it("stops report research without starting source requests", async () => {
 it("keeps a stopped report stopped when its in-flight capture later finishes", async () => {
   const { run } = createRun();
   let finish!: (value: Awaited<ReturnType<typeof captureReport>>) => void;
+  let entered!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   vi.mocked(captureReport).mockImplementationOnce(
     () =>
       new Promise((resolve) => {
         finish = resolve;
+        entered();
       }),
   );
   await startReport(run, "test-run");
   const alarm = run.alarm();
+  await started;
   await run.stop();
   finish({
     article: {

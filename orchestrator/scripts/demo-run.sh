@@ -26,4 +26,4 @@ while :; do
   [[ $s == done* || $s == stopped* || $s == failed* ]] && break
   sleep 15
 done
-curl -s "$B/runs/$R" | j 'print("preview", d.get("previewUrl"))'
+curl -s "$B/runs/$R" | j 'print("preview_ready", d.get("previewReady"))'

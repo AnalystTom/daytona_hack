@@ -304,6 +304,7 @@ describe("reaInspect", () => {
         autoDeleteInterval: 0,
       },
       undefined,
+      expect.any(Function),
     );
   });
 });
@@ -490,7 +491,9 @@ describe("REA sandbox ownership", () => {
       expect(calls.at(-1)).toBe(
         "DELETE https://daytona.example/sandbox/allocated",
       );
-      expect(calls.filter((call) => call.startsWith("DELETE"))).toHaveLength(1);
+      expect(
+        calls.filter((call) => call.startsWith("DELETE")).length,
+      ).toBeGreaterThanOrEqual(1);
     },
   );
 

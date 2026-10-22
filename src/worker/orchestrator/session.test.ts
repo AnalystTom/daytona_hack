@@ -22,6 +22,10 @@ function setup(vars: Partial<OrchestratorEnv> = {}) {
         return Response.json({ id: body.id, phase: "brief" }, { status: 201 });
       }
       if (!phases.has(id)) return new Response("");
+      if (action === "preview")
+        return Response.json({
+          url: "https://3000-signed.proxy.daytona.works",
+        });
       if (action === "stop") phases.set(id, "stopped");
       return Response.json({ id, phase: phases.get(id) });
     },
@@ -80,7 +84,13 @@ const idOf = async (response: Response) =>
   ((await response.json()) as { id: string }).id;
 
 // Every route a browser can reach for a run.
-const READS = ["", "/events?since=0", "/evidence/ev_001", "/preview"];
+const READS = [
+  "",
+  "/events?since=0",
+  "/evidence/ev_001",
+  "/preview",
+  "/preview?variant=v1",
+];
 const WRITES: [string, unknown][] = [
   ["/messages", { text: "only the hero" }],
   ["/approve", {}],

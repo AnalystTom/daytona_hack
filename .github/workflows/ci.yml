@@ -45,9 +45,8 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
 
-  # Deployed before reversy, which binds to it. No `secrets` input: its secrets stay as set on Cloudflare.
   deploy-orchestrator:
-    needs: [ci, orchestrator]
+    needs: deploy
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: deploy-orchestrator
@@ -71,7 +70,7 @@ jobs:
           command: deploy
 
   deploy:
-    needs: deploy-orchestrator
+    needs: [ci, orchestrator]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     concurrency: deploy-production

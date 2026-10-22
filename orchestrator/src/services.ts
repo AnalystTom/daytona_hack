@@ -1,3 +1,4 @@
+import { abortable } from "../../src/shared/cancellation";
 // OpenAI (chat completions for structured outputs; Responses for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
 import { z } from "zod";
 import {
@@ -169,7 +170,9 @@ export async function remember(
   text: string,
   observedAt?: string,
   beforeWork?: () => Promise<void>,
+  signal?: AbortSignal,
 ) {
+  signal?.throwIfAborted();
   if (!env.SPECTRON_URL) return;
   const base = `${env.SPECTRON_URL.replace(/\/$/, "")}/api/v1/${env.SPECTRON_CONTEXT_ID}`;
   const headers = {
@@ -178,24 +181,37 @@ export async function remember(
   };
   const parts = scope.split("/");
   for (let i = 2; i <= parts.length; i++) {
+    signal?.throwIfAborted();
     await beforeWork?.();
-    await fetch(`${base}/scopes`, {
+    signal?.throwIfAborted();
+    await abortable(
+      fetch(`${base}/scopes`, {
+        signal,
+        method: "POST",
+        headers,
+        body: JSON.stringify({ path: parts.slice(0, i).join("/") }),
+      }),
+      signal,
+    );
+  }
+  signal?.throwIfAborted();
+  await beforeWork?.();
+  signal?.throwIfAborted();
+  const res = await abortable(
+    fetch(`${base}/facts`, {
+      signal,
       method: "POST",
       headers,
-      body: JSON.stringify({ path: parts.slice(0, i).join("/") }),
-    });
-  }
-  await beforeWork?.();
-  const res = await fetch(`${base}/facts`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({
-      text,
-      infer: "full",
-      scopes: [[scope]],
-      observed_at: observedAt || new Date().toISOString(),
+      body: JSON.stringify({
+        text,
+        infer: "full",
+        scopes: [[scope]],
+        observed_at: observedAt || new Date().toISOString(),
+      }),
     }),
-  });
+    signal,
+  );
+  signal?.throwIfAborted();
   if (!res.ok)
     console.log(
       "memory write failed",

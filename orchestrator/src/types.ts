@@ -29,6 +29,13 @@ export interface Env extends StoreEnv {
   ARIZE_SPACE_ID?: string;
   GATEWAY_TOKEN?: string; // the run sandbox's token for /gateway/*
   OPERATOR_TOKEN?: string; // the backend's token for /sandboxes/*
+  // The `reversy` Worker's Records entrypoint: writes run records to SurrealDB (service binding, not public).
+  RECORDS?: { record(input: RunRecord): Promise<void> };
+}
+
+export interface RunRecord {
+  run: { id: string; url: string; goal: string; startedAt: string };
+  event: RunEvent;
 }
 
 export type Phase =
@@ -38,6 +45,7 @@ export type Phase =
   | "planning"
   | "planned"
   | "building"
+  | "variants"
   | "done"
   | "stopped"
   | "failed";
@@ -110,7 +118,23 @@ export interface Task {
   };
   diffStat?: string;
   failure?: string;
+  verification?: boolean;
   nextAction?: string;
+  variant?: string; // the variant pod it builds in; none means the run's main rebuild
+  fixFor?: string; // the merged task whose verifier failure it fixes
+}
+
+// A landing-page alternative built in its own pod from a snapshot of the merged rebuild.
+export interface Variant {
+  id: string; // v1
+  title: string;
+  change: string;
+  explanation: string;
+  pod: "fork" | "copy"; // Daytona fork when the account allows it, otherwise a copy in the run sandbox
+  sandboxId: string;
+  dir: string; // its repo inside that sandbox
+  snapshot: string; // the main commit it started from
+  status: "building" | "ready" | "failed" | "promoted";
 }
 
 export interface RunEvent {
@@ -127,6 +151,7 @@ export interface RunEvent {
     | "preview"
     | "phase"
     | "verification"
+    | "variant"
     | "error";
   data: unknown;
 }
