@@ -2680,13 +2680,13 @@ describe("Run", () => {
         await run.makeVariants();
         await run.alarm();
         expect(launches).toHaveLength(3);
-        launches.forEach((launch, i) =>
+        launches.forEach((launch, i) => {
           expect(launch).toMatchObject({
             program: scope === "both" ? "node" : "serve",
             port: pod === "fork" ? 3000 : 3001 + i,
             dir: pod === "fork" ? mainDir : join(dir, `v${i + 1}`),
-          }),
-        );
+          });
+        });
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
