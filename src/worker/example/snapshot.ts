@@ -53,17 +53,24 @@ export interface ExampleStore {
 export function cloudflareExampleStore(db: D1RunStore): ExampleStore {
   return {
     async get(key) {
-      const [row] = await db.rows<{
-        value: string | null;
-        blob_key: string | null;
-      }>("SELECT value,blob_key FROM example WHERE key=?", key);
-      if (!row) return undefined;
-      if (row.value !== null) return JSON.parse(row.value);
-      if (!db.blobs)
-        throw new Error("Example storage is not configured: missing BLOBS");
-      const object = row.blob_key ? await db.blobs.get(row.blob_key) : null;
-      if (!object) throw new Error("Example content is missing");
-      return JSON.parse(await object.text());
+      const read = () =>
+        db.rows<{ value: string | null; blob_key: string | null }>(
+          "SELECT value,blob_key FROM example WHERE key=?",
+          key,
+        );
+      let [row] = await read();
+      while (row) {
+        if (row.value !== null) return JSON.parse(row.value);
+        if (!db.blobs)
+          throw new Error("Example storage is not configured: missing BLOBS");
+        const object = row.blob_key ? await db.blobs.get(row.blob_key) : null;
+        if (object) return JSON.parse(await object.text());
+        const [current] = await read();
+        if (current?.blob_key === row.blob_key && current?.value === row.value)
+          throw new Error("Example content is missing");
+        row = current;
+      }
+      return undefined;
     },
     async put(key, value) {
       const json = JSON.stringify(value);
