@@ -1,4 +1,5 @@
 import { Landing } from "./landing/Landing";
+import { LandingIntro } from "./landing/Intro";
 import { useHistorySession, usePath } from "./router";
 import { Start } from "./start/Start";
 import { ExampleWorkspace } from "./workspace/ExampleWorkspace";
@@ -22,7 +23,13 @@ export function workspaceRoute(
 export function App() {
   const path = usePath();
   const session = useHistorySession();
-  if (path === "/") return <Landing />;
+  if (path === "/") {
+    return (
+      <LandingIntro>
+        <Landing />
+      </LandingIntro>
+    );
+  }
   if (path === "/start") return <Start />;
   const fixture =
     import.meta.env.DEV &&
