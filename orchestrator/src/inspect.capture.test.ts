@@ -1,3 +1,5 @@
+import { testStorage } from "../../src/worker/test/storage";
+import { D1RunStore } from "../../src/worker/store/d1";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EvidenceRecord } from "../../src/shared/evidence";
 import {
@@ -5,7 +7,6 @@ import {
   fixturePageFacts,
   fixturePngBase64,
   fixtureSession,
-  surrealOk,
 } from "../../src/worker/evidence/fixtures";
 import { leftScope } from "../../src/worker/evidence/capture";
 import {
@@ -17,14 +18,8 @@ import {
 } from "./inspect";
 import type { Env, Evidence } from "./types";
 
-const surreal = {
-  SURREALDB_URL: "https://db.example.test",
-  SURREALDB_NAMESPACE: "reversy",
-  SURREALDB_DATABASE: "main",
-  SURREALDB_USER: "user",
-  SURREALDB_PASSWORD: "pass",
-};
-const env = { ...surreal, ANCHORBROWSER_API_KEY: "anchor-key" } as Env;
+const cloudflare = testStorage();
+const env = { ...cloudflare, ANCHORBROWSER_API_KEY: "anchor-key" } as Env;
 
 const record = (over: Partial<EvidenceRecord> = {}): EvidenceRecord => ({
   id: "ev_00000000-0000-4000-8000-000000000000",
@@ -42,7 +37,7 @@ const record = (over: Partial<EvidenceRecord> = {}): EvidenceRecord => ({
   ...over,
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {vi.unstubAllGlobals();vi.restoreAllMocks();});
 
 describe("captureScope", () => {
   it("keeps the site's origin and unique paths, capped at ten", () => {
@@ -88,7 +83,7 @@ describe("captureScope", () => {
 });
 
 describe("isStoredEvidenceId", () => {
-  it("accepts SurrealDB evidence ids and refuses ids from older runs", () => {
+  it("accepts Cloudflare evidence ids and refuses ids from older runs", () => {
     expect(isStoredEvidenceId("ev_00000000-0000-4000-8000-000000000000")).toBe(
       true,
     );
@@ -205,14 +200,6 @@ describe("capture", () => {
       "fetch",
       vi.fn(async (input: string, init: RequestInit = {}) => {
         const url = new URL(input);
-        const body = init.body ? JSON.parse(String(init.body)) : undefined;
-        if (url.host === "db.example.test") {
-          if (body.params[0].startsWith("CREATE evidence:")) {
-            enter();
-            await pending;
-          }
-          return Response.json(surrealOk([]));
-        }
         if (url.pathname === "/v1/sessions")
           return Response.json(fixtureSession);
         if (url.pathname === "/v1/tools/execute-code")
@@ -229,6 +216,11 @@ describe("capture", () => {
         return new Response("unexpected", { status: 500 });
       }),
     );
+    const originalRows = D1RunStore.prototype.rows;
+    vi.spyOn(D1RunStore.prototype,"rows").mockImplementation(async function(this:D1RunStore,sql:string,...values:unknown[]) {
+      if(sql.startsWith("INSERT INTO evidence")) {enter();await pending;}
+      return originalRows.call(this,sql,...values);
+    });
     const controller = new AbortController();
     const landed = vi.fn();
     const owned = vi.fn();
@@ -251,7 +243,7 @@ describe("capture", () => {
     expect(landed).not.toHaveBeenCalled();
   });
 
-  it("names a missing Anchor key or SurrealDB binding instead of capturing", async () => {
+  it("names a missing Anchor key or Cloudflare binding instead of capturing", async () => {
     const fetch = vi.fn();
     vi.stubGlobal("fetch", fetch);
     const request = {
@@ -259,7 +251,7 @@ describe("capture", () => {
       scope: { origin: "https://example.com", paths: ["/"] },
     };
     await expect(
-      capture({ ...surreal } as Env, "run-1", request, async () => {}),
+      capture({ ...cloudflare } as Env, "run-1", request, async () => {}),
     ).rejects.toThrow("missing ANCHORBROWSER_API_KEY");
     await expect(
       capture(
@@ -268,22 +260,17 @@ describe("capture", () => {
         request,
         async () => {},
       ),
-    ).rejects.toThrow("missing SURREALDB_URL");
+    ).rejects.toThrow("missing DB");
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("stores each record in SurrealDB and hands it on as it lands", async () => {
-    const stored: string[] = [];
+  it("stores each record in Cloudflare and hands it on as it lands", async () => {
+
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string, init: RequestInit = {}) => {
         const url = new URL(input);
         const body = init.body ? JSON.parse(String(init.body)) : undefined;
-        if (url.host === "db.example.test") {
-          const sql: string = body.params[0];
-          if (sql.startsWith("CREATE evidence:")) stored.push(sql);
-          return Response.json(surrealOk([]));
-        }
         if (url.pathname === "/v1/sessions")
           return Response.json(fixtureSession);
         if (url.pathname === "/v1/tools/execute-code") {
@@ -313,7 +300,7 @@ describe("capture", () => {
     );
 
     expect(result.status).toBe("captured");
-    expect(stored).toHaveLength(1);
+    expect(await new D1RunStore(cloudflare.DB).rows("SELECT id FROM evidence")).toHaveLength(1);
     expect(landed).toHaveLength(1);
     expect(landed[0]).toMatchObject({
       kind: "screenshot",

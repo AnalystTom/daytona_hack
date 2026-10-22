@@ -1,9 +1,9 @@
 import { CaptureRequest } from "../../shared/evidence";
-import { resolveStore, type StoreEnv, surrealBindings } from "../store";
-import type { SurrealRunStore } from "../store/surreal";
+import { resolveStore, type StoreEnv, storageBindings } from "../store";
+import type { D1RunStore } from "../store/d1";
 import { AnchorError } from "./anchor";
 import { CaptureError, captureRun } from "./capture";
-import { evidenceIdPattern, runIdPattern, surrealStore } from "./store";
+import { evidenceIdPattern, runIdPattern, cloudflareEvidenceStore } from "./store";
 
 export type EvidenceEnv = StoreEnv &
   Partial<Record<"OPERATOR_TOKEN" | "ANCHOR_API_KEY", string>>;
@@ -12,14 +12,14 @@ export type EvidenceEnv = StoreEnv &
 function requireBindings<K extends keyof EvidenceEnv>(
   env: EvidenceEnv,
   names: readonly K[],
-): Record<K, string> | Response {
+): Required<Pick<EvidenceEnv, K>> | Response {
   const missing = names.filter((name) => !env[name]);
   return missing.length
     ? Response.json(
         { error: "Missing Worker bindings", missing },
         { status: 503 },
       )
-    : (env as Record<K, string>);
+    : (env as Required<Pick<EvidenceEnv, K>>);
 }
 
 const decode = (segment: string) => {
@@ -48,7 +48,7 @@ async function authorized(request: Request, token: string) {
 
 // Bindings are checked before this, so the store always resolves.
 const runStore = (env: StoreEnv) =>
-  (resolveStore(env) as { store: SurrealRunStore }).store;
+  (resolveStore(env) as { store: D1RunStore }).store;
 
 const notFound = () =>
   Response.json({ error: "Evidence not found" }, { status: 404 });
@@ -85,7 +85,7 @@ export async function handleEvidence(
         { status: 400 },
       );
     }
-    const bound = requireBindings(env, ["ANCHOR_API_KEY", ...surrealBindings]);
+    const bound = requireBindings(env, ["ANCHOR_API_KEY", ...storageBindings]);
     if (bound instanceof Response) return bound;
     const db = runStore(bound);
     if (!(await db.getRun(runId))) {
@@ -95,7 +95,7 @@ export async function handleEvidence(
       const result = await captureRun(
         {
           anchorApiKey: bound.ANCHOR_API_KEY,
-          store: surrealStore(db),
+          store: cloudflareEvidenceStore(db),
           emit: async (event) => {
             await db.appendEvents(runId, [
               {
@@ -132,9 +132,9 @@ export async function handleEvidence(
   if (isEvidence) {
     const id = decode(evidence[1] as string);
     if (!evidenceIdPattern.test(id)) return notFound();
-    const bound = requireBindings(env, surrealBindings);
+    const bound = requireBindings(env, storageBindings);
     if (bound instanceof Response) return bound;
-    const store = surrealStore(runStore(bound));
+    const store = cloudflareEvidenceStore(runStore(bound));
     const record = await store.getEvidence(id);
     if (!record) return notFound();
     if (!evidence[2]) return Response.json(record);

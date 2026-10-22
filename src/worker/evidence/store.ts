@@ -1,7 +1,7 @@
 import { EvidenceRecord } from "../../shared/evidence";
-import type { SurrealRunStore } from "../store/surreal";
+import type { D1RunStore } from "../store/d1";
 
-// Evidence records and their files live in SurrealDB, next to the run they belong to.
+// Evidence records and their files live in D1 and R2, next to the run they belong to.
 
 // A signed-in Anchor session, bound to the origin the user signed in to.
 export interface SignIn {
@@ -22,18 +22,11 @@ export interface EvidenceStore {
   takeSignIn(runId: string): Promise<SignIn | null>;
 }
 
-// RPC bodies are capped at 4 MiB by default; 2 MiB of bytes is under 3 MiB as base64.
-const chunkBytes = 2 * 1024 * 1024;
-
-// Record IDs are embedded in SurrealQL, so only these shapes are accepted.
 export const evidenceIdPattern = /^ev_[0-9a-f-]{36}$/;
 export const runIdPattern = /^[A-Za-z0-9_-]{1,64}$/;
-const key = (table: string, id: string, pattern: RegExp) => {
-  if (!pattern.test(id)) throw new Error(`Invalid ${table} id`);
-  return `${table}:\`${id}\``;
+const valid = (id: string, pattern: RegExp, kind: string) => {
+  if (!pattern.test(id)) throw new Error(`Invalid ${kind} id`);
 };
-const chunkKey = (id: string, index: number) =>
-  key("evidence_chunk", `${id}_${index}`, /^ev_[0-9a-f-]{36}_\d+$/);
 
 export const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
@@ -45,77 +38,45 @@ export const toBase64 = (bytes: Uint8Array) => {
 export const fromBase64 = (text: string) =>
   Uint8Array.from(atob(text), (char) => char.charCodeAt(0));
 
-export function surrealStore(db: SurrealRunStore): EvidenceStore {
-  // Runs one statement and returns its result rows.
-  const query = async <T>(sql: string, vars: Record<string, unknown> = {}) =>
-    ((await db.query(sql, vars))[0] ?? []) as T[];
 
+export function cloudflareEvidenceStore(db: D1RunStore): EvidenceStore {
   return {
-    async putEvidence(record, content, signal) {
-      const chunks = Math.ceil(content.length / chunkBytes);
-      for (let index = 0; index < chunks; index++) {
-        signal?.throwIfAborted();
-        const data = content.subarray(
-          index * chunkBytes,
-          (index + 1) * chunkBytes,
-        );
-        await query(`CREATE ${chunkKey(record.id, index)} CONTENT $chunk`, {
-          chunk: { evidence: record.id, index, data: toBase64(data) },
-        });
-      }
+    async putEvidence(record,content,signal) {
+      valid(record.id,evidenceIdPattern,"evidence");
+      if (!db.blobs) throw new Error("Evidence storage is not configured: missing BLOBS");
+      const key = `evidence/${record.id}/${crypto.randomUUID()}`;
       signal?.throwIfAborted();
-      // The record is written last, so a readable record always has all its chunks.
-      await query(
-        `CREATE ${key("evidence", record.id, evidenceIdPattern)} CONTENT $row`,
-        { row: { runId: record.runId, chunks, record } },
-      );
-    },
-
-    async getEvidence(id) {
-      const [record] = await query<unknown>(
-        `SELECT VALUE record FROM ${key("evidence", id, evidenceIdPattern)}`,
-      );
-      return record === undefined ? null : EvidenceRecord.parse(record);
-    },
-
-    async getContent(id) {
-      const [chunks] = await query<number>(
-        `SELECT VALUE chunks FROM ${key("evidence", id, evidenceIdPattern)}`,
-      );
-      if (chunks === undefined) return null;
-      if (chunks === 0) return new Uint8Array();
-      const keys = Array.from({ length: chunks }, (_, i) => chunkKey(id, i));
-      const parts = await query<string>(
-        `SELECT VALUE data FROM [${keys.join(", ")}]`,
-      );
-      const bytes = parts.map(fromBase64);
-      const out = new Uint8Array(
-        bytes.reduce((sum, part) => sum + part.length, 0),
-      );
-      let offset = 0;
-      for (const part of bytes) {
-        out.set(part, offset);
-        offset += part.length;
+      try {
+        await db.blobs.put(key,content);
+        signal?.throwIfAborted();
+        await db.rows("INSERT INTO evidence(id,run_id,record,blob_key) VALUES (?,?,?,?)",record.id,record.runId,JSON.stringify(record),key);
+      } catch (error) {
+        await db.blobs.delete(key);
+        throw error;
       }
-      return out;
     },
-
-    async saveSignIn(runId, signIn) {
-      await query(
-        `UPSERT ${key("sign_in", runId, runIdPattern)} CONTENT $row`,
-        {
-          row: { ...signIn, createdAt: new Date().toISOString() },
-        },
-      );
+    async getEvidence(id) {
+      valid(id,evidenceIdPattern,"evidence");
+      const [row] = await db.rows<{record:string}>("SELECT record FROM evidence WHERE id=?",id);
+      return row ? EvidenceRecord.parse(JSON.parse(row.record)) : null;
     },
-
+    async getContent(id) {
+      valid(id,evidenceIdPattern,"evidence");
+      const [row] = await db.rows<{blob_key:string}>("SELECT blob_key FROM evidence WHERE id=?",id);
+      if (!row) return null;
+      if (!db.blobs) throw new Error("Evidence storage is not configured: missing BLOBS");
+      const object = await db.blobs.get(row.blob_key);
+      if (!object) throw new Error("Evidence content is missing");
+      return new Uint8Array(await object.arrayBuffer());
+    },
+    async saveSignIn(runId,signIn) {
+      valid(runId,runIdPattern,"sign_in");
+      await db.rows("INSERT INTO sign_in(run_id,data) VALUES (?,?) ON CONFLICT(run_id) DO UPDATE SET data=excluded.data",runId,JSON.stringify(signIn));
+    },
     async takeSignIn(runId) {
-      const [before] = await query<SignIn>(
-        `DELETE ${key("sign_in", runId, runIdPattern)} RETURN BEFORE`,
-      );
-      return before
-        ? { sessionId: before.sessionId, origin: before.origin }
-        : null;
+      valid(runId,runIdPattern,"sign_in");
+      const [row] = await db.rows<{data:string}>("DELETE FROM sign_in WHERE run_id=? RETURNING data",runId);
+      return row ? JSON.parse(row.data) as SignIn : null;
     },
   };
 }

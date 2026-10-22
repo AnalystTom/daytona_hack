@@ -1,3 +1,4 @@
+import { D1RunStore } from "../../src/worker/store/d1";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as anchor from "../../src/worker/evidence/anchor";
 import { captureRun } from "../../src/worker/evidence/capture";
@@ -161,17 +162,12 @@ describe("shutdown edge regressions", () => {
   });
 
   it("sends no later Agent Memory request when the first scope POST returns after cancellation", async () => {
-    const first = deferred<Response>();
-    const fetcher = vi
-      .fn<typeof fetch>()
-      .mockReturnValueOnce(first.promise)
-      .mockResolvedValue(Response.json({}));
-    vi.stubGlobal("fetch", fetcher);
+    const first = deferred<never[]>();
+    const writingRows = vi.spyOn(D1RunStore.prototype,"rows").mockReturnValueOnce(first.promise);
     const controller = new AbortController();
     const writing = remember(
       {
-        SPECTRON_URL: "https://memory.test",
-        SPECTRON_CONTEXT_ID: "context",
+        DB: {} as D1Database,
       } as Env,
       "org/reversy/run/shutdown",
       "observed evidence",
@@ -179,12 +175,11 @@ describe("shutdown edge regressions", () => {
       undefined,
       controller.signal,
     );
-    while (!fetcher.mock.calls.length) await Promise.resolve();
+    while (!writingRows.mock.calls.length) await Promise.resolve();
     controller.abort(new Error("run ended"));
-    first.resolve(Response.json({}));
+    first.resolve([]);
     await expect(writing).rejects.toThrow("run ended");
-    expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(fetcher.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+    expect(writingRows).toHaveBeenCalledTimes(1);
   });
 
   it("forgets a late saved sign-in while Anchor close is still stalled", async () => {

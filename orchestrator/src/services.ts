@@ -1,5 +1,6 @@
+import { D1RunStore } from "../../src/worker/store/d1";
 import { abortable } from "../../src/shared/cancellation";
-// OpenAI (chat completions for structured outputs; Responses for web search), SurrealDB Agent Memory, page HTML — all over plain fetch.
+// OpenAI (chat completions for structured outputs; Responses for web search), D1 Agent Memory, page HTML — all over plain fetch.
 import { z } from "zod";
 import {
   OPENAI_URL,
@@ -163,83 +164,29 @@ async function llmCall<T>(
   return parsed.data as T;
 }
 
-// --- SurrealDB Agent Memory: observations and decisions with their sources ---
+// --- Agent Memory: source-grounded observations and decisions in D1 ---
 export async function remember(
-  env: Env,
-  scope: string,
-  text: string,
-  observedAt?: string,
-  beforeWork?: () => Promise<void>,
-  signal?: AbortSignal,
+  env: Env, scope: string, text: string, observedAt?: string,
+  beforeWork?: () => Promise<void>, signal?: AbortSignal,
 ) {
   signal?.throwIfAborted();
-  if (!env.SPECTRON_URL) return;
-  const base = `${env.SPECTRON_URL.replace(/\/$/, "")}/api/v1/${env.SPECTRON_CONTEXT_ID}`;
-  const headers = {
-    Authorization: `Bearer ${env.SPECTRON_API_KEY}`,
-    "Content-Type": "application/json",
-  };
-  const parts = scope.split("/");
-  for (let i = 2; i <= parts.length; i++) {
-    signal?.throwIfAborted();
-    await beforeWork?.();
-    signal?.throwIfAborted();
-    await abortable(
-      fetch(`${base}/scopes`, {
-        signal,
-        method: "POST",
-        headers,
-        body: JSON.stringify({ path: parts.slice(0, i).join("/") }),
-      }),
-      signal,
-    );
-  }
-  signal?.throwIfAborted();
+  if (!env.DB) return;
   await beforeWork?.();
   signal?.throwIfAborted();
-  const res = await abortable(
-    fetch(`${base}/facts`, {
-      signal,
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        text,
-        infer: "full",
-        scopes: [[scope]],
-        observed_at: observedAt || new Date().toISOString(),
-      }),
-    }),
-    signal,
-  );
+  await abortable(new D1RunStore(env.DB).rows(
+    "INSERT INTO agent_memory(id,scope,text,observed_at) VALUES (?,?,?,?)",
+    crypto.randomUUID(),scope,text,observedAt ?? new Date().toISOString()),signal);
   signal?.throwIfAborted();
-  if (!res.ok)
-    console.log(
-      "memory write failed",
-      res.status,
-      (await res.text()).slice(0, 200),
-    );
 }
 
-export async function recall(
-  env: Env,
-  scope: string,
-  query: string,
-  beforeWork?: () => Promise<void>,
-): Promise<string> {
-  if (!env.SPECTRON_URL) return "";
-  const base = `${env.SPECTRON_URL.replace(/\/$/, "")}/api/v1/${env.SPECTRON_CONTEXT_ID}`;
+export async function recall(env: Env, scope: string, query: string, beforeWork?: () => Promise<void>): Promise<string> {
+  if (!env.DB) return "";
   await beforeWork?.();
-  const res = await fetch(`${base}/context`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${env.SPECTRON_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ query, k: 10, lens: [[scope]] }),
-  });
-  return res.ok
-    ? ((await res.json()) as { context?: string }).context || ""
-    : "";
+  // Exact scope boundaries prevent another run's facts leaking into this context.
+  const rows = await new D1RunStore(env.DB).rows<{text:string}>(
+    `SELECT text FROM agent_memory WHERE (scope=? OR substr(scope,1,length(?)+1)=? || '/')
+     ORDER BY (instr(lower(text),lower(?))>0) DESC,observed_at DESC LIMIT 10`,scope,scope,scope,query);
+  return rows.map(row => row.text).join("\n");
 }
 
 // --- Page HTML for route discovery (Anchor when set, else a plain fetch) ---

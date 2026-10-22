@@ -10,7 +10,7 @@
     "lint": "biome lint",
     "format": "biome format",
     "test": "vitest run",
-    "deploy": "npm run build && wrangler deploy",
+    "deploy": "npm run build && wrangler d1 migrations apply DB --remote && wrangler deploy",
     "example:save": "scripts/save-example.sh"
   },
   "dependencies": {
@@ -31,6 +31,7 @@
     "typescript": "^7.0.2",
     "vite": "^8.3.4",
     "vitest": "^5.0.5",
-    "wrangler": "^4.151.1"
+    "wrangler": "^4.151.1",
+    "miniflare": "5.20261012.0-beta"
   }
 }

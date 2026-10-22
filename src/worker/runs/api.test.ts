@@ -109,7 +109,7 @@ describe("run API configuration", () => {
     const response = await call("/runs/x", {}, {}, null);
     const body = await expectError(response, 503, "not_configured");
     expect(body.message).toBe(
-      "Missing Worker bindings: SURREALDB_URL, SURREALDB_NAMESPACE, SURREALDB_DATABASE, SURREALDB_USER, SURREALDB_PASSWORD.",
+      "Missing Worker bindings: DB.",
     );
     expect(body.retryable).toBe(false);
   });

@@ -1,3 +1,4 @@
+import { D1RunStore } from "../../src/worker/store/d1";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as inspect from "./inspect";
 import { Daytona } from "./daytona";
@@ -450,11 +451,8 @@ describe("run paid-work deadlines", () => {
 
   it("does not invoke the model after memory recall crosses the deadline", async () => {
     const { run, env, request, calls, expire } = await setup();
-    env.SPECTRON_URL = "https://memory.test";
-    request.mockImplementationOnce(async () => {
-      expire();
-      return Response.json({ context: "observed" });
-    });
+    env.DB = {} as D1Database;
+    vi.spyOn(D1RunStore.prototype,"rows").mockImplementationOnce(async () => {expire();return [];});
     await expect(run.message("hello")).rejects.toThrow(/limit/);
     expect(calls).toEqual([]);
   });
@@ -467,7 +465,7 @@ describe("run paid-work deadlines", () => {
         pending: "inspect",
       });
       Object.assign((await run.getState()).spec, { scope });
-      env.SPECTRON_URL = "https://memory.test";
+      env.DB = {} as D1Database;
       vi.spyOn(inspect, "inspectBackend").mockImplementation(async () => {
         expire();
         return {

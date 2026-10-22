@@ -155,7 +155,7 @@ All frontend work follows `.claude/skills/frontend-design/SKILL.md`; where the b
 | Cloudflare Workers | Hosts the web app and its API, and the Reversy orchestrator (one Durable Object per run) behind it |
 | Daytona | Runs the Codex workers in run sandboxes (Daytona Tier 3 or higher, Tier 3 confirmed on the account dashboard; full internet access); preview URLs; [variant pods](orchestrator/api.md#variants) |
 | Anchor | Essential: the browser for inspection (screenshots, recordings, interactions) and for secure sign-in, where the user signs in themselves |
-| SurrealDB | External records and Agent Memory; storage ownership and guarantees are in the [agent system's records section](orchestrator/spec.md#12-records) |
+| Cloudflare D1 and R2 | External records and Agent Memory; storage ownership and guarantees are in the [agent system's records section](orchestrator/spec.md#12-records) |
 | Arize | Stores the traces: one per run across inspection, planning, building, review and verification |
 | Model providers | Routing and model selection follow the [agent configuration](orchestrator/spec.md#4-agents) |
 

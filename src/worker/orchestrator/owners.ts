@@ -1,10 +1,5 @@
-import type { SurrealRunStore } from "../store/surreal";
+import type { D1RunStore } from "../store/d1";
 
-// Who started each run, kept in SurrealDB next to the run records:
-//   run_owner:<runId>             { owner, createdAt (epoch ms) }
-//   run_quota:[owner, day]        { runs }: runs the owner started on that UTC day
-//   run_quota:["ip:<hash>", day]  { runs }: runs started from one network that day
-//   run_quota:["all", day]        { runs }: runs started by everyone that day
 export interface RunOwner {
   runId: string;
   owner: string;
@@ -40,90 +35,55 @@ export interface Owners {
   finish(runId: string, owner: string): Promise<void>;
 }
 
-const fields =
-  "record::id(id) AS runId, owner, createdAt, (revision ?? 0) AS revision, (busy ?? false) AS busy, (active ?? true) AS active";
 
-// Character arrays prevent SurrealDB JSON RPC from coercing UUID-prefixed owner emails.
-export function surrealOwners(db: SurrealRunStore): Owners {
+const fields = "run_id AS runId, owner, created_at AS createdAt, revision, busy, active";
+const ownerRow = (row: RunOwner): RunOwner => ({...row, busy: Boolean(row.busy), active: Boolean(row.active)});
+
+export function d1Owners(db: D1RunStore): Owners {
   return {
     async get(runId) {
-      const [row] = await db.query(
-        `SELECT ${fields} FROM ONLY type::record('run_owner', $runId)`,
-        { runId },
-      );
-      return (row as RunOwner | null) ?? null;
+      const [row] = await db.rows<RunOwner>(`SELECT ${fields} FROM run_owner WHERE run_id=?`,runId);
+      return row ? ownerRow(row) : null;
     },
-    async list(owner, since) {
-      const [rows] = await db.query(
-        `SELECT ${fields} FROM run_owner WHERE owner = array::join($owner, '') AND createdAt > $since ORDER BY createdAt DESC`,
-        { owner: Array.from(owner), since },
-      );
-      return (rows as RunOwner[] | null) ?? [];
+    async list(owner,since) {
+      return (await db.rows<RunOwner>(`SELECT ${fields} FROM run_owner WHERE owner=? AND created_at>? ORDER BY created_at DESC`,owner,since)).map(ownerRow);
     },
-    async finish(runId, owner) {
-      await db.query(
-        "UPDATE type::record('run_owner', $runId) SET busy = false WHERE owner = array::join($owner, '') RETURN NONE",
-        { runId, owner: Array.from(owner) },
-      );
+    async finish(runId,owner) {
+      await db.rows("UPDATE run_owner SET busy=0 WHERE run_id=? AND owner=?",runId,owner);
     },
-    async reserve(run, maxActive, perDay, ended, shared) {
-      const {
-        ip = "none",
-        perIp = Number.MAX_SAFE_INTEGER,
-        perAll = Number.MAX_SAFE_INTEGER,
-      } = shared ?? {};
-      const day = new Date(run.createdAt).toISOString().slice(0, 10);
-      for (let attempt = 0; ; attempt++) {
-        try {
-          const results = await db.query(
-            `
-BEGIN TRANSACTION;
-LET $owner = array::join($owner, '');
-UPSERT type::record('run_quota', $owner) SET revision = (revision ?? 0) + 1 RETURN NONE;
-FOR $old IN $ended {
-UPDATE type::record('run_owner', $old.runId) SET active = false
-WHERE owner = $owner AND (revision ?? 0) = ($old.revision ?? 0) AND (busy ?? false) = false RETURN NONE;
-};
-LET $existing = (SELECT * FROM ONLY type::record('run_owner', $runId));
-IF $existing != NONE AND $existing.owner != $owner { THROW 'Run owner mismatch'; };
-LET $active = array::len((SELECT VALUE id FROM run_owner WHERE owner = $owner AND (active ?? true) = true AND record::id(id) != $runId));
-LET $runs = (SELECT VALUE runs FROM ONLY type::record('run_quota', [$owner, $day])) ?? 0;
-LET $ipRuns = (SELECT VALUE runs FROM ONLY type::record('run_quota', [$ipKey, $day])) ?? 0;
-LET $allRuns = (SELECT VALUE runs FROM ONLY type::record('run_quota', ['all', $day])) ?? 0;
-LET $refusal = IF $active >= $maxActive OR ($existing.busy ?? false) { 'active_run_limit' } ELSE IF $existing = NONE AND $runs >= $perDay { 'daily_run_limit' } ELSE IF $existing = NONE AND $ipRuns >= $perIp { 'ip_daily_limit' } ELSE IF $existing = NONE AND $allRuns >= $perAll { 'global_daily_limit' } ELSE { NONE };
-IF $refusal = NONE {
-IF $existing = NONE {
-UPSERT type::record('run_quota', [$owner, $day]) SET runs = $runs + 1 RETURN NONE;
-UPSERT type::record('run_quota', [$ipKey, $day]) SET runs = $ipRuns + 1 RETURN NONE;
-UPSERT type::record('run_quota', ['all', $day]) SET runs = $allRuns + 1 RETURN NONE;
-CREATE type::record('run_owner', $runId) CONTENT { owner: $owner, createdAt: $createdAt, active: true, revision: 0, busy: false } RETURN NONE;
-} ELSE {
-UPDATE type::record('run_owner', $runId) SET active = true, busy = true, revision = (revision ?? 0) + 1 RETURN NONE;
-};
-};
-RETURN $refusal;
-COMMIT TRANSACTION;`,
-            {
-              ...run,
-              owner: Array.from(run.owner),
-              day,
-              ipKey: `ip:${ip}`,
-              perIp,
-              perAll,
-              maxActive,
-              perDay,
-              ended: ended.map(({ runId, revision }) => ({ runId, revision })),
-            },
-          );
-          return (results.at(-2) ?? undefined) as Refusal | undefined;
-        } catch (error) {
-          const message = String(error);
-          if (!message.includes("conflict") || attempt === 7) throw error;
-          await new Promise((resolve) =>
-            setTimeout(resolve, Math.random() * 20 * (attempt + 1)),
-          );
-        }
-      }
+    async reserve(run,maxActive,perDay,ended,shared) {
+      const day = new Date(run.createdAt).toISOString().slice(0,10);
+      const id = crypto.randomUUID();
+      const scopes = [`owner:${run.owner}`,`ip:${shared?.ip ?? "none"}`,"all"];
+      const statements = ended.map(old => db.statement(
+        "UPDATE run_owner SET active=0 WHERE run_id=? AND owner=? AND revision=? AND busy=0",
+        old.runId,run.owner,old.revision??0));
+      statements.push(db.statement(`INSERT INTO admission(id,refusal) SELECT ?, CASE
+        WHEN EXISTS(SELECT 1 FROM run_owner WHERE run_id=? AND owner<>?) THEN 'owner_mismatch'
+        WHEN (SELECT count(*) FROM run_owner WHERE owner=? AND active=1 AND run_id<>?)>=?
+          OR EXISTS(SELECT 1 FROM run_owner WHERE run_id=? AND busy=1) THEN 'active_run_limit'
+        WHEN NOT EXISTS(SELECT 1 FROM run_owner WHERE run_id=?) THEN CASE
+          WHEN coalesce((SELECT runs FROM run_quota WHERE scope=? AND day=?),0)>=? THEN 'daily_run_limit'
+          WHEN coalesce((SELECT runs FROM run_quota WHERE scope=? AND day=?),0)>=? THEN 'ip_daily_limit'
+          WHEN coalesce((SELECT runs FROM run_quota WHERE scope=? AND day=?),0)>=? THEN 'global_daily_limit'
+          ELSE NULL END
+        ELSE NULL END`,
+        id,run.runId,run.owner,run.owner,run.runId,maxActive,run.runId,run.runId,
+        scopes[0],day,perDay,scopes[1],day,shared?.perIp??Number.MAX_SAFE_INTEGER,
+        scopes[2],day,shared?.perAll??Number.MAX_SAFE_INTEGER));
+      for (const scope of scopes) statements.push(db.statement(`INSERT INTO run_quota(scope,day,runs)
+        SELECT ?,?,1 WHERE (SELECT refusal FROM admission WHERE id=?) IS NULL
+          AND NOT EXISTS(SELECT 1 FROM run_owner WHERE run_id=?)
+        ON CONFLICT(scope,day) DO UPDATE SET runs=runs+1`,scope,day,id,run.runId));
+      statements.push(db.statement(`INSERT INTO run_owner(run_id,owner,created_at)
+        SELECT ?,?,? WHERE (SELECT refusal FROM admission WHERE id=?) IS NULL
+        ON CONFLICT(run_id) DO UPDATE SET active=1,busy=1,revision=revision+1`,run.runId,run.owner,run.createdAt,id));
+      const resultIndex = statements.length;
+      statements.push(db.statement("SELECT refusal FROM admission WHERE id=?",id),db.statement("DELETE FROM admission WHERE id=?",id));
+      const result = await db.batch<{refusal: Refusal | "owner_mismatch" | null}>(statements);
+      const refusal = result[resultIndex]?.results[0]?.refusal;
+      if (refusal === "owner_mismatch") throw new Error("Run owner mismatch");
+      return refusal ?? undefined;
     },
   };
 }

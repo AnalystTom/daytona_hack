@@ -1,9 +1,10 @@
-import { assert, beforeAll, describe, expect, it } from "vitest";
+import { assert, describe, expect, it, vi } from "vitest";
 import type { EventEnvelope } from "../../shared/contracts";
 import type { Run } from "../../shared/runs";
 import { MemoryRunStore } from "./memory";
-import { surrealOwners } from "../orchestrator/owners";
-import { type SurrealConfig, SurrealRunStore } from "./surreal";
+import { d1Owners } from "../orchestrator/owners";
+import { D1RunStore } from "./d1";
+import { testStorage } from "../test/storage";
 import { type RunStore, StoreError } from "./types";
 import {
   handleOrchestrator,
@@ -11,50 +12,13 @@ import {
 } from "../orchestrator/front";
 import { AUD, accessJwt, certs, TEAM } from "../orchestrator/access-fixtures";
 
-// The same behaviour is required of every store. The SurrealDB suite runs only when
-// SURREALDB_TEST_URL points at a server with root credentials (SURREALDB_TEST_USER/PASSWORD);
-// it creates a throwaway namespace and database there.
-const testEnv =
-  (globalThis as { process?: { env: Record<string, string | undefined> } })
-    .process?.env ?? {};
-
-const surreal = testEnv.SURREALDB_TEST_URL
-  ? {
-      url: testEnv.SURREALDB_TEST_URL,
-      namespace: `reversy_test_${Date.now()}`,
-      database: "runs",
-      user: testEnv.SURREALDB_TEST_USER ?? "root",
-      password: testEnv.SURREALDB_TEST_PASSWORD ?? "root",
-    }
-  : undefined;
-
+const cloudflare = testStorage();
 const stores: [string, () => RunStore][] = [
-  ["memory", () => new MemoryRunStore()],
+ ["memory", () => new MemoryRunStore()],
+ ["d1", () => new D1RunStore(cloudflare.DB,cloudflare.BLOBS)],
 ];
-if (surreal) stores.push(["surreal", () => new SurrealRunStore(surreal)]);
 
-beforeAll(async () => {
-  if (!surreal) return;
-  const response = await fetch(`${surreal.url}/rpc`, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/json",
-      authorization: `Basic ${btoa(`${surreal.user}:${surreal.password}`)}`,
-    },
-    body: JSON.stringify({
-      id: 1,
-      method: "query",
-      params: [
-        `DEFINE NAMESPACE ${surreal.namespace}; USE NS ${surreal.namespace}; DEFINE DATABASE ${surreal.database};`,
-        {},
-      ],
-    }),
-  });
-  expect(response.ok).toBe(true);
-});
-
-// SurrealDB returns datetimes in its own format, so fixtures use the form it prints.
+// Event timestamps retain their original representation.
 const now = "2026-10-16T12:00:00Z";
 const newRun = (): Run => ({
   id: crypto.randomUUID(),
@@ -240,9 +204,9 @@ describe.each(stores)("%s run store", (_name, makeStore) => {
   });
 });
 
-describe.skipIf(!surreal)("surreal run owners", () => {
+describe("D1 run owners", () => {
   it("preserves UUID-prefixed full emails and isolates ownership, admission and daily quotas by domain", async () => {
-    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const owners = d1Owners(new D1RunStore(cloudflare.DB));
     const local = crypto.randomUUID();
     const a = {
       runId: crypto.randomUUID(),
@@ -324,7 +288,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
   });
 
   it("limits new runs per network and across all owners, charging each run once", async () => {
-    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const owners = d1Owners(new D1RunStore(cloudflare.DB));
     const ip = crypto.randomUUID().replaceAll("-", "").slice(0, 14);
     const start = (owner: string, createdAt = Date.now()) => ({
       runId: crypto.randomUUID(),
@@ -356,7 +320,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
   });
 
   it("atomically admits starts and persists ownership and daily charges", async () => {
-    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const owners = d1Owners(new D1RunStore(cloudflare.DB));
     const owner = `${crypto.randomUUID()}@example.com`;
     const a = { runId: crypto.randomUUID(), owner, createdAt: Date.now() };
     const b = { ...a, runId: crypto.randomUUID() };
@@ -411,7 +375,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     ).toBeUndefined();
   });
   it("re-admits existing runs without daily charges and ignores stale retirement snapshots", async () => {
-    const owners = surrealOwners(new SurrealRunStore(surreal as SurrealConfig));
+    const owners = d1Owners(new D1RunStore(cloudflare.DB));
     const a = {
       runId: crypto.randomUUID(),
       owner: `${crypto.randomUUID()}@example.com`,
@@ -440,15 +404,8 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.get(a.runId)).toMatchObject({ ...a, busy: false });
   });
   it("recovers expired busy admission through confirmed stop and the real store without resetting its charge", async () => {
-    let storageUnavailable = false;
-    const store = new SurrealRunStore(
-      surreal as SurrealConfig,
-      async (input, init) => {
-        if (storageUnavailable) throw new Error("test database unavailable");
-        return fetch(input, init);
-      },
-    );
-    const owners = surrealOwners(store);
+    const store = new D1RunStore(cloudflare.DB);
+    const owners = d1Owners(store);
     const original = {
       runId: crypto.randomUUID(),
       owner: `${crypto.randomUUID()}@example.com`,
@@ -458,11 +415,11 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     expect(await owners.reserve(original, 1, 2, [])).toBeUndefined();
     const abandoned = await owners.get(original.runId);
     assert(abandoned);
-    storageUnavailable = true;
+    vi.spyOn(store,"batch").mockRejectedValueOnce(new StoreError("test database unavailable"));
     await expect(
       owners.finish(original.runId, original.owner),
     ).rejects.toBeInstanceOf(StoreError);
-    storageUnavailable = false;
+
     expect(await owners.get(original.runId)).toMatchObject({
       busy: true,
       active: true,
@@ -547,10 +504,7 @@ describe.skipIf(!surreal)("surreal run owners", () => {
     const newRun = rows.find((row) => row.id !== original.runId);
     assert(newRun);
     const newDay = newRun.createdAt.slice(0, 10);
-    const [charged] = await store.query(
-      "SELECT VALUE runs FROM ONLY type::record('run_quota', [array::join($owner, ''), $day])",
-      { owner: Array.from(original.owner), day },
-    );
-    expect(Number(charged)).toBe(day === newDay ? 2 : 1);
+    const [charged] = await store.rows<{runs:number}>("SELECT runs FROM run_quota WHERE scope=? AND day=?",`owner:${original.owner}`,day);
+    expect(Number(charged?.runs)).toBe(day === newDay ? 2 : 1);
   });
 });
