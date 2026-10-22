@@ -1441,6 +1441,7 @@ describe("Run persisted evidence", () => {
       id: "sandbox-1",
     });
     vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
     const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
     vi.spyOn(Daytona.prototype, "startAsync").mockResolvedValue("preview");
     vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
@@ -1459,6 +1460,7 @@ describe("Run persisted evidence", () => {
         `/home/daytona/evidence/${path}`,
         bytes,
       );
+    expect((await run.getState()).error).toBeUndefined();
     expect((await run.getState()).phase).toBe("building");
     await run.alarm();
     expect((await run.getState()).phase).toBe("done");
@@ -1564,12 +1566,14 @@ describe("Run entered-URL redirects", () => {
       id: "sandbox-1",
     });
     vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+    vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
     const write = vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue();
     const start = vi
       .spyOn(Daytona.prototype, "startAsync")
       .mockResolvedValue("cmd");
     await run.startBuild();
     await run.alarm();
+    expect((await run.getState()).error).toBeUndefined();
     await run.alarm();
     for (const record of memory.records.values()) {
       expect(write).toHaveBeenCalledWith(
