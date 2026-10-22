@@ -8,9 +8,10 @@ function reply(body: Record<string, unknown>, init?: ResponseInit) {
 }
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Run } from "../src/run";
+import { Daytona } from "../src/daytona";
 import { runView } from "../../src/web/workspace/orchestrator";
 import { recordRunEvent } from "../../src/worker/records/records";
 import { MemoryRunStore } from "../../src/worker/store/memory";
@@ -174,6 +175,7 @@ const baseState = (startedAt: string, phase: string, tasks: Task[]) => ({
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   calls.length = 0;
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -1144,7 +1146,10 @@ describe("Run", () => {
           });
         if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
           return reply({ id: main ? "sb2" : `sb${++forks}` });
-        if (init.method === "DELETE") {
+        if (
+          init.method === "DELETE" &&
+          input.startsWith("https://daytona.test/sandbox/")
+        ) {
           deletions++;
           return allowDeletion
             ? reply({})
@@ -2087,12 +2092,15 @@ describe("Run", () => {
     const restored = fakeRun(persisted(), {}, scheduled());
     await restored.ready;
     await restored.run.alarm();
-    await expect(restored.run.stop()).resolves.toMatchObject({
+    expect(restored.persisted()).toMatchObject({
       phase: "stopped",
       pending: undefined,
       launchingSandboxIds: [],
       stoppingSandboxIds: [],
     });
+    expect(restored.scheduled()).toBe(
+      new Date(restored.persisted().startedAt).getTime() + 2 * 3600_000,
+    );
     expect(stopped).toBe(true);
   });
 
@@ -2473,4 +2481,291 @@ describe("Run", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+  it.each(["launch", "rea", "worker"])(
+    "finalizes a restored %s cancellation only after its retry confirms cleanup",
+    async (kind) => {
+      vi.useFakeTimers();
+      const entered = [deferred(), deferred()];
+      const release = [deferred(), deferred()];
+      let attempt = 0;
+      let stopped = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        const confirming =
+          kind === "launch"
+            ? input.endsWith("/stop")
+            : kind === "rea"
+              ? init.method === "DELETE"
+              : input.endsWith("/process/execute");
+        if (confirming) {
+          const i = attempt++;
+          entered[i]?.resolve();
+          if (release[i]) await release[i].promise;
+          if (i === 0)
+            return new Response("cleanup unavailable", { status: 503 });
+          stopped = true;
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: "" });
+        return reply({ state: stopped ? "stopped" : "started" });
+      });
+      const startedAt = new Date().toISOString();
+      const first = fakeRun({
+        ...baseState(startedAt, "building", [task("t1", "building")]),
+        pending: "stop",
+        sandboxId: kind === "rea" ? undefined : "sb1",
+        sandboxIds: ["sb1"],
+        launchingSandboxIds: kind === "launch" ? ["sb1"] : [],
+        deletingSandboxIds: kind === "rea" ? ["sb1"] : [],
+      });
+      await first.ready;
+      const failing = first.run.alarm();
+      await entered[0].promise;
+      expect(first.persisted()).toMatchObject({
+        phase: "building",
+        pending: "stop",
+        tasks: [expect.objectContaining({ status: "building" })],
+      });
+      release[0].resolve();
+      await failing;
+      expect(first.scheduled()).not.toBeNull();
+      expect(first.scheduled()).toBeLessThanOrEqual(Date.now() + 10_000);
+      const restored = fakeRun(first.persisted(), {}, first.scheduled());
+      await restored.ready;
+      const retry = restored.run.alarm();
+      await entered[1].promise;
+      expect(restored.persisted().pending).toBe("stop");
+      expect(restored.persisted().tasks[0].status).toBe("building");
+      release[1].resolve();
+      await retry;
+      expect(restored.persisted()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+        tasks: [expect.objectContaining({ status: "stopped" })],
+      });
+      expect(
+        (await restored.run.events(0)).filter((e) => e.type === "phase").at(-1)
+          ?.data,
+      ).toEqual({ phase: "stopped" });
+      expect(restored.scheduled()).toBe(Date.parse(startedAt) + 2 * 3600_000);
+    },
+  );
+
+  it("keeps scheduling cancellation while a restored REA allocation remains unknown", async () => {
+    const { run, ready, persisted, scheduled } = fakeRun({
+      ...baseState(new Date().toISOString(), "inspecting", []),
+      sandboxId: undefined,
+      reaPending: true,
+      pending: "stop",
+    });
+    await ready;
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "inspecting",
+      pending: "stop",
+      reaPending: true,
+    });
+    expect(scheduled()).not.toBeNull();
+    expect(scheduled()).toBeLessThanOrEqual(Date.now() + 10_000);
+  });
+
+  it("refuses backend variants through the action and queued setup without starting paid work", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const initial = baseState(new Date().toISOString(), "done", []);
+    initial.spec.scope = "backend";
+    const action = fakeRun(initial);
+    await action.ready;
+    await expect(action.run.makeVariants()).rejects.toThrow("frontend scope");
+    expect(action.persisted()).toMatchObject({ phase: "done", tasks: [] });
+    const queued = fakeRun({
+      ...initial,
+      phase: "variants",
+      pending: "variants",
+    });
+    await queued.ready;
+    await queued.run.alarm();
+    expect(queued.persisted()).toMatchObject({ phase: "done", tasks: [] });
+    expect(queued.persisted().variants).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    ["frontend", "both"].flatMap((scope) =>
+      ["fork", "copy"].map((pod) => [scope, pod]),
+    ),
+  )(
+    "starts executable %s previews in every %s variant on its own port",
+    async (scope, pod) => {
+      const dir = mkdtempSync(join(process.cwd(), ".review-preview-"));
+      const mainDir = join(dir, "main");
+      const sessions = new Set<string>();
+      const launches: {
+        sb: string;
+        session: string;
+        program: string;
+        port: number;
+        dir: string;
+      }[] = [];
+      let forks = 1;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((i) => ({
+                title: `Variant ${i}`,
+                change: "Layout",
+                explanation: "Alternative",
+              })),
+            }),
+          });
+        if (input.endsWith("/fork")) {
+          const id = `sb${++forks}`;
+          sessions.add(`${id}:preview`);
+          return reply({ id });
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (init.method === "DELETE") {
+          const match = input.match(
+            /toolbox.test\/(sb\d+)\/process\/session\/(.+)$/,
+          );
+          if (match) sessions.delete(`${match[1]}:${match[2]}`);
+          return reply({});
+        }
+        if (input.startsWith("https://daytona.test/sandbox/"))
+          return reply({ id: input.split("/").pop(), state: "started" });
+        return reply({ exitCode: 0, result: "abc" });
+      });
+      vi.spyOn(Daytona.prototype, "startAsync").mockImplementation(
+        async (sb, session, command, beforeWork) => {
+          await beforeWork?.();
+          expect(sessions.has(`${sb}:${session}`)).toBe(false);
+          const mapped = command
+            .replaceAll("/home/daytona/app", mainDir)
+            .replaceAll("/home/daytona/variants/", `${dir}/`);
+          const output = execFileSync(
+            "bash",
+            [
+              "-c",
+              `node() { printf '{"program":"node","port":%s,"dir":"%s"}\n' "$PORT" "$PWD"; exit; }; npx() { printf '{"program":"serve","port":%s,"dir":"%s"}\n' "$4" "$PWD"; exit; }; ${mapped}`,
+            ],
+            { encoding: "utf8" },
+          );
+          launches.push({ sb, session, ...JSON.parse(output) });
+          sessions.add(`${sb}:${session}`);
+          return "preview-command";
+        },
+      );
+      try {
+        for (const name of ["main", "v1", "v2", "v3"])
+          mkdirSync(join(dir, name));
+        const initial = baseState(new Date().toISOString(), "done", []);
+        initial.spec.scope = scope;
+        const { run, ready } = fakeRun({
+          ...initial,
+          forkUnavailable: pod === "copy",
+        });
+        await ready;
+        await run.makeVariants();
+        await run.alarm();
+        expect(launches).toHaveLength(3);
+        launches.forEach((launch, i) =>
+          expect(launch).toMatchObject({
+            program: scope === "both" ? "node" : "serve",
+            port: pod === "fork" ? 3000 : 3001 + i,
+            dir: pod === "fork" ? mainDir : join(dir, `v${i + 1}`),
+          }),
+        );
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(
+    ["new", "frontend", "backend", "both"].flatMap((from) =>
+      ["frontend", "backend", "both"].map((to) => [from, to]),
+    ),
+  )(
+    "replaces an existing %s preview for an approved %s continuation",
+    async (from, to) => {
+      const dir = mkdtempSync(join(process.cwd(), ".review-preview-"));
+      let session: { program: string; port: number; dir?: string } | undefined =
+        from === "new"
+          ? undefined
+          : { program: from === "frontend" ? "serve" : "node", port: 3000 };
+      let allocated = false;
+      const deleted: string[] = [];
+      mockFetch();
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (
+          input === "https://daytona.test/sandbox" &&
+          init.method === "POST"
+        ) {
+          allocated = true;
+          return reply({ id: "sb1" });
+        }
+        if (input === "https://daytona.test/sandbox/sb1")
+          return reply({ id: "sb1", state: "started" });
+        if (
+          init.method === "DELETE" &&
+          input.endsWith("/process/session/preview")
+        ) {
+          deleted.push(input);
+          const exists = Boolean(session);
+          session = undefined;
+          return exists ? reply({}) : new Response("missing", { status: 404 });
+        }
+        return provider(input, init);
+      });
+      vi.spyOn(Daytona.prototype, "startAsync").mockImplementation(
+        async (_sb, _session, command) => {
+          expect(session).toBeUndefined();
+          session = JSON.parse(
+            execFileSync(
+              "bash",
+              [
+                "-c",
+                `node() { printf '{"program":"node","port":%s,"dir":"%s"}\n' "$PORT" "$PWD"; exit; }; npx() { printf '{"program":"serve","port":%s,"dir":"%s"}\n' "$4" "$PWD"; exit; }; ${command.replaceAll("/home/daytona/app", dir)}`,
+              ],
+              { encoding: "utf8" },
+            ),
+          );
+          return "replacement-preview";
+        },
+      );
+      try {
+        const initial = baseState(new Date().toISOString(), "planned", []);
+        initial.spec.scope = to;
+        const { run, ready, persisted } = fakeRun({
+          ...initial,
+          sandboxId: from === "new" ? undefined : "sb1",
+          promoted: from === "new" ? undefined : "v1",
+        });
+        await ready;
+        await run.startBuild();
+        await run.alarm();
+        expect(deleted).toEqual([
+          "https://toolbox.test/sb1/process/session/preview",
+        ]);
+        expect(session).toEqual({
+          program: to === "frontend" ? "serve" : "node",
+          port: 3000,
+          dir,
+        });
+        expect(persisted()).toMatchObject({
+          phase: "building",
+          sandboxId: "sb1",
+          previewReady: true,
+          pending: undefined,
+        });
+        expect(allocated).toBe(from === "new");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });

@@ -160,4 +160,26 @@ describe("Daytona shutdown", () => {
       expect(owned).toEqual(["sb1"]);
     },
   );
+  it.each([200, 404, 503])(
+    "deletes only the selected preview session (HTTP %i)",
+    async (status) => {
+      const fetcher = vi.fn(async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/toolbox-proxy-url"))
+          return Response.json({ url: "https://toolbox.test" });
+        return new Response("", { status });
+      });
+      vi.stubGlobal("fetch", fetcher);
+      const deleting = client().deleteSession("sb1", "preview-v2");
+      if (status === 503) await expect(deleting).rejects.toThrow("503");
+      else await expect(deleting).resolves.toBeUndefined();
+      expect(
+        fetcher.mock.calls.filter(([, init]) => init.method === "DELETE"),
+      ).toEqual([
+        [
+          "https://toolbox.test/sb1/process/session/preview-v2",
+          expect.objectContaining({ method: "DELETE" }),
+        ],
+      ]);
+    },
+  );
 });

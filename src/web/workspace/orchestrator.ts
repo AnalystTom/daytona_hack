@@ -18,6 +18,7 @@ export type OrchestratorEvent = z.infer<typeof OrchestratorEvent>;
 const Chat = z.object({ role: z.string(), text: z.string() });
 const ErrorData = z.object({ message: z.string() });
 const Spec = z.object({
+  scope: z.enum(["frontend", "backend", "both", "report"]).optional(),
   url: z.string(),
   redirects: z.array(z.string()).optional(),
   pages: z.array(
@@ -90,6 +91,7 @@ const EVIDENCE_PATH = /^\/runs\/[\w-]+\/evidence\/[\w-]+$/;
 
 export type RunView = {
   phase?: string;
+  scope?: z.infer<typeof Spec>["scope"];
   report?: ReportDissection;
   hasPreview: boolean;
   draftSpec?: DraftSpec;
@@ -170,7 +172,10 @@ export function runView(
       }
       case "spec": {
         const spec = Spec.safeParse(data);
-        if (spec.success) view.draftSpec = draftSpec(spec.data);
+        if (spec.success) {
+          view.draftSpec = draftSpec(spec.data);
+          view.scope = spec.data.scope;
+        }
         break;
       }
       case "evidence": {

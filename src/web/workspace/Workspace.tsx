@@ -424,6 +424,7 @@ export function Workspace({
               runId={runId}
               onRefused={(e) => addNotice(e)}
               phase={run.phase}
+              scope={run.scope}
               variants={run.variants}
               onMakeVariants={() =>
                 runId && void act(runAction(runId, "variants"))

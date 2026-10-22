@@ -165,6 +165,7 @@ async function setup(
   const startWorker = vi
     .spyOn(Daytona.prototype, "startAsync")
     .mockResolvedValue("cmd1");
+  vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
   vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue(undefined);
   vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "sb1" });
   vi.spyOn(Daytona.prototype, "remove").mockResolvedValue(undefined);
@@ -620,7 +621,6 @@ describe("run paid-work deadlines", () => {
       await expect(run.override("t01", "approve", "continue")).rejects.toThrow(
         /stopping/,
       );
-      await run.alarm();
       expect(
         storage.setAlarm.mock.calls.every(
           ([at]) => at <= Date.now() + 120 * 60_000,
@@ -642,7 +642,7 @@ describe("run paid-work deadlines", () => {
   );
 
   it.each(["network", "command"] as const)(
-    "keeps cancellation pending after a %s failure until an explicit successful stop",
+    "completes cancellation after a %s failure when its alarm retries",
     async (kind) => {
       const { run, data, calls, storage } = await setup({
         phase: "building",
@@ -674,7 +674,6 @@ describe("run paid-work deadlines", () => {
           ([at]) => at <= Date.now() + 120 * 60_000,
         ),
       ).toBe(true);
-      await run.stop();
       expect(await run.getState()).toMatchObject({
         phase: "stopped",
         pending: undefined,

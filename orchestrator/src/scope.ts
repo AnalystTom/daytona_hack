@@ -67,11 +67,11 @@ export function stackRule(scope: Scope) {
 }
 
 /** How the sandbox serves the integration branch on port 3000. */
-export function previewCommand(scope: Scope, app: string) {
+export function previewCommand(scope: Scope, app: string, port = 3000) {
   // the service appears once the foundation merges, so retry until it starts
   return scope === "backend" || scope === "both"
-    ? `cd ${app} && while true; do PORT=3000 node ${SERVER}; sleep 3; done`
-    : `cd ${app} && npx -y serve -l 3000 -n .`;
+    ? `cd ${app} && while true; do PORT=${port} node ${SERVER}; sleep 3; done`
+    : `cd ${app} && npx -y serve -l ${port} -n .`;
 }
 
 const FRONTEND_FILE =

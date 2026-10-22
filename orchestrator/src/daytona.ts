@@ -230,6 +230,17 @@ export class Daytona {
     return r.result;
   }
 
+  async deleteSession(id: string, sessionId: string) {
+    try {
+      await this.call(`${await this.tb(id)}/process/session/${sessionId}`, {
+        method: "DELETE",
+      });
+    } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404) return;
+      throw error;
+    }
+  }
+
   /** Start a long command in its own session; returns immediately. */
   async startAsync(
     id: string,

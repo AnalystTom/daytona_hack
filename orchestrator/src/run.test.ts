@@ -434,6 +434,7 @@ describe("run scope", () => {
       // All sandbox work and model answers are test doubles; no paid run starts.
       vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "test" });
       vi.spyOn(Daytona.prototype, "must").mockResolvedValue("");
+      vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
       vi.spyOn(Daytona.prototype, "startAsync").mockResolvedValue("cmd");
       const uploads = vi
         .spyOn(Daytona.prototype, "writeFile")

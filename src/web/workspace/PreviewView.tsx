@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { VariantView } from "./orchestrator";
+import type { RunView, VariantView } from "./orchestrator";
 import {
   fetchPreviewLink,
   fetchRun,
@@ -78,6 +78,7 @@ export function PreviewView({
   runId,
   onRefused,
   phase,
+  scope,
   variants,
   onMakeVariants,
   onPromote,
@@ -85,6 +86,7 @@ export function PreviewView({
   runId: string;
   onRefused: (error: RunCallError) => void;
   phase?: string;
+  scope?: RunView["scope"];
   variants: readonly VariantView[];
   onMakeVariants: () => void;
   onPromote: (variantId: string) => void;
@@ -170,66 +172,73 @@ export function PreviewView({
         />
       </section>
 
-      <section className="preview-variants" aria-label="Landing-page variants">
-        <div className="preview-head">
-          <div>
-            <h2>Landing-page variants</h2>
-            <p className="muted">
-              Three alternatives built from a snapshot of this rebuild. Promote
-              one to keep building from it.
-            </p>
+      {(scope === "frontend" || scope === "both") && (
+        <section
+          className="preview-variants"
+          aria-label="Landing-page variants"
+        >
+          <div className="preview-head">
+            <div>
+              <h2>Landing-page variants</h2>
+              <p className="muted">
+                Three alternatives built from a snapshot of this rebuild.
+                Promote one to keep building from it.
+              </p>
+            </div>
+            {variants.length === 0 && (
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={!finished}
+                title={
+                  finished ? undefined : "Available once the build finishes"
+                }
+                onClick={onMakeVariants}
+              >
+                Make three variants
+              </button>
+            )}
           </div>
-          {variants.length === 0 && (
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={!finished}
-              title={finished ? undefined : "Available once the build finishes"}
-              onClick={onMakeVariants}
-            >
-              Make three variants
-            </button>
+          {variants.length > 0 && (
+            <ul className="variant-list">
+              {variants.map((v) => (
+                <li key={v.id} className="card variant-card">
+                  <div className="card-head">
+                    <h3 className="card-title">{v.title}</h3>
+                    <span className={`variant-status variant-${v.status}`}>
+                      {STATUS[v.status]}
+                    </span>
+                  </div>
+                  <p>{v.explanation}</p>
+                  <p className="muted">
+                    {v.pod === "fork"
+                      ? "Fork of the merged rebuild"
+                      : "Copy of the merged rebuild"}
+                  </p>
+                  {(v.status === "ready" || v.status === "promoted") && (
+                    <VariantPreview
+                      key={`${runId}:${v.id}:${attempt}:${promotedId}`}
+                      runId={runId}
+                      variant={v}
+                      onRefused={onRefused}
+                    />
+                  )}
+                  {v.status === "ready" && (
+                    <button
+                      type="button"
+                      className="button button-primary"
+                      disabled={!finished || promoted}
+                      onClick={() => onPromote(v.id)}
+                    >
+                      Promote this variant
+                    </button>
+                  )}
+                </li>
+              ))}
+            </ul>
           )}
-        </div>
-        {variants.length > 0 && (
-          <ul className="variant-list">
-            {variants.map((v) => (
-              <li key={v.id} className="card variant-card">
-                <div className="card-head">
-                  <h3 className="card-title">{v.title}</h3>
-                  <span className={`variant-status variant-${v.status}`}>
-                    {STATUS[v.status]}
-                  </span>
-                </div>
-                <p>{v.explanation}</p>
-                <p className="muted">
-                  {v.pod === "fork"
-                    ? "Fork of the merged rebuild"
-                    : "Copy of the merged rebuild"}
-                </p>
-                {(v.status === "ready" || v.status === "promoted") && (
-                  <VariantPreview
-                    key={`${runId}:${v.id}:${attempt}:${promotedId}`}
-                    runId={runId}
-                    variant={v}
-                    onRefused={onRefused}
-                  />
-                )}
-                {v.status === "ready" && (
-                  <button
-                    type="button"
-                    className="button button-primary"
-                    disabled={!finished || promoted}
-                    onClick={() => onPromote(v.id)}
-                  >
-                    Promote this variant
-                  </button>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </section>
+        </section>
+      )}
     </div>
   );
 }
