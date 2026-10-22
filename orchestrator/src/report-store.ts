@@ -15,8 +15,17 @@ export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
   const { report } = snapshot;
   const key = `reports/${report.runId}/${crypto.randomUUID()}`;
   await blobs.put(key, JSON.stringify(snapshot));
+  let superseded: string | undefined;
   try {
-    await db.batch([
+    const object = await blobs.get(key);
+    const saved = object ? (JSON.parse(await object.text()) as Snapshot) : null;
+    if (!saved || ReportDissection.parse(saved.report).runId !== report.runId)
+      throw new Error("Report persistence could not be confirmed");
+    const [previous] = await db.batch<{ snapshot_key: string }>([
+      db.statement(
+        "SELECT snapshot_key FROM report_run WHERE run_id=?",
+        report.runId,
+      ),
       db.statement(
         "INSERT INTO report_run(run_id,target,completed_at,snapshot_key) VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET target=excluded.target,completed_at=excluded.completed_at,snapshot_key=excluded.snapshot_key",
         report.runId,
@@ -42,18 +51,12 @@ export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
         ),
       ),
     ]);
+    superseded = previous.results[0]?.snapshot_key;
   } catch (error) {
     await blobs.delete(key);
     throw error;
   }
-  const [receipt] = await db.rows<{ snapshot_key: string }>(
-    "SELECT snapshot_key FROM report_run WHERE run_id=?",
-    report.runId,
-  );
-  const object = receipt ? await blobs.get(receipt.snapshot_key) : null;
-  const saved = object ? (JSON.parse(await object.text()) as Snapshot) : null;
-  if (!saved || ReportDissection.parse(saved.report).runId !== report.runId)
-    throw new Error("Report persistence could not be confirmed");
+  if (superseded) await blobs.delete(superseded);
 }
 
 export async function saveEdit(

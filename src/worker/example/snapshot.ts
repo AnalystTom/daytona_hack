@@ -74,17 +74,23 @@ export function cloudflareExampleStore(db: D1RunStore): ExampleStore {
           throw new Error("Example storage is not configured: missing BLOBS");
         await db.blobs.put(blobKey, json);
       }
+      let superseded: string | null | undefined;
       try {
-        await db.rows(
-          "INSERT INTO example(key,value,blob_key) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,blob_key=excluded.blob_key",
-          key,
-          large ? null : json,
-          blobKey,
-        );
+        const [previous] = await db.batch<{ blob_key: string | null }>([
+          db.statement("SELECT blob_key FROM example WHERE key=?", key),
+          db.statement(
+            "INSERT INTO example(key,value,blob_key) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,blob_key=excluded.blob_key",
+            key,
+            large ? null : json,
+            blobKey,
+          ),
+        ]);
+        superseded = previous.results[0]?.blob_key;
       } catch (error) {
         if (blobKey) await db.blobs?.delete(blobKey);
         throw error;
       }
+      if (superseded) await db.blobs?.delete(superseded);
     },
   };
 }
