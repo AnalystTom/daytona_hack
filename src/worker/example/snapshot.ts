@@ -92,7 +92,7 @@ export function cloudflareExampleStore(db: D1RunStore): ExampleStore {
             blobKey,
           ),
         ]);
-        superseded = previous.results[0]?.blob_key;
+        superseded = previous?.results[0]?.blob_key;
       } catch (error) {
         if (blobKey) await db.blobs?.delete(blobKey);
         throw error;

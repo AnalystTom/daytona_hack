@@ -162,7 +162,7 @@ describe("evidence routes", () => {
     const anchorCalls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: string, init: RequestInit = {}) => {
+      vi.fn(async (input: string) => {
         const url = new URL(input);
         anchorCalls.push(url.pathname);
         if (url.pathname === "/v1/sessions")

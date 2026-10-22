@@ -123,6 +123,7 @@ describe("example replacements in local D1 and R2", () => {
     const [reference] = await db.rows<{ blob_key: string }>(
       "SELECT blob_key FROM example WHERE key='current'",
     );
+    assert(reference);
     expect(
       (await env.BLOBS.list()).objects.map((object) => object.key),
     ).toEqual([reference.blob_key]);
@@ -250,6 +251,7 @@ describe("example replacements in local D1 and R2", () => {
     const [reference] = await db.rows<{ blob_key: string }>(
       "SELECT blob_key FROM example WHERE key='current'",
     );
+    assert(reference);
     await env.BLOBS.delete(reference.blob_key);
     await expect(store.get("current")).rejects.toThrow(
       "Example content is missing",

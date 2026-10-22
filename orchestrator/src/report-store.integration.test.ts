@@ -90,7 +90,9 @@ describe("report persistence in local D1 and R2", () => {
       "SELECT run_id,snapshot_key FROM report_run ORDER BY run_id",
     );
     expect(
-      (await cloudflare.BLOBS.list()).objects.map((object) => object.key).sort(),
+      (await cloudflare.BLOBS.list()).objects
+        .map((object) => object.key)
+        .sort(),
     ).toEqual(references.map((row) => row.snapshot_key).sort());
     expect(await cloudflare.BLOBS.get(previous.snapshot_key)).toBeNull();
     for (const reference of references) {
