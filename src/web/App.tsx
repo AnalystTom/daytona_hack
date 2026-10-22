@@ -5,17 +5,14 @@ import { ExampleWorkspace } from "./workspace/ExampleWorkspace";
 import { specFixture } from "./workspace/fixtures";
 import { Workspace } from "./workspace/Workspace";
 
-// Bare /workspace shows the saved example until a session is started: Start your own, New
-// session and a brief from /start all give the history entry a session key.
+// Bare /workspace starts a new session; examples have their own explicit route.
 export function workspaceRoute(
   path: string,
-  session: string | undefined,
-  fixture = false,
 ): "example" | { runId?: string } | null {
   const match = path.match(/^\/workspace(?:\/([\w-]{1,100}))?\/?$/);
   if (!match) return null;
   const runId = match[1];
-  if (runId === "example" || (!runId && !session && !fixture)) return "example";
+  if (runId === "example") return "example";
   return { runId };
 }
 
@@ -27,7 +24,7 @@ export function App() {
   const fixture =
     import.meta.env.DEV &&
     new URLSearchParams(window.location.search).get("fixture") === "spec";
-  const workspace = workspaceRoute(path, session, fixture);
+  const workspace = workspaceRoute(path);
   if (workspace === "example") return <ExampleWorkspace />;
   if (workspace) {
     const { runId } = workspace;

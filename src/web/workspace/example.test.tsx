@@ -198,25 +198,25 @@ describe("ExampleRun", () => {
 });
 
 describe("workspaceRoute", () => {
-  it("opens the example on bare /workspace and /workspace/example", () => {
-    expect(workspaceRoute("/workspace", undefined)).toBe("example");
-    expect(workspaceRoute("/workspace/", undefined)).toBe("example");
-    expect(workspaceRoute("/workspace/example", "s1")).toBe("example");
+  it("opens a new session on bare /workspace, including a fresh visitor or reload", () => {
+    expect(workspaceRoute("/workspace")).toEqual({ runId: undefined });
+    expect(workspaceRoute("/workspace/")).toEqual({ runId: undefined });
   });
 
-  it("opens a session once one is started, and runs by id", () => {
-    expect(workspaceRoute("/workspace", "s1")).toEqual({ runId: undefined });
-    expect(workspaceRoute("/workspace", undefined, true)).toEqual({
-      runId: undefined,
-    });
-    expect(workspaceRoute(`/workspace/${RUN}`, undefined)).toEqual({
-      runId: RUN,
-    });
-    expect(workspaceRoute("/start", undefined)).toBeNull();
+  it("opens examples only on their explicit route, and runs by id", () => {
+    expect(workspaceRoute("/workspace/example")).toBe("example");
+    expect(workspaceRoute(`/workspace/${RUN}`)).toEqual({ runId: RUN });
+    expect(workspaceRoute("/start")).toBeNull();
   });
 
   it("is where Start a project leads from the landing page", () => {
     const landing = renderToStaticMarkup(<Landing />);
-    expect(landing).toMatch(/href="\/workspace"[^>]*>Start a project/);
+    const entries = [
+      ...landing.matchAll(/href="([^"]+)"[^>]*>Start a project/g),
+    ];
+    expect(entries).toHaveLength(3);
+    for (const entry of entries) {
+      expect(workspaceRoute(entry[1] ?? "")).toEqual({ runId: undefined });
+    }
   });
 });

@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useRef, useState } from "react";
 import { followLink, navigate } from "../router";
 import { ownedSessions, phaseLabel, RUN_ID, type Session } from "./sessions";
 import type { RunCallError } from "./runClient";
+import { fetchExample } from "./example";
 
 // "www.daytona.io/pricing" rather than the full URL; the run id until the target is known.
 export function sessionTitle(session: Pick<Session, "runId" | "target">) {
@@ -14,7 +15,7 @@ export function sessionTitle(session: Pick<Session, "runId" | "target">) {
   }
 }
 
-// The saved example run; bare /workspace also shows it until a session is started.
+// The saved example has a dedicated read-only route.
 export const EXAMPLE_PATH = "/workspace/example";
 
 export function startNewSession() {
@@ -31,6 +32,7 @@ export function SessionSwitcher({
   example?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  const [hasExample, setHasExample] = useState(example);
   const [sessions, setSessions] = useState<Session[]>();
   const [error, setError] = useState<RunCallError>();
   const [runId, setRunId] = useState("");
@@ -40,6 +42,9 @@ export function SessionSwitcher({
   useEffect(() => {
     if (!open) return;
     let live = true;
+    void fetchExample().then((result) => {
+      if (live) setHasExample(result.ok);
+    });
     void ownedSessions().then((result) => {
       if (!live) return;
       if (result.ok) setSessions(result.value);
@@ -89,6 +94,7 @@ export function SessionSwitcher({
         aria-expanded={open}
         aria-controls="ss-panel"
         onClick={() => {
+          setHasExample(example);
           setSessions(undefined);
           setError(undefined);
           setOpen((o) => !o);
@@ -118,18 +124,20 @@ export function SessionSwitcher({
           >
             New session
           </button>
-          <a
-            className="ss-item ss-example"
-            href={EXAMPLE_PATH}
-            aria-current={example ? "page" : undefined}
-            onClick={(event) => {
-              setOpen(false);
-              followLink(event);
-            }}
-          >
-            <span className="ss-target">Example run</span>
-            <span className="ss-phase">Saved, read-only</span>
-          </a>
+          {hasExample && (
+            <a
+              className="ss-item ss-example"
+              href={EXAMPLE_PATH}
+              aria-current={example ? "page" : undefined}
+              onClick={(event) => {
+                setOpen(false);
+                followLink(event);
+              }}
+            >
+              <span className="ss-target">Example run</span>
+              <span className="ss-phase">Saved, read-only</span>
+            </a>
+          )}
           {error ? (
             <p className="ss-empty" role="status">
               {error.detail}
