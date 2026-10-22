@@ -114,7 +114,7 @@ describe("evidence routes", () => {
     expect(response.status).toBe(400);
   });
 
-  it("serves a stored record and its content (fixture SurrealDB)", async () => {
+  it("serves a stored record and its content from D1 and R2", async () => {
     const id = "ev_00000000-0000-4000-8000-000000000000";
     const record = {
       id,
@@ -147,7 +147,7 @@ describe("evidence routes", () => {
     expect(await content.text()).toBe("<h>");
   });
 
-  // Fixture SurrealDB and Anchor behind one fetch: run_1 exists only when `runExists`.
+  // Seeds run_1 in local D1 only when `runExists`; fetch is stubbed for Anchor.
   async function fakeBackends(runExists: boolean) {
     if (runExists)
       await new D1RunStore(cloudflare.DB).createRun({

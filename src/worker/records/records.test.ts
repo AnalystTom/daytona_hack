@@ -53,7 +53,7 @@ describe("recordRunEvent", () => {
     expect(records?.approvals).toHaveLength(1);
   });
 
-  it("gives each steering record of a UUID run its own id that SurrealDB keeps as a string", async () => {
+  it("gives each steering record of a UUID run its own string id", async () => {
     const store = new MemoryRunStore();
     const uuidRun = { ...run, id: "6ab3fca5-1c2d-4e5f-8a9b-8546ef50d8fa" };
     const at = (seq: number, type: string, data: unknown) => ({
