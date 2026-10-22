@@ -1,19 +1,10 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { EvidenceRecord } from "../../shared/evidence";
-import { SurrealRunStore } from "../store/surreal";
-import { surrealOk } from "./fixtures";
-import { surrealStore } from "./store";
-
-const config = {
-  url: "https://db.example.test/",
-  namespace: "reversy",
-  database: "main",
-  user: "user",
-  password: "pass",
-};
-const db = (database = config.database) =>
-  new SurrealRunStore({ ...config, database });
-
+import { D1RunStore } from "../store/d1";
+import { testStorage } from "../test/storage";
+import { cloudflareEvidenceStore } from "./store";
+const env = testStorage();
+const store = () => cloudflareEvidenceStore(new D1RunStore(env.DB, env.BLOBS));
 const record: EvidenceRecord = {
   id: "ev_00000000-0000-4000-8000-000000000000",
   runId: "run_1",
@@ -28,164 +19,69 @@ const record: EvidenceRecord = {
   contentType: "text/html",
   byteLength: 3,
 };
-
-// Fixture SurrealDB RPC endpoint: records each statement after the run store's
-// schema and answers from a queue.
-function fakeSurreal(responses: unknown[]) {
-  const requests: {
-    sql: string;
-    vars: Record<string, unknown>;
-    headers: Headers;
-  }[] = [];
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (url: string, init: RequestInit) => {
-      expect(url).toBe("https://db.example.test/rpc");
-      const { params } = JSON.parse(String(init.body));
-      if (params[0].includes("DEFINE TABLE"))
-        return Response.json(surrealOk([]));
-      requests.push({
-        sql: params[0],
-        vars: params[1],
-        headers: new Headers(init.headers),
-      });
-      return Response.json(responses.shift() ?? surrealOk([]));
-    }),
-  );
-  return requests;
-}
-
-afterEach(() => vi.unstubAllGlobals());
-
-describe("surrealStore (fixture SurrealDB responses)", () => {
-  it.each([3, 2 * 1024 * 1024 + 1])(
-    "stops a cancelled %i-byte upload before further chunks or its record",
+describe("D1 evidence records and R2 content", () => {
+  it.each([0, 3, 3 * 1024 * 1024])(
+    "round-trips %i bytes outside D1 row limits",
     async (size) => {
-      const controller = new AbortController();
-      const requests = fakeSurreal([]);
-      const respond = vi.mocked(fetch).getMockImplementation()!;
-      vi.mocked(fetch).mockImplementation(async (input, init) => {
-        const response = await respond(input, init);
-        if (requests.length === 1) controller.abort();
-        return response;
-      });
-      await expect(
-        surrealStore(db()).putEvidence(
-          { ...record, byteLength: size },
-          new Uint8Array(size),
-          controller.signal,
-        ),
-      ).rejects.toMatchObject({ name: "AbortError" });
-      expect(requests).toHaveLength(1);
-      expect(requests[0]?.vars.chunk).toMatchObject({
-        evidence: record.id,
-        index: 0,
-      });
-      expect(requests[0]?.vars.row).toBeUndefined();
+      const bytes = Uint8Array.from({ length: size }, (_, i) => i % 251);
+      const current = { ...record, byteLength: size };
+      await store().putEvidence(current, bytes);
+      expect(await store().getEvidence(record.id)).toEqual(current);
+      expect(
+        Buffer.from((await store().getContent(record.id)) ?? []).equals(bytes),
+      ).toBe(true);
     },
   );
-
-  it("writes content chunks before the record, with namespace and auth headers", async () => {
-    const requests = fakeSurreal([]);
-    await surrealStore(db()).putEvidence(record, new Uint8Array([60, 104, 62]));
-
-    expect(requests.map((r) => r.sql)).toEqual([
-      `CREATE evidence_chunk:\`${record.id}_0\` CONTENT $chunk`,
-      `CREATE evidence:\`${record.id}\` CONTENT $row`,
+  it("returns null for missing evidence and takes sign-in sessions once under concurrency", async () => {
+    expect(await store().getEvidence(record.id)).toBeNull();
+    expect(await store().getContent(record.id)).toBeNull();
+    const signIn = { sessionId: "s1", origin: "https://example.com" };
+    await store().saveSignIn("run_1", signIn);
+    const taken = await Promise.all([
+      store().takeSignIn("run_1"),
+      store().takeSignIn("run_1"),
     ]);
-    expect(requests[0]?.vars.chunk).toEqual({
-      evidence: record.id,
-      index: 0,
-      data: "PGg+",
-    });
-    expect(requests[1]?.vars.row).toEqual({
-      runId: "run_1",
-      chunks: 1,
-      record,
-    });
-    expect(requests[0]?.headers.get("surreal-ns")).toBe("reversy");
-    expect(requests[0]?.headers.get("surreal-db")).toBe("main");
-    expect(requests[0]?.headers.get("authorization")).toBe(
-      `Basic ${btoa("user:pass")}`,
-    );
+    expect(taken.filter(Boolean)).toEqual([signIn]);
   });
-
-  it("reassembles content from its chunks in order", async () => {
-    const requests = fakeSurreal([
-      surrealOk([2]),
-      surrealOk(["PGg+", "PC9oPg=="]),
-    ]);
-    const bytes = await surrealStore(db()).getContent(record.id);
-
-    expect(new TextDecoder().decode(bytes as Uint8Array)).toBe("<h></h>");
-    expect(requests[1]?.sql).toBe(
-      `SELECT VALUE data FROM [evidence_chunk:\`${record.id}_0\`, evidence_chunk:\`${record.id}_1\`]`,
-    );
-  });
-
-  it("reads a record back and returns null when absent", async () => {
-    fakeSurreal([surrealOk([record]), surrealOk([])]);
-    const store = surrealStore(db());
-    expect(await store.getEvidence(record.id)).toEqual(record);
-    expect(await store.getEvidence(record.id)).toBeNull();
-  });
-
-  it("takes a sign-in session once", async () => {
-    const requests = fakeSurreal([
-      surrealOk([{ sessionId: "s1", origin: "https://example.com" }]),
-      surrealOk([]),
-    ]);
-    const store = surrealStore(db());
-    expect(await store.takeSignIn("run_1")).toEqual({
-      sessionId: "s1",
-      origin: "https://example.com",
-    });
-    expect(await store.takeSignIn("run_1")).toBeNull();
-    expect(requests[0]?.sql).toBe("DELETE sign_in:`run_1` RETURN BEFORE");
-  });
-
-  it("works on a fresh database whose tables do not exist yet", async () => {
-    // Like SurrealDB 3.x: reading or deleting from an undefined table fails.
-    const defined = new Set<string>();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (_url: string, init: RequestInit) => {
-        const sql: string = JSON.parse(String(init.body)).params[0];
-        const statements = sql
-          .split(";")
-          .map((s) => s.trim())
-          .filter(Boolean);
-        return Response.json({
-          id: 1,
-          result: statements.map((statement) => {
-            const table = /^DEFINE TABLE IF NOT EXISTS (\w+)/.exec(statement);
-            if (table) {
-              defined.add(table[1] as string);
-              return { status: "OK", result: null };
-            }
-            const target = /(?:FROM|DELETE) (\w+):/.exec(statement)?.[1];
-            return target && !defined.has(target)
-              ? {
-                  status: "ERR",
-                  result: `The table '${target}' does not exist`,
-                }
-              : { status: "OK", result: [] };
-          }),
-        });
-      }),
-    );
-    const store = surrealStore(db("fresh"));
-    expect(await store.takeSignIn("run_1")).toBeNull();
-    expect(await store.getEvidence(record.id)).toBeNull();
-    expect(await store.getContent(record.id)).toBeNull();
-  });
-
-  it("raises statement errors and refuses ids that could inject SurrealQL", async () => {
-    fakeSurreal([{ id: 1, result: [{ status: "ERR", result: "boom" }] }]);
-    const store = surrealStore(db());
-    await expect(store.getEvidence(record.id)).rejects.toThrow("boom");
+  it("does not publish cancelled uploads or replace an existing record on duplicate writes", async () => {
+    const controller = new AbortController();
+    controller.abort();
     await expect(
-      store.getEvidence("ev_x`; REMOVE TABLE evidence; --"),
+      store().putEvidence(record, new Uint8Array([1]), controller.signal),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(await store().getEvidence(record.id)).toBeNull();
+    await store().putEvidence(record, new Uint8Array([1]));
+    await expect(
+      store().putEvidence(record, new Uint8Array([2])),
+    ).rejects.toThrow();
+    expect(await store().getContent(record.id)).toEqual(new Uint8Array([1]));
+    expect((await env.BLOBS.list()).objects).toHaveLength(1);
+  });
+  it("removes an upload if cancellation occurs during R2 upload", async () => {
+    const controller = new AbortController();
+    const original = env.BLOBS.put.bind(env.BLOBS);
+    const blobs = {
+      put: async (...args: Parameters<R2Bucket["put"]>) => {
+        const result = await original(...args);
+        controller.abort();
+        return result;
+      },
+      delete: env.BLOBS.delete.bind(env.BLOBS),
+    } as R2Bucket;
+    const db = new D1RunStore(env.DB, blobs);
+    await expect(
+      cloudflareEvidenceStore(db).putEvidence(
+        record,
+        new Uint8Array([1]),
+        controller.signal,
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+    expect(await store().getEvidence(record.id)).toBeNull();
+    expect((await env.BLOBS.list()).objects).toHaveLength(0);
+  });
+  it("refuses malformed identifiers", async () => {
+    await expect(
+      store().getEvidence("ev_x'; DROP TABLE evidence; --"),
     ).rejects.toThrow("Invalid evidence id");
   });
 });

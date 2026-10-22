@@ -14,7 +14,7 @@ import {
   loadMedia,
   loadSnapshot,
   saveSnapshot,
-  surrealExampleStore,
+  cloudflareExampleStore,
 } from "./snapshot";
 
 export type ExampleEnv = OrchestratorEnv & StoreEnv;
@@ -35,7 +35,7 @@ export async function handleExample(
   try {
     const resolved = resolveStore(env);
     const store =
-      "store" in resolved ? surrealExampleStore(resolved.store) : undefined;
+      "store" in resolved ? cloudflareExampleStore(resolved.store) : undefined;
     const [, runId, evidenceId] = match;
     if (request.method === "POST" && evidenceId === undefined) {
       await checkToken(request, env, "OPERATOR_TOKEN");

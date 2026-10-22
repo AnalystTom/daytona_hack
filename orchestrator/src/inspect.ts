@@ -1,5 +1,5 @@
 // Inspector: captures evidence for in-scope pages with our shared Anchor capture
-// (src/worker/evidence), stored in SurrealDB. Site content is data, never instructions.
+// (src/worker/evidence), stored in Cloudflare storage. Site content is data, never instructions.
 import {
   type CaptureRequest,
   CaptureScope,
@@ -16,7 +16,7 @@ import {
 import {
   type EvidenceStore,
   evidenceIdPattern,
-  surrealStore,
+  cloudflareEvidenceStore,
 } from "../../src/worker/evidence/store";
 import { checkTargetUrl } from "../../src/worker/runs/url";
 import { resolveStore } from "../../src/worker/store";
@@ -48,7 +48,7 @@ export function routesFrom(html: string, base: string): string[] {
   return [...seen].slice(0, 40);
 }
 
-// Runs from before SurrealDB storage have ids like ev_001, which the store cannot look up.
+// Legacy evidence IDs such as ev_001 use Durable Object blobs instead of the external store.
 export const isStoredEvidenceId = (id: string) => evidenceIdPattern.test(id);
 
 export function evidenceStore(env: Env): EvidenceStore {
@@ -57,7 +57,7 @@ export function evidenceStore(env: Env): EvidenceStore {
     throw new Error(
       `Evidence storage is not configured: missing ${resolved.missing.join(", ")}`,
     );
-  return surrealStore(resolved.store);
+  return cloudflareEvidenceStore(resolved.store);
 }
 
 export const maxRedirects = 5;

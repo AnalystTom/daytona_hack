@@ -1,4 +1,4 @@
-// Network gateway for the run sandbox. On Daytona Tier 1/2 the sandbox cannot reach Anchor or SurrealDB,
+// Network gateway for the run sandbox. On Daytona Tier 1/2 the sandbox cannot reach Anchor or Cloudflare storage,
 // so Firstmate's crew calls these routes (via the `reversy` CLI) instead.
 // Credential boundaries: docs/orchestrator/spec.md#8-access-and-network.
 // Also relays captain (user) messages into the first mate's tmux pane.

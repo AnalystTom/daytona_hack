@@ -46,5 +46,5 @@ export interface RunStore {
   readMemory(runId: string, kind?: MemoryKind): Promise<MemoryEntry[]>;
 }
 
-// A storage failure the caller can retry (network, SurrealDB error, transaction conflict).
+// A storage failure the caller can retry (network, database error, transaction conflict).
 export class StoreError extends Error {}

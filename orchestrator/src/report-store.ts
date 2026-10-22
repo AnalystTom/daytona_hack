@@ -1,62 +1,62 @@
 import { ReportDissection } from "../../src/shared/report";
-import { SurrealRunStore } from "../../src/worker/store/surreal";
+import { resolveStore } from "../../src/worker/store";
 import type { Env, Evidence } from "./types";
 
 type Snapshot = { report: ReportDissection; evidence: Evidence[] };
-
-// Use the existing HTTP RPC implementation, credentials and error checks.
 function store(env: Env) {
-  const {
-    SURREALDB_URL: url,
-    SURREALDB_NAMESPACE: namespace,
-    SURREALDB_DATABASE: database,
-    SURREALDB_USER: user,
-    SURREALDB_PASSWORD: password,
-  } = env;
-  if (!url || !namespace || !database || !user || !password)
-    throw new Error("Report storage is not configured (SurrealDB)");
-  return new SurrealRunStore({ url, namespace, database, user, password });
+  const resolved = resolveStore(env);
+  if ("missing" in resolved || !env.BLOBS)
+    throw new Error("Report storage is not configured (DB, BLOBS)");
+  return { db: resolved.store, blobs: env.BLOBS };
 }
 
 export async function saveReport(env: Env, snapshot: Snapshot, target: string) {
+  const { db, blobs } = store(env);
   const { report } = snapshot;
-  // JSON literals preserve strings that SurrealDB's RPC variables coerce into record IDs.
-  await store(env).query(
-    `BEGIN TRANSACTION;
-    UPSERT type::record('report_run', $id) CONTENT {
-      runId: $id, target: $target,
-      completedAt: $completedAt, snapshot: $snapshot
-    };
-    FOR $figure IN ${JSON.stringify(report.figures)} {
-      UPSERT type::record('report_figure', [$id, $figure.id]) CONTENT {
-        run: type::record('report_run', $id), source: type::record('report_source', [$id, $figure.sourceId]), original: $figure
-      };
-    };
-    FOR $source IN ${JSON.stringify(report.sources)} {
-      UPSERT type::record('report_source', [$id, $source.id]) CONTENT {
-        run: type::record('report_run', $id), original: $source
-      };
-    };
-    COMMIT TRANSACTION;`,
-    {
-      id: report.runId,
-      target,
-      completedAt: report.completedAt,
-      snapshot: JSON.stringify(snapshot),
-    },
-  );
-  // A successful write receipt includes a reread, not just an HTTP response.
-  const [rows] = await store(env).query(
-    "SELECT snapshot FROM ONLY type::record('report_run', $id)",
-    { id: report.runId },
-  );
-  const row = rows as { snapshot?: string };
-  if (
-    !row?.snapshot ||
-    ReportDissection.parse((JSON.parse(row.snapshot) as Snapshot).report)
-      .runId !== report.runId
-  )
-    throw new Error("Report persistence could not be confirmed");
+  const key = `reports/${report.runId}/${crypto.randomUUID()}`;
+  await blobs.put(key, JSON.stringify(snapshot));
+  let superseded: string | undefined;
+  try {
+    const object = await blobs.get(key);
+    const saved = object ? (JSON.parse(await object.text()) as Snapshot) : null;
+    if (!saved || ReportDissection.parse(saved.report).runId !== report.runId)
+      throw new Error("Report persistence could not be confirmed");
+    const [previous] = await db.batch<{ snapshot_key: string }>([
+      db.statement(
+        "SELECT snapshot_key FROM report_run WHERE run_id=?",
+        report.runId,
+      ),
+      db.statement(
+        "INSERT INTO report_run(run_id,target,completed_at,snapshot_key) VALUES (?,?,?,?) ON CONFLICT(run_id) DO UPDATE SET target=excluded.target,completed_at=excluded.completed_at,snapshot_key=excluded.snapshot_key",
+        report.runId,
+        target,
+        report.completedAt,
+        key,
+      ),
+      ...report.figures.map((figure) =>
+        db.statement(
+          "INSERT INTO report_figure(run_id,id,source_id,original) VALUES (?,?,?,?) ON CONFLICT(run_id,id) DO UPDATE SET source_id=excluded.source_id,original=excluded.original",
+          report.runId,
+          figure.id,
+          figure.sourceId,
+          JSON.stringify(figure),
+        ),
+      ),
+      ...report.sources.map((source) =>
+        db.statement(
+          "INSERT INTO report_source(run_id,id,original) VALUES (?,?,?) ON CONFLICT(run_id,id) DO UPDATE SET original=excluded.original",
+          report.runId,
+          source.id,
+          JSON.stringify(source),
+        ),
+      ),
+    ]);
+    superseded = previous.results[0]?.snapshot_key;
+  } catch (error) {
+    await blobs.delete(key);
+    throw error;
+  }
+  if (superseded) await blobs.delete(superseded);
 }
 
 export async function saveEdit(
@@ -65,11 +65,12 @@ export async function saveEdit(
   figureId: string,
   edit: { label: string; value: string },
 ) {
-  await store(env).query(
-    `UPSERT type::record('report_edit', [$runId, $figureId]) CONTENT {
-    run: type::record('report_run', $runId), figure: type::record('report_figure', [$runId, $figureId]),
-    label: ${JSON.stringify(edit.label)}, value: ${JSON.stringify(edit.value)}, updatedAt: time::now()
-  }`,
-    { runId, figureId },
+  await store(env).db.rows(
+    "INSERT INTO report_edit(run_id,figure_id,label,value,updated_at) VALUES (?,?,?,?,?) ON CONFLICT(run_id,figure_id) DO UPDATE SET label=excluded.label,value=excluded.value,updated_at=excluded.updated_at",
+    runId,
+    figureId,
+    edit.label,
+    edit.value,
+    new Date().toISOString(),
   );
 }

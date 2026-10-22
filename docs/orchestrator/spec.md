@@ -40,7 +40,7 @@ Daytona run sandbox (Tier 3 or higher, full internet access)
         ▼
    Variant pods (three landing-page alternatives), independent after the fork
 
-Outside the sandbox: Anchor (browser), SurrealDB (records and Agent Memory), Arize (traces)
+Outside the sandbox: Anchor (browser), Cloudflare D1 and R2 (records and Agent Memory), Arize (traces)
 Sandbox calls to the gateway (Anchor, Agent Memory) go through our site.
 ```
 
@@ -74,7 +74,7 @@ Research requests a budget of four OpenAI web-search tool calls with parallel to
 
 The bounded quote-evidence rule requires the complete independently captured HTML passage, never a model-clipped substring. After whitespace normalization, both the passage and complete figure value must exactly match the captured figure quotation and value. The shared extractor recognizes numeric tokens with currency context, signs, comma thousands separators, decimals, supported scales and ranges (`2%-5%`, `$5-10 billion`) whose two ends share one unit; token sequences it cannot parse, and ranges with mixed units, are marked not observed. A quantity that merely opens a parenthetical (`(1.3% globally)`) is read; one wrapped whole in brackets (`(2.5%)`) stays unsupported, and the matcher below never verifies a range or a value directly after an opening bracket. A parsed value alone does not establish a complete unit: matching requires that value to occur only once in each passage and end it, apart from sentence punctuation. Unconsumed suffix text remains unverified. Matching denies by default: both quotes must independently contain the same complete quantity, unit, scale and sign with an attached, unambiguous currency token (the euro symbol or a supported ISO currency code). Dollar and pound symbols alone, absent or conflicting currency, parenthesised or prefixed negatives and unsupported separators remain unverified. Bare integers have no inferred year unit; years, percentages and basis points have no currency exemption. Currency is not inferred from page context, and there is no FX conversion or numerical equivalence. The shared implementations are `reportQuantities` and `exactQuoteEvidence` in [`src/shared/report.ts`](../../src/shared/report.ts), also checked when displaying a saved match.
 
-The orchestrator needs the [agent model bindings](#4-agents) and the `SURREALDB_*` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session normally captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
+The orchestrator needs the [agent model bindings](#4-agents) and the `DB` and `BLOBS` bindings listed in the [README](../../README.md#bindings), configured on `reversy-orchestrator` itself. `ANCHORBROWSER_API_KEY` is optional: without it, HTML is fetched directly and screenshot coordinates are not observed. With it, an isolated Anchor session normally captures HTML, a 1440px-wide full-page screenshot and DOM boxes together, then closes. Screenshots at or above 1.9 MB are omitted; chart regions identify the iframe rather than individual plotted marks. This path captures no recording.
 
 Only a `CodeExecutionRefused` from the report snippet triggers fallback: HTML is fetched directly and Anchor's plain screenshot tool is attempted in the same session. The fetched HTML's final URL must retain the requested origin; a different origin fails the run. Other snippet errors, including origin rejection, still fail without fallback. Fetched HTML is observed evidence, but DOM boxes and rendered content are not observed. A fallback screenshot is **inferred** because its final browser URL cannot be verified, and it has no source regions. If the screenshot tool raises an `AnchorError`, the captured HTML remains usable and the screenshot is **not observed** with the failure reason. The session closes on success or failure. See [`captureReport`](../../orchestrator/src/report-capture.ts) and its [regression tests](../../orchestrator/src/report-capture.test.ts).
 
@@ -123,7 +123,7 @@ Preview controls and deployment availability follow the [workspace guide](../../
 
 Evidence is the contract between the original site and the rebuild.
 Workers build from it, reviewers judge against it, and the verifier checks claims against it.
-Anchor captures browser evidence, through our evidence capture, and SurrealDB stores it. The demo's backend inspection uses fetch, as described below.
+Anchor captures browser evidence through our [evidence capture](../../README.md#evidence-capture). The demo's backend inspection uses fetch, as described below.
 Server-side page, REA bundle, robots.txt, sitemap.xml and report-source fetches send the shared [`USER_AGENT`](../../orchestrator/src/types.ts) identity, including redirect requests and report-capture fallback.
 
 **What the evidence pack holds, per page or state:**
@@ -203,7 +203,7 @@ A failed or stopped task stays on the board with its reason and next action.
   Only our site calls it, through a Cloudflare service binding. Operator testing follows the [README's access policy](../../README.md#who-can-use-runs).
 - The Daytona sandbox runs on Daytona Tier 3 or higher (Tier 3 confirmed on the account dashboard) with full internet access, so workers can install packages and reach the rest of the architecture.
 - Sandboxes reach the orchestrator's gateway (Anchor capture, Agent Memory) through our site.
-  Anchor, SurrealDB and Daytona keys stay on Cloudflare. Gateway callers authenticate with `GATEWAY_TOKEN`; Codex run sandboxes receive `OPENAI_API_KEY` to authenticate directly to OpenAI (see [`setupSandbox`](../../orchestrator/src/run.ts)).
+  Anchor and Daytona keys and Cloudflare storage bindings stay on Cloudflare. Gateway callers authenticate with `GATEWAY_TOKEN`; Codex run sandboxes receive `OPENAI_API_KEY` to authenticate directly to OpenAI (see [`setupSandbox`](../../orchestrator/src/run.ts)).
 - Knowing a run ID is not enough to view or use a run.
   Run authentication and workspace ownership follow the [README's access policy](../../README.md#who-can-use-runs).
 
@@ -237,8 +237,8 @@ The same evidence, verifier and records apply.
 
 The agents' code runs on Daytona; the service lives on Cloudflare. Current storage ownership and external projection limits are defined in the [API's persistence guarantees](api.md#how-a-build-runs).
 
-- **SurrealDB** holds external run projections, the separate evidence capture API's records and files, and Agent Memory. See the API reference for the projection guarantees and Agent Memory namespace.
-- **Report records** use `report_run` for the snapshot, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uses a transaction followed by a snapshot reread. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the SurrealDB report snapshot. Failed runs retain their own evidence and error; no prior run is used as a fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
+- **Cloudflare storage** follows the [API's run projection and Agent Memory contract](api.md#how-a-build-runs) and the separate [evidence capture storage contract](../../README.md#evidence-capture).
+- **Report records** use `report_run` for the snapshot reference, `report_figure` and `report_source` for linked captured originals, and `report_edit` for edits keyed by run and figure. Saving a report uploads and rereads its snapshot in R2, then captures the previous reference and writes relational records in one atomic D1 batch. Only after that batch commits is the superseded snapshot deleted. Run state, report events and current edits also persist in the run's Durable Object; screenshot/HTML blobs remain there rather than in the R2 report snapshot. Failed runs retain their own evidence and error; no prior run is used as a fallback. The implementation is [`report-store.ts`](../../orchestrator/src/report-store.ts) and [`run.ts`](../../orchestrator/src/run.ts).
 - **Arize** stores the traces: one trace per run across inspection, planning, every task, every review and every verification.
 
 ## 13. Decided

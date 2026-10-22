@@ -1,3 +1,4 @@
+import * as services from "../src/services";
 function reply(body: Record<string, unknown>, init?: ResponseInit) {
   return Response.json(
     body.output_text === undefined
@@ -1434,12 +1435,9 @@ describe("Run", () => {
         summary: pass ? "Verified" : "Needs repair",
         findings: [],
       });
-      const provider = fetch;
-      vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
-        if (input.startsWith("https://memory.test"))
-          throw new Error("memory unavailable");
-        return provider(input, init);
-      });
+      const memoryWrite = vi
+        .spyOn(services, "remember")
+        .mockRejectedValue(new Error("memory unavailable"));
       const dependent = pass && !variantId;
       const { run, persisted, ready, scheduled } = fakeRun(
         {
@@ -1453,12 +1451,13 @@ describe("Run", () => {
             ? [{ ...variant("v1", "copy"), status: "failed" }]
             : undefined,
         },
-        { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+        {},
       );
       await ready;
       await expect(run.override("t1", "approve", "Accept")).rejects.toThrow(
         "memory unavailable",
       );
+      memoryWrite.mockRestore();
       const active = !pass || dependent;
       const phase = active ? (variantId ? "variants" : "building") : "done";
       const view = runView("run-1", await run.events(0));
@@ -1521,20 +1520,23 @@ describe("Run", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
     mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const report =
+      stage === "plan" || stage === "final"
+        ? `Verifier on ${stage}`
+        : stage.startsWith("review")
+          ? "Review of"
+          : stage === "build_setup"
+            ? "Build started"
+            : "Variants from";
+    vi.spyOn(services, "remember").mockImplementation(
+      async (_env, _scope, text) => {
+        if (text.startsWith(report)) throw new Error("memory unavailable");
+      },
+    );
     const provider = fetch;
     vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
       const name = body.response_format?.json_schema?.name;
-      const report =
-        stage === "plan" || stage === "final"
-          ? `Verifier on ${stage}`
-          : stage.startsWith("review")
-            ? "Review of"
-            : stage === "build_setup"
-              ? "Build started"
-              : "Variants from";
-      if (input.endsWith("/facts") && body.text?.startsWith(report))
-        throw new Error("memory unavailable");
       if (name === "plan")
         return reply({ output_text: JSON.stringify({ tasks: [] }) });
       if (name === "review")
@@ -1598,7 +1600,7 @@ describe("Run", () => {
         forkUnavailable: true,
         promoted: stage === "build_setup" ? "v1" : undefined,
       },
-      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+      {},
     );
     await ready;
     await run.alarm();
@@ -1757,23 +1759,28 @@ describe("Run", () => {
     const entered = deferred();
     const release = deferred();
     mockFetch({ pass: false, summary: "Needs repair", findings: [] });
+    const report =
+      target === "promotion"
+        ? "Promoted variant"
+        : `Verifier on ${target === "task" ? "t1" : target}`;
+    vi.spyOn(services, "remember").mockImplementation(
+      async (_env, _scope, text) => {
+        if (delay.startsWith("report") && text.startsWith(report)) {
+          entered.resolve();
+          await release.promise;
+          if (delay === "report_error") throw new Error("memory unavailable");
+        }
+      },
+    );
     const provider = fetch;
     vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
       const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
-      const report =
-        target === "promotion"
-          ? "Promoted variant"
-          : `Verifier on ${target === "task" ? "t1" : target}`;
       if (
-        (delay === "verifier" &&
-          body.response_format?.json_schema?.name === "verify_plan") ||
-        (delay.startsWith("report") &&
-          input.endsWith("/facts") &&
-          body.text?.startsWith(report))
+        delay === "verifier" &&
+        body.response_format?.json_schema?.name === "verify_plan"
       ) {
         entered.resolve();
         await release.promise;
-        if (delay === "report_error") throw new Error("memory unavailable");
       }
       if (body.response_format?.json_schema?.name === "plan")
         return reply({ output_text: JSON.stringify({ tasks: [] }) });
@@ -1797,7 +1804,7 @@ describe("Run", () => {
         pending: target === "plan" ? "plan" : undefined,
         variants: target === "promotion" ? [variant("v1", "copy")] : undefined,
       },
-      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+      {},
     );
     await ready;
     const work = (

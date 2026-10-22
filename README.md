@@ -53,7 +53,7 @@ If sandbox allocation or Codex sign-in fails before build workers start, the err
 
 ### Example run
 
-The example is a read-only copy of one finished run, kept in SurrealDB (`example` table) so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
+The example is a read-only copy of one finished run, kept in D1 (`example` table) and R2 so it outlives the orchestrator. `GET /api/v1/example` (the run's events) and `GET /api/v1/example/:runId/evidence/:id` (its screenshots and recordings) are public; nothing in the example reaches the run, its sandbox or its live preview. The sandbox ID and preview link are dropped when it is saved.
 
 Browse its chat, **Spec** and **Build** views without a token. **Preview** shows captured target-site screenshots, not the rebuild. A screenshot that was not observed keeps its caption and capture reason without an image. Card positions can be changed temporarily but are not saved. If the example cannot be loaded, the workspace shows **Example unavailable** with the reason and **Start your own**.
 A saved report also exposes its figures and source provenance for inspection; editing is disabled.
@@ -64,7 +64,7 @@ Save or replace it with one command, after the Worker is deployed:
 OPERATOR_TOKEN=... npm run example:save -- [runId]
 ```
 
-`runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Only runs in `done`, `stopped` or `failed` phase can be saved. An optional second argument selects the site; its default is in the script. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it. Saving requires `ORCHESTRATOR`, `OPERATOR_TOKEN` and the `SURREALDB_*` bindings below; public reads require only the SurrealDB bindings.
+`runId` defaults to the run named in `scripts/save-example.sh`; pass a better finished run's ID to replace the example. Only runs in `done`, `stopped` or `failed` phase can be saved. An optional second argument selects the site; its default is in the script. The script calls `POST /api/v1/example {runId}` with the operator token; the Worker reads the run from the orchestrator and stores it. Saving requires `ORCHESTRATOR`, `OPERATOR_TOKEN` and the `DB` and `BLOBS` bindings below; public reads require only the Cloudflare storage bindings.
 
 Media URLs and cache entries include the source run ID and are cached for a year as immutable. Replacing the example keeps the previous run's stored media readable, so open or cached pages still load their screenshots and recordings. A media request reads only the saved file metadata and chunks under the requested run ID; it never falls back to the current example or another run.
 
@@ -85,7 +85,7 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 | `npm run lint` | Lints with Biome |
 | `npm run format` | Checks formatting with Biome (`npx biome format --write .` fixes it) |
 | `npm test` | Runs the Vitest tests |
-| `npm run deploy` | Builds, then runs `wrangler deploy` |
+| `npm run deploy` | Builds, applies pending remote D1 migrations, then deploys the public Worker |
 | `npm run example:save -- [runId]` | Saves a finished run as the public example (needs `OPERATOR_TOKEN`) |
 
 ## Worker bindings
@@ -133,7 +133,7 @@ A signed-in user (or, without Access, an anonymous visitor session) sees and act
 
 Legacy-run timestamps and missing-time recovery follow the [orchestrator lifecycle](docs/orchestrator/api.md#phases).
 
-Owners, active reservations and daily counts are stored together in a SurrealDB transaction (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `SURREALDB_*` bindings; without them their run routes answer 503.
+Owners, active reservations and daily counts are stored together in a D1 atomic batch (`run_owner`, `run_quota`), so both Access users and anonymous visitors need the `DB` binding; without it their run routes answer 503.
 With both Access bindings configured, run routes require Access identity even if an operator bearer or visitor cookie is supplied, and the `/api/v1/orchestrator/*` proxy is disabled.
 With neither Access binding, run routes accept `Authorization: Bearer <OPERATOR_TOKEN>` or the anonymous visitor cookie. Setting only one of them answers 503 naming the other.
 
@@ -151,7 +151,7 @@ Landing entry links load the protected `/workspace` or `/start` document so Acce
 
 Admission reserves an active slot, a daily allowance and ownership before any paid start. Invalid input consumes no allowance; failures after admission remain charged and recoverable through run history. Reservations count as active while startup is pending, including across UTC midnight. User-requested chat, build and review continuations reacquire active admission for the same run before paid work; they preserve its original deadline and daily-run charge. A continuation is refused while another run occupies the limit. Expired runs with stored state are stopped before their slots are reused; a missing-state reservation can retire because a delayed start retains the original deadline. If continuation cleanup fails, admission stays blocked until the original deadline (or a successful explicit stop). At that deadline, a later admission attempt retries the existing stop and cleanup path; failed cancellation or storage cleanup keeps the slot held. Admission skips retired reservations; history still includes them.
 
-The older run API in `src/worker/runs/api.ts` (SurrealDB-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
+The older run API in `src/worker/runs/api.ts` (D1-backed runs, the bridge's `POST /runs/:id/events`, `/memory`, `/approve-spec`) is still in the code but shadowed by that front door, so the sandbox bridge cannot post events yet.
 Its store is still what evidence capture reads and writes.
 
 For the active run API's event storage and external projection guarantees, see [How a build runs](docs/orchestrator/api.md#how-a-build-runs).
@@ -159,27 +159,32 @@ Errors are `{code, message, retryable, requestId}`.
 
 ### Bindings
 
-Set these as Worker secrets or variables (for local dev, in `.dev.vars`):
+Configure resource bindings in Wrangler and secrets or variables in the Worker settings (for local secrets, use `.dev.vars`):
 
 | Binding | Used for |
 |---|---|
-| `SURREALDB_URL` | SurrealDB 3.x HTTP base URL, for example `https://<instance>.surreal.cloud` |
-| `SURREALDB_NAMESPACE` | Namespace holding Reversy's records (it must already exist) |
-| `SURREALDB_DATABASE` | Database inside that namespace (it must already exist) |
-| `SURREALDB_USER` | SurrealDB user the Worker signs in as |
-| `SURREALDB_PASSWORD` | That user's password |
+| `DB` | Cloudflare D1 binding for run records, ownership, quotas, sign-in sessions, reports and Agent Memory |
+| `BLOBS` | Private R2 bucket binding for evidence, report snapshots and large saved-example values |
 | `BRIDGE_TOKEN` | Worker secret the bridge routes verify against: a bridge sends `Authorization: Bearer <HMAC-SHA256(BRIDGE_TOKEN, runId)>` (hex, `runBridgeToken`) for the run id in the URL; the raw secret is not accepted |
 | `OPERATOR_TOKEN` | Server-side only: signs anonymous visitor sessions, authorizes operator bearer calls and `/api/v1/orchestrator/*` (disabled once Access is set up); the separate [evidence routes](#evidence-capture) still require it |
 | `ACCESS_TEAM_DOMAIN`, `ACCESS_AUD` | [Cloudflare Access](#sign-in-with-cloudflare-access) team domain and application audience tag; with both set, signed-in users reach their own runs without the operator token |
 | `RUNS_PER_DAY`, `RUNS_PER_IP_DAY`, `RUNS_PER_DAY_ALL`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | [Limits and defaults](#sign-in-with-cloudflare-access); `RUN_MAX_MINUTES` also applies to operator runs in the orchestrator |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
-Without the SurrealDB bindings the store answers 503 naming the missing ones; without `ORCHESTRATOR` every run route does the same. Without Access, run routes also need `OPERATOR_TOKEN` to sign visitor sessions.
+Without `DB` the run store answers 503 naming the missing binding; without `ORCHESTRATOR` every run route does the same. `BLOBS` is required for evidence files, report snapshots and large saved-example values. Without Access, run routes also need `OPERATOR_TOKEN` to sign visitor sessions.
 An operator bearer request with a missing or wrong token answers 401; visitors do not supply a token.
 
 See [the access policy](#who-can-use-runs) for run authentication and ownership; the separate evidence routes stay operator-only.
 
-The store tests also run against a real SurrealDB when `SURREALDB_TEST_URL` (with `SURREALDB_TEST_USER` and `SURREALDB_TEST_PASSWORD`, root credentials) is set; they create a throwaway namespace there.
+The store tests run against local D1 and R2 through Miniflare, without credentials or optional external services.
+
+## Cloudflare storage migration
+
+This release starts fresh on D1 and R2. The previous SurrealDB data is not imported because its credentials return HTTP 401. Existing SurrealDB secrets and the instance are left intact and unused. Old run links and the saved example are not migrated; the public example returns its explicit empty state until a finished run is saved again.
+
+Both Workers bind the same `reversy-storage` D1 database (`DB`) and private `reversy-evidence` R2 bucket (`BLOBS`). Apply pending migrations from `migrations/` with `npx wrangler d1 migrations apply DB --remote` before deploying either Worker. CI applies pending migrations before the public Worker deploy. For local development, run `npx wrangler d1 migrations apply DB --local` from each Worker's directory before starting it; the public Worker and orchestrator have separate local storage.
+
+D1 batches atomically assign event sequences, update task projections, and enforce owner/network/global quotas. The existing per-run Durable Objects continue to coordinate execution and retain their run event log. Captured files and report snapshots use private R2 objects; public media remains limited to explicitly saved example files.
 
 ## Deploy
 
@@ -262,10 +267,10 @@ Not yet verified against live services: `gpt-6-luna` through Codex in the sandbo
 
 ## Evidence capture
 
-`src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores each item, with its file, in SurrealDB.
+`src/worker/evidence/` captures evidence for a run's approved pages with [Anchor Browser](https://docs.anchorbrowser.io) and stores records in D1 with their files in R2.
 It is built against Anchor's REST API v1 (OpenAPI 1.0.0, docs read on 2026-10-16): `POST /v1/sessions`, `POST /v1/tools/execute-code` (Playwright snippets in the session), `POST /v1/tools/screenshot`, `POST /v1/sessions/{id}/recordings/pause`, `GET /v1/sessions/{id}/recordings`, `GET /v1/sessions/{id}/recordings/primary/fetch` and `DELETE /v1/sessions/{id}`.
 Anchor has no dedicated DOM or network-log endpoint, so the DOM snapshot, computed design tokens, asset list and network log (URLs, statuses, types and JSON response shapes, without headers or bodies) come from the snippet.
-For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `SURREALDB_*` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
+For website runs, the orchestrator (`orchestrator/`) runs the same capture, with its own `ANCHORBROWSER_API_KEY` and `DB` and `BLOBS` bindings. See its [evidence contract](docs/orchestrator/spec.md#6-evidence) for captured artifacts and its [API](docs/orchestrator/api.md#evidence-capture) for limits and secure sign-in controls. Report runs use the separate [report workflow](docs/orchestrator/spec.md#report-dissection).
 
 | Endpoint | What it does |
 |---|---|
@@ -274,15 +279,12 @@ For website runs, the orchestrator (`orchestrator/`) runs the same capture, with
 | `GET /api/v1/evidence/:id/content` | The stored file. |
 
 Artifact availability, fallback labels and redirect checks follow the [capture limits](docs/orchestrator/api.md#evidence-capture).
-Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; the evidence, its file chunks and sign-in sessions sit in their own SurrealDB tables on the same connection.
+Capture needs an existing run (`404` otherwise) and appends its events to the run's event stream through the run API's store; evidence metadata and single-use sign-in sessions live in D1, and files live in the private R2 bucket.
 These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing or wrong token gets `401`. They have no per-run ownership check; the [run access policy](#who-can-use-runs) does not authenticate these separate endpoints.
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 
-Worker bindings (secrets, set with `wrangler secret put`):
+Set `ANCHOR_API_KEY` as a Worker secret with `wrangler secret put`, and configure `OPERATOR_TOKEN` and the resource bindings from [Bindings](#bindings).
 
-- `ANCHOR_API_KEY`
-- the run API's `OPERATOR_TOKEN` and `SURREALDB_*` bindings above
-
-Without them the endpoints answer `503` and list the missing names.
-Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's and SurrealDB's documented shapes rather than recorded from live calls.
+Without `OPERATOR_TOKEN`, `DB` or `BLOBS`, these endpoints answer `503` and list the missing names; capture also requires `ANCHOR_API_KEY`.
+Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's documented shapes; storage integration tests run against local D1 and R2 rather than recorded from live calls.

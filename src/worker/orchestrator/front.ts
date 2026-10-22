@@ -16,7 +16,7 @@ import {
   type Refusal,
   type RunOwner,
   type SharedLimits,
-  surrealOwners,
+  d1Owners,
 } from "./owners";
 import { checkCaller } from "./session";
 
@@ -139,7 +139,7 @@ async function passThrough(
 function ownersFor(env: StoreEnv) {
   const resolved = resolveStore(env);
   if ("missing" in resolved) throw notConfigured(resolved.missing);
-  return surrealOwners(resolved.store);
+  return d1Owners(resolved.store);
 }
 
 const limit = (value: string | undefined, fallback: number) => {

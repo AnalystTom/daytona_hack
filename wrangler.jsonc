@@ -2,6 +2,15 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "reversy",
   "main": "src/worker/index.ts",
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "reversy-storage",
+      "database_id": "e28beeb6-5419-4f49-8c55-1af47e9739d8",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [{ "binding": "BLOBS", "bucket_name": "reversy-evidence" }],
   "compatibility_date": "2026-10-01",
   // The orchestrator has no public address; this Worker is its only caller.
   "services": [

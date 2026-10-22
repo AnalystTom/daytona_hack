@@ -1,3 +1,6 @@
+import { testStorage } from "../test/storage";
+import { D1RunStore } from "../store/d1";
+import { cloudflareEvidenceStore } from "./store";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventEnvelope } from "../../shared/contracts";
 import worker from "../index";
@@ -6,16 +9,9 @@ import {
   executeCodeResponse,
   fixturePngBase64,
   fixtureSession,
-  surrealOk,
 } from "./fixtures";
 
-const surreal = {
-  SURREALDB_URL: "https://db.example.test",
-  SURREALDB_NAMESPACE: "reversy",
-  SURREALDB_DATABASE: "main",
-  SURREALDB_USER: "user",
-  SURREALDB_PASSWORD: "pass",
-};
+const cloudflare = testStorage();
 const body = {
   mode: "first_look",
   scope: { origin: "https://example.com", paths: ["/"] },
@@ -44,20 +40,11 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe("evidence routes", () => {
   it("names every missing binding instead of capturing", async () => {
-    const response = await post(
-      { SURREALDB_URL: "https://db.example.test" },
-      body,
-    );
+    const response = await post({}, body);
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({
       error: "Missing Worker bindings",
-      missing: [
-        "ANCHOR_API_KEY",
-        "SURREALDB_NAMESPACE",
-        "SURREALDB_DATABASE",
-        "SURREALDB_USER",
-        "SURREALDB_PASSWORD",
-      ],
+      missing: ["ANCHOR_API_KEY", "DB", "BLOBS"],
     });
   });
 
@@ -69,7 +56,7 @@ describe("evidence routes", () => {
     ]) {
       const response = await call(
         path,
-        { OPERATOR_TOKEN: undefined, ...surreal },
+        { OPERATOR_TOKEN: undefined, ...cloudflare },
         path.endsWith("capture") ? { method: "POST" } : undefined,
       );
       expect(response.status).toBe(503);
@@ -91,7 +78,7 @@ describe("evidence routes", () => {
       ] as const) {
         const response = await call(
           path,
-          { ANCHOR_API_KEY: "k", ...surreal },
+          { ANCHOR_API_KEY: "k", ...cloudflare },
           init,
           token,
         );
@@ -100,7 +87,7 @@ describe("evidence routes", () => {
     }
     const bare = await worker.fetch(
       new Request(`https://reversy.test/api/v1/evidence/${id}`),
-      { ...operator, ...surreal },
+      { ...operator, ...cloudflare },
     );
     expect(bare.status).toBe(401);
     expect(fetchSpy).not.toHaveBeenCalled();
@@ -109,25 +96,25 @@ describe("evidence routes", () => {
   it("answers malformed escapes in ids with 400 and 404, not a crash", async () => {
     const capture = await call(
       "/api/v1/runs/%E0/capture",
-      { ANCHOR_API_KEY: "k", ...surreal },
+      { ANCHOR_API_KEY: "k", ...cloudflare },
       { method: "POST", body: JSON.stringify(body) },
     );
     expect(capture.status).toBe(400);
-    expect((await call("/api/v1/evidence/%E0", surreal)).status).toBe(404);
-    expect((await call("/api/v1/evidence/%E0/content", surreal)).status).toBe(
-      404,
-    );
+    expect((await call("/api/v1/evidence/%E0", cloudflare)).status).toBe(404);
+    expect(
+      (await call("/api/v1/evidence/%E0/content", cloudflare)).status,
+    ).toBe(404);
   });
 
   it("rejects a scope that is not a bare origin", async () => {
     const response = await post(
-      { ANCHOR_API_KEY: "k", ...surreal },
+      { ANCHOR_API_KEY: "k", ...cloudflare },
       { ...body, scope: { origin: "https://example.com/app", paths: ["/"] } },
     );
     expect(response.status).toBe(400);
   });
 
-  it("serves a stored record and its content (fixture SurrealDB)", async () => {
+  it("serves a stored record and its content from D1 and R2", async () => {
     const id = "ev_00000000-0000-4000-8000-000000000000";
     const record = {
       id,
@@ -143,27 +130,16 @@ describe("evidence routes", () => {
       contentType: "text/html",
       byteLength: 3,
     };
-    const replies = [
-      surrealOk([record]),
-      surrealOk([record]),
-      surrealOk([1]),
-      surrealOk(["PGg+"]),
-    ];
-    vi.stubGlobal(
-      "fetch",
-      // The run store's schema goes first on a new connection.
-      vi.fn(async (_url: string, init: RequestInit) =>
-        Response.json(
-          String(init.body).includes("DEFINE TABLE")
-            ? surrealOk([])
-            : replies.shift(),
-        ),
-      ),
+    await cloudflareEvidenceStore(
+      new D1RunStore(cloudflare.DB, cloudflare.BLOBS),
+    ).putEvidence(
+      record as import("../../shared/evidence").EvidenceRecord,
+      new Uint8Array([60, 104, 62]),
     );
 
-    const json = await call(`/api/v1/evidence/${id}`, surreal);
+    const json = await call(`/api/v1/evidence/${id}`, cloudflare);
     expect(await json.json()).toEqual(record);
-    const content = await call(`/api/v1/evidence/${id}/content`, surreal);
+    const content = await call(`/api/v1/evidence/${id}/content`, cloudflare);
     expect(content.headers.get("content-type")).toBe("text/html");
     expect(content.headers.get("content-security-policy")).toBe(
       "sandbox; default-src 'none'",
@@ -171,40 +147,23 @@ describe("evidence routes", () => {
     expect(await content.text()).toBe("<h>");
   });
 
-  // Fixture SurrealDB and Anchor behind one fetch: run_1 exists only when `runExists`.
-  function fakeBackends(runExists: boolean) {
-    const sql: { query: string; vars: Record<string, unknown> }[] = [];
+  // Seeds run_1 in local D1 only when `runExists`; fetch is stubbed for Anchor.
+  async function fakeBackends(runExists: boolean) {
+    if (runExists)
+      await new D1RunStore(cloudflare.DB).createRun({
+        id: "run_1",
+        url: "https://example.com/",
+        goal: "Rebuild it",
+        status: "active",
+        createdAt: "2026-10-16T10:00:00.000Z",
+        updatedAt: "2026-10-16T10:00:00.000Z",
+        specApprovedAt: null,
+      });
     const anchorCalls: string[] = [];
     vi.stubGlobal(
       "fetch",
-      vi.fn(async (input: string, init: RequestInit = {}) => {
+      vi.fn(async (input: string) => {
         const url = new URL(input);
-        if (url.host === "db.example.test") {
-          const [query, vars] = JSON.parse(String(init.body)).params;
-          sql.push({ query, vars });
-          if (query.includes("FROM ONLY type::record('run'")) {
-            return Response.json({
-              id: 1,
-              result: [
-                {
-                  status: "OK",
-                  result: runExists
-                    ? {
-                        id: "run_1",
-                        url: "https://example.com/",
-                        goal: "Rebuild it",
-                        status: "active",
-                        createdAt: "2026-10-16T10:00:00.000Z",
-                        updatedAt: "2026-10-16T10:00:00.000Z",
-                        specApprovedAt: null,
-                      }
-                    : null,
-                },
-              ],
-            });
-          }
-          return Response.json(surrealOk([]));
-        }
         anchorCalls.push(url.pathname);
         if (url.pathname === "/v1/sessions")
           return Response.json(fixtureSession);
@@ -219,27 +178,26 @@ describe("evidence routes", () => {
         return Response.json({ data: { status: "ok" } });
       }),
     );
-    return { sql, anchorCalls };
+    return { anchorCalls };
   }
 
   it("returns 404 without opening Anchor when the run does not exist", async () => {
-    const { anchorCalls } = fakeBackends(false);
-    const response = await post({ ANCHOR_API_KEY: "k", ...surreal }, body);
+    const { anchorCalls } = await fakeBackends(false);
+    const response = await post({ ANCHOR_API_KEY: "k", ...cloudflare }, body);
     expect(response.status).toBe(404);
     expect(anchorCalls).toEqual([]);
   });
 
   it("appends capture events to the run as full event envelopes", async () => {
-    const { sql } = fakeBackends(true);
-    const response = await post({ ANCHOR_API_KEY: "k", ...surreal }, body);
+    await fakeBackends(true);
+    const response = await post({ ANCHOR_API_KEY: "k", ...cloudflare }, body);
     expect(response.status).toBe(200);
-    const appended = sql
-      .filter((s) => s.query.includes("BEGIN TRANSACTION"))
-      .map((s) => s.vars as { runId: string; events: { envelope: string }[] });
-    const envelopes = appended.flatMap((a) =>
-      a.events.map((e) => EventEnvelope.parse(JSON.parse(e.envelope))),
+    const envelopes = await new D1RunStore(cloudflare.DB).listEvents(
+      "run_1",
+      0,
+      100,
     );
-    expect(appended.every((a) => a.runId === "run_1")).toBe(true);
+    for (const envelope of envelopes) EventEnvelope.parse(envelope);
     expect(envelopes.map((e) => [e.runId, e.type])).toEqual([
       ["run_1", "evidence.page_captured"],
       ["run_1", "evidence.capture_finished"],
@@ -248,7 +206,7 @@ describe("evidence routes", () => {
   });
 
   it("returns 404 for ids that are not evidence ids", async () => {
-    expect((await call("/api/v1/evidence/nope", surreal)).status).toBe(404);
+    expect((await call("/api/v1/evidence/nope", cloudflare)).status).toBe(404);
   });
 });
 

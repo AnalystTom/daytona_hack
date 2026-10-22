@@ -1,14 +1,8 @@
 import type { EvidenceRecord } from "../../src/shared/evidence";
 import type { StoreEnv } from "../../src/worker/store";
 
-// SURREALDB_* (StoreEnv) hold evidence records and files.
 export interface Env extends StoreEnv {
   RUNS: DurableObjectNamespace;
-  SURREALDB_URL?: string;
-  SURREALDB_NAMESPACE?: string;
-  SURREALDB_DATABASE?: string;
-  SURREALDB_USER?: string;
-  SURREALDB_PASSWORD?: string;
   DAYTONA_API_URL: string;
   DAYTONA_TARGET: string;
   DAYTONA_API_KEY: string;
@@ -20,16 +14,13 @@ export interface Env extends StoreEnv {
   WORKER_EFFORT?: string;
   MAX_WORKERS: string;
   RUN_MAX_MINUTES?: string; // a run is stopped this long after it started (default 120)
-  SPECTRON_URL?: string;
-  SPECTRON_CONTEXT_ID?: string;
-  SPECTRON_API_KEY?: string;
   ANCHORBROWSER_API_KEY?: string;
   EVENTS_WEBHOOK_URL?: string;
   ARIZE_API_KEY?: string;
   ARIZE_SPACE_ID?: string;
   GATEWAY_TOKEN?: string; // the run sandbox's token for /gateway/*
   OPERATOR_TOKEN?: string; // the backend's token for /sandboxes/*
-  // The `reversy` Worker's Records entrypoint: writes run records to SurrealDB (service binding, not public).
+  // The `reversy` Worker's Records entrypoint: writes run records to D1 (service binding, not public).
   RECORDS?: { record(input: RunRecord): Promise<void> };
 }
 

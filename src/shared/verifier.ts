@@ -20,7 +20,7 @@ export const PlanItem = z.object({
 });
 export type PlanItem = z.infer<typeof PlanItem>;
 
-// Screenshots travel inline because evidence files live in SurrealDB, not at public URLs.
+// Screenshots travel inline because evidence files live in private R2, not at public URLs.
 export const Screenshot = z.object({
   evidenceId: Id,
   mediaType: z.enum(["image/png", "image/jpeg", "image/webp", "image/gif"]),

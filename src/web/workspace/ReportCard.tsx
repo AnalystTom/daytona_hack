@@ -378,7 +378,7 @@ export function ReportCard({
         <details className="report-records">
           <summary>Stored records</summary>
           <p>
-            SurrealDB {report.storage.table}: {report.storage.recordId}
+            Cloudflare D1 {report.storage.table}: {report.storage.recordId}
           </p>
           <p>
             Each figure and source has a linked report_figure or report_source

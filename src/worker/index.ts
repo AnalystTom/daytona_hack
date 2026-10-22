@@ -45,7 +45,7 @@ export default {
     ExampleEnv
 >;
 
-// The orchestrator's RECORDS service binding: run records into SurrealDB. Not reachable over HTTP.
+// The orchestrator's RECORDS service binding: run records into D1. Not reachable over HTTP.
 export class Records extends WorkerEntrypoint<StoreEnv> {
   async record(input: unknown) {
     const resolved = resolveStore(this.env);

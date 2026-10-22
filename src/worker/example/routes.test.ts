@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "../index";
-import { surrealOk } from "../evidence/fixtures";
+import { testStorage } from "../test/storage";
 import { type ExampleEnv, handleExample } from "./routes";
 import { exportRun, loadMedia, loadSnapshot, saveSnapshot } from "./snapshot";
 
@@ -83,23 +83,7 @@ function fakeOrchestrator(phase = "done", runId = RUN, bytes = png) {
   return { fetcher, seen };
 }
 
-// A SurrealDB RPC endpoint holding the example table in memory.
-function fakeSurreal() {
-  const rows = new Map<string, unknown>();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async (_url: string, init: RequestInit) => {
-      const [sql, vars] = JSON.parse(String(init.body)).params;
-      if (sql.startsWith("UPSERT")) rows.set(vars.key, vars.value);
-      if (sql.startsWith("SELECT"))
-        return Response.json(
-          surrealOk(rows.has(vars.key) ? [rows.get(vars.key)] : []),
-        );
-      return Response.json(surrealOk([]));
-    }),
-  );
-  return rows;
-}
+const cloudflare = testStorage();
 
 const memoryStore = () => {
   const rows = new Map<string, unknown>();
@@ -113,11 +97,7 @@ const memoryStore = () => {
 const env = (orchestrator?: Fetcher): ExampleEnv => ({
   ORCHESTRATOR: orchestrator,
   OPERATOR_TOKEN: "op-token",
-  SURREALDB_URL: "https://db.example.test",
-  SURREALDB_NAMESPACE: "reversy",
-  SURREALDB_DATABASE: "main",
-  SURREALDB_USER: "user",
-  SURREALDB_PASSWORD: "pass",
+  ...cloudflare,
 });
 
 const request = (path: string, init: RequestInit = {}) =>
@@ -232,7 +212,6 @@ describe("example snapshot", () => {
 
 describe("example routes", () => {
   it("saves with the operator token, then serves the example to anyone", async () => {
-    fakeSurreal();
     const e = env(fakeOrchestrator().fetcher);
     const saved = await handleExample(
       save({ authorization: "Bearer op-token" }),
@@ -256,7 +235,6 @@ describe("example routes", () => {
   });
 
   it("keeps replaced media readable and isolates reused evidence IDs by run", async () => {
-    fakeSurreal();
     const replacement = "replacement-run";
     const replacementBytes = new Uint8Array([9, 8, 7]);
     for (const [runId, bytes] of [
@@ -304,7 +282,6 @@ describe("example routes", () => {
   });
 
   it("refuses to save without the operator token", async () => {
-    fakeSurreal();
     const { fetcher, seen } = fakeOrchestrator();
     const response = await handleExample(save(), env(fetcher));
     expect(response?.status).toBe(401);
@@ -312,7 +289,6 @@ describe("example routes", () => {
   });
 
   it("is read-only for everything but saving", async () => {
-    fakeSurreal();
     for (const method of ["PUT", "DELETE", "PATCH"]) {
       const response = await handleExample(
         request("/api/v1/example", { method }),
@@ -328,13 +304,11 @@ describe("example routes", () => {
   });
 
   it("answers 404 before anything is saved", async () => {
-    fakeSurreal();
     const response = await handleExample(request("/api/v1/example"), env());
     expect(response?.status).toBe(404);
   });
 
   it("leaves the example's run itself behind run ownership", async () => {
-    fakeSurreal();
     const { fetcher, seen } = fakeOrchestrator();
     for (const action of ["messages", "approve", "build", "stop"]) {
       const response = await worker.fetch(

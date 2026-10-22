@@ -1,9 +1,10 @@
+import type { D1RunStore } from "../store/d1";
 import { z } from "zod";
 import { fromBase64, toBase64 } from "../evidence/store";
 import { Failure } from "../runs/api";
 
 // The public example is a saved copy of one finished run: its events and captured media,
-// kept in SurrealDB so it outlives the orchestrator's Durable Object.
+// kept in D1 and R2 so it outlives the orchestrator's Durable Object.
 
 export const EXAMPLE_ID = /^[\w-]{1,100}$/;
 const FINISHED = ["done", "stopped", "failed"];
@@ -43,28 +44,60 @@ export type Snapshot = z.infer<typeof Snapshot>;
 
 export type MediaFile = { contentType: string; bytes: Uint8Array };
 
-// A key-value table in SurrealDB; the example is its only user.
+// A key-value table in D1 and R2; the example is its only user.
 export interface ExampleStore {
   get(key: string): Promise<unknown>;
   put(key: string, value: unknown): Promise<void>;
 }
 
-export function surrealExampleStore(db: {
-  query(sql: string, vars?: Record<string, unknown>): Promise<unknown[]>;
-}): ExampleStore {
+export function cloudflareExampleStore(db: D1RunStore): ExampleStore {
   return {
     async get(key) {
-      const [rows] = await db.query(
-        "SELECT VALUE value FROM type::record('example', $key)",
-        { key },
-      );
-      return (rows as unknown[] | undefined)?.[0];
+      const read = () =>
+        db.rows<{ value: string | null; blob_key: string | null }>(
+          "SELECT value,blob_key FROM example WHERE key=?",
+          key,
+        );
+      let [row] = await read();
+      while (row) {
+        if (row.value !== null) return JSON.parse(row.value);
+        if (!db.blobs)
+          throw new Error("Example storage is not configured: missing BLOBS");
+        const object = row.blob_key ? await db.blobs.get(row.blob_key) : null;
+        if (object) return JSON.parse(await object.text());
+        const [current] = await read();
+        if (current?.blob_key === row.blob_key && current?.value === row.value)
+          throw new Error("Example content is missing");
+        row = current;
+      }
+      return undefined;
     },
     async put(key, value) {
-      await db.query(
-        "UPSERT type::record('example', $key) CONTENT { value: $value } RETURN NONE",
-        { key, value },
-      );
+      const json = JSON.stringify(value);
+      const large = new TextEncoder().encode(json).byteLength > 128_000;
+      const blobKey = large ? `example/${crypto.randomUUID()}` : null;
+      if (blobKey) {
+        if (!db.blobs)
+          throw new Error("Example storage is not configured: missing BLOBS");
+        await db.blobs.put(blobKey, json);
+      }
+      let superseded: string | null | undefined;
+      try {
+        const [previous] = await db.batch<{ blob_key: string | null }>([
+          db.statement("SELECT blob_key FROM example WHERE key=?", key),
+          db.statement(
+            "INSERT INTO example(key,value,blob_key) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,blob_key=excluded.blob_key",
+            key,
+            large ? null : json,
+            blobKey,
+          ),
+        ]);
+        superseded = previous?.results[0]?.blob_key;
+      } catch (error) {
+        if (blobKey) await db.blobs?.delete(blobKey);
+        throw error;
+      }
+      if (superseded) await db.blobs?.delete(superseded);
     },
   };
 }
@@ -150,7 +183,7 @@ export async function exportRun(
   };
 }
 
-// SurrealDB RPC bodies are capped at 4 MiB; 2 MiB of bytes is under 3 MiB as base64.
+// Large media chunks are stored in R2 by the example adapter.
 const CHUNK_BYTES = 2 * 1024 * 1024;
 const CURRENT = "current";
 const fileKey = (runId: string, id: string) => `file/${runId}/${id}`;
@@ -176,7 +209,7 @@ export async function saveSnapshot(
     }
     await store.put(key, { contentType, chunks });
   }
-  // Kept as JSON text: SurrealDB would turn the events' date strings into datetimes.
+  // Keep the exact event envelopes, including timestamp offsets.
   await store.put(CURRENT, JSON.stringify(snapshot));
 }
 
