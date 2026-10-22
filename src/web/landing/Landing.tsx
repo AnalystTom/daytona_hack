@@ -15,7 +15,7 @@ export function Logo() {
 
 function StartLink({ className }: { className: string }) {
   return (
-    // Opens the saved example run; it offers Start your own.
+    // Open a new session with a full navigation so Access can present sign-in.
     <a className={className} href="/workspace">
       Start a project
     </a>
