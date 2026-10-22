@@ -30,7 +30,7 @@ The front door supplies `id` and `startedAt` after atomically reserving ownershi
 | `POST /runs/:id/variants` | | Needs phase `done`, scope `frontend` or `both`, a rebuild sandbox and no existing variant batch. Builds three landing-page variants from the merged rebuild (phase `variants`, back to `done` when they finish) |
 | `POST /runs/:id/promote` | `{variantId}` | Needs phase `done` and a `ready` variant. Returns to `brief` for follow-up instructions; the next approved plan builds in the promoted sandbox. One promotion per run |
 | `POST /gateway/capture` | `{runId, url}` | Sandbox network gateway (Bearer `GATEWAY_TOKEN`): a desktop screenshot through the evidence capture, recorded as run evidence, for pages in the run's approved scope only |
-| `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to Cloudflare D1 and R2 Agent Memory (Bearer `GATEWAY_TOKEN`) |
+| `POST /gateway/remember`, `/gateway/recall` | `{runId, text, observedAt?}` / `{runId, query}` | Sandbox gateway to [Agent Memory](#how-a-build-runs) (Bearer `GATEWAY_TOKEN`) |
 | `POST /sandboxes/:id/captain`, `GET /sandboxes/:id/screen` | `{text}` | Types a captain message into the first mate's tmux pane, or reads that pane (Bearer `OPERATOR_TOKEN`) |
 
 If `EVENTS_WEBHOOK_URL` is set, every event is also POSTed there as `{runId, seq, ts, type, data}`.
@@ -82,9 +82,9 @@ For report phases see [Report dissection](spec.md#report-dissection).
 - When a worker exits, the orchestrator commits its worktree, and GPT reviews the diff against the task, its acceptance criteria and the files it owns.
   Approve → `git merge --no-ff` into `main`, and the preview (scope-specific preview on port 3000) shows it. Reject → one revision with the review findings, then `failed` with the reason.
 - If the verifier fails a merged task, the orchestrator persists one fix task `<id>-fix` on top of it, publishes task/variant outcomes, and schedules the build loop before reporting to Agent Memory. A fix task cannot generate another fix task. Reporting failures do not block the next build step or roll back merged work.
-- Observations, plans and review verdicts are written to Cloudflare D1 and R2 Agent Memory under `org/reversy/run/<first 12 characters of the run ID>`.
-- Events remain in the run's Durable Object event log. External Cloudflare D1 and R2 run records (run, events, tasks, steering, approvals)
-  use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the credentials and has no HTTP route.
+- Observations, plans and review verdicts are appended to D1's `agent_memory` table under `org/reversy/run/<first 12 characters of the run ID>`; the sandbox gateway uses the first 40 characters instead. Recall returns up to 10 facts from the exact scope or its descendants, prioritizing case-insensitive literal query matches, then newest observation time. Without `DB`, writes are skipped and recall returns empty context.
+- Events remain in the run's Durable Object event log. External D1 run records (run, events, tasks, steering, approvals)
+  use one best-effort call per event through the `RECORDS` binding to the `reversy` Worker's `Records` entrypoint, which holds the `DB` binding and has no HTTP route.
   Failed writes can leave missing events or partial projections, including steering, approvals and run updates; there is no durable replay or projection repair.
   Each failed call adds a local `error` event naming the affected sequence. These notices are not sent back to `RECORDS`.
 
@@ -135,13 +135,14 @@ For browser evidence, the orchestrator uses Reversy's evidence capture (`src/wor
 
 ## Run locally
 
+Configure storage bindings and initialize local storage using the [Cloudflare storage migration guide](../../README.md#cloudflare-storage-migration).
+
 ```
 npm install
 npm install --prefix orchestrator
 cd orchestrator
-# .dev.vars: OPENAI_API_KEY, DAYTONA_API_KEY, ANCHORBROWSER_API_KEY,
-#            DB and BLOBS (Wrangler bindings)
+# .dev.vars: OPENAI_API_KEY, DAYTONA_API_KEY, ANCHORBROWSER_API_KEY
 npx wrangler dev
 ```
 
-For report runs, also configure the orchestrator's storage bindings from [Report dissection](spec.md#report-dissection).
+Report runs also follow the service requirements in [Report dissection](spec.md#report-dissection).

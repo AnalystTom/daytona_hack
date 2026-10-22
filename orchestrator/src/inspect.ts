@@ -48,7 +48,7 @@ export function routesFrom(html: string, base: string): string[] {
   return [...seen].slice(0, 40);
 }
 
-// Runs from before Cloudflare storage storage have ids like ev_001, which the store cannot look up.
+// Legacy evidence IDs such as ev_001 use Durable Object blobs instead of the external store.
 export const isStoredEvidenceId = (id: string) => evidenceIdPattern.test(id);
 
 export function evidenceStore(env: Env): EvidenceStore {

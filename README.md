@@ -85,7 +85,7 @@ See [financial report dissection](docs/spec.md#financial-report-dissection) for 
 | `npm run lint` | Lints with Biome |
 | `npm run format` | Checks formatting with Biome (`npx biome format --write .` fixes it) |
 | `npm test` | Runs the Vitest tests |
-| `npm run deploy` | Builds, then runs `wrangler deploy` |
+| `npm run deploy` | Builds, applies pending remote D1 migrations, then deploys the public Worker |
 | `npm run example:save -- [runId]` | Saves a finished run as the public example (needs `OPERATOR_TOKEN`) |
 
 ## Worker bindings
@@ -171,7 +171,7 @@ Configure resource bindings in Wrangler and secrets or variables in the Worker s
 | `RUNS_PER_DAY`, `RUNS_PER_IP_DAY`, `RUNS_PER_DAY_ALL`, `ACTIVE_RUNS`, `RUN_MAX_MINUTES` | [Limits and defaults](#sign-in-with-cloudflare-access); `RUN_MAX_MINUTES` also applies to operator runs in the orchestrator |
 | `ORCHESTRATOR` | Service binding to `reversy-orchestrator` (in `wrangler.jsonc`) |
 
-Without the Cloudflare storage bindings the store answers 503 naming the missing ones; without `ORCHESTRATOR` every run route does the same. Without Access, run routes also need `OPERATOR_TOKEN` to sign visitor sessions.
+Without `DB` the run store answers 503 naming the missing binding; without `ORCHESTRATOR` every run route does the same. `BLOBS` is required for evidence files, report snapshots and large saved-example values. Without Access, run routes also need `OPERATOR_TOKEN` to sign visitor sessions.
 An operator bearer request with a missing or wrong token answers 401; visitors do not supply a token.
 
 See [the access policy](#who-can-use-runs) for run authentication and ownership; the separate evidence routes stay operator-only.
@@ -182,7 +182,7 @@ The store tests run against local D1 and R2 through Miniflare, without credentia
 
 This release starts fresh on D1 and R2. The previous SurrealDB data is not imported because its credentials return HTTP 401. Existing SurrealDB secrets and the instance are left intact and unused. Old run links and the saved example are not migrated; the public example returns its explicit empty state until a finished run is saved again.
 
-Both Workers bind the same `reversy-storage` D1 database (`DB`) and private `reversy-evidence` R2 bucket (`BLOBS`). Apply `migrations/0001_cloudflare_storage.sql` with `npx wrangler d1 migrations apply DB --remote` before deploying either Worker. CI applies pending migrations before the public Worker deploy. Local development uses `npx wrangler d1 migrations apply DB --local`.
+Both Workers bind the same `reversy-storage` D1 database (`DB`) and private `reversy-evidence` R2 bucket (`BLOBS`). Apply pending migrations from `migrations/` with `npx wrangler d1 migrations apply DB --remote` before deploying either Worker. CI applies pending migrations before the public Worker deploy. For local development, run `npx wrangler d1 migrations apply DB --local` from each Worker's directory before starting it; the public Worker and orchestrator have separate local storage.
 
 D1 batches atomically assign event sequences, update task projections, and enforce owner/network/global quotas. The existing per-run Durable Objects continue to coordinate execution and retain their run event log. Captured files and report snapshots use private R2 objects; public media remains limited to explicitly saved example files.
 
@@ -284,10 +284,7 @@ These evidence routes need `Authorization: Bearer <OPERATOR_TOKEN>`; a missing o
 A capture request takes at most 10 paths, since it runs inside one request and one Anchor session.
 Stored files are served with a sandboxing Content-Security-Policy, so a captured page never runs on Reversy's origin.
 
-Worker bindings (secrets, set with `wrangler secret put`):
+Set `ANCHOR_API_KEY` as a Worker secret with `wrangler secret put`, and configure `OPERATOR_TOKEN` and the resource bindings from [Bindings](#bindings).
 
-- `ANCHOR_API_KEY`
-- the run API's `OPERATOR_TOKEN` and `DB` and `BLOBS` bindings above
-
-Without them the endpoints answer `503` and list the missing names.
+Without `OPERATOR_TOKEN`, `DB` or `BLOBS`, these endpoints answer `503` and list the missing names; capture also requires `ANCHOR_API_KEY`.
 Tests use fixture responses in `src/worker/evidence/fixtures.ts`, built from Anchor's documented shapes; storage integration tests run against local D1 and R2 rather than recorded from live calls.

@@ -74,7 +74,6 @@ export async function recordRunEvent(store: RunStore, input: unknown) {
   ]);
   if (duplicates.length > 0) return;
 
-  // Not `<run>_<seq>`: Cloudflare storage reads a string starting with a UUID as that bare UUID.
   const id = `e${eventId}_${run.id}`;
   if (event.type === "chat" && data.role === "user" && data.text) {
     await store.recordSteering({
