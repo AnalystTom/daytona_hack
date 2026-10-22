@@ -1,77 +1,182 @@
-# Reversy — память о проекте (для будущего продукта)
+# Reversy — полная память проекта
 
-Записано 21 Oct 2026, после Daytona HackSprint NYC (16 Oct 2026, с Arize AI).
-Репозиторий: https://github.com/AnalystTom/daytona_hack · живой сайт: https://reversy.thomasmann2001.workers.dev
-Команда: Julia (оркестрация, Daytona, Firstmate, память), Thomas / AnalystTom (бэкенд, UI, Cloudflare, финальная интеграция).
+Обновлено 21 Oct 2026. Этот файл нужен, чтобы восстановить контекст проекта на новом компьютере (себе или Claude) и думать, как встроить его в будущий продукт.
+**Ключей и паролей здесь нет.** Только названия, где их взять и где они используются.
 
-## 1. Что это за продукт
+---
 
-**Reversy разбирает чужой артефакт и показывает, из чего он сделан.** Два режима:
+## 0. Как загрузить эту память обратно в Claude на новом компьютере
 
-1. **Report mode (главное для финансов).** Даёшь ссылку на открытый отчёт (Goldman Sachs, Morgan Stanley, Bloomberg…).
-   Агент:
-   - вытаскивает каждую цифру вместе с точной фразой, где она стоит, и ссылкой прямо на это место (`#:~:text=`);
-   - находит, на каких источниках и базах данных отчёт построен (названные и подразумеваемые), и как их получить;
-   - ищет первоисточники онлайн (OpenAI web search, ограниченный бюджет поиска);
-   - **проверяет каждую цифру**: «matches» только если в источнике то же значение, единица, масштаб и валюта; всё сомнительное получает «unverified», и обе цитаты видны; непроверяемое помечается «not observed», ничего не досочиняется;
-   - пересчитывает, что может, из первичных данных. Пример: капекс гиперскейлеров по SEC EDGAR XBRL. MSFT, GOOGL, AMZN, META и ORCL за календарный 2025 = $411.5bn; H1 2026 = $329.9bn. Отсюда видно, что прогноз GS в $800bn требует, чтобы H2 превысил H1 на 42.5%;
-   - собирает дашборд на канвасе: сводка, разбивка инвестиций из встроенной диаграммы, таблица цифр с источниками. Его можно редактировать, правки хранятся отдельно, оригинал не меняется.
-2. **Website mode.** Ссылка на сайт → скриншоты и HTML как доказательства → спека → план задач → параллельные coding-агенты в песочнице Daytona → ревью → merge → превью → независимый верификатор.
+1. `git clone https://github.com/AnalystTom/daytona_hack && cd daytona_hack && git checkout archive/python-prototype`. Этот файл лежит там в `docs/reversy-memory.md`; копия есть в Google Drive.
+2. Запустить Claude Code в папке проекта и сказать: «прочитай docs/reversy-memory.md, это память проекта».
+3. Если нужно, чтобы Claude помнил это всегда: попросить «сохрани ключевое из этого файла в память». Он разложит факты в `~/.claude/projects/<папка>/memory/`.
 
-Ценность для финансов: аналитик видит, **на чём держится чужой вывод**, какие цифры подтверждаются первичными данными, а какие нет. И сразу получает «что ещё видно сверх отчёта».
+---
 
-## 2. Архитектура (как оно работает сейчас)
+## 1. Контекст
 
-- **Cloudflare Workers.**
-  - `reversy`: UI и API, front door `/api/v1/...`, вход через Cloudflare Access, посетители могут запускать без токена, у каждого свои запуски и лимиты.
-  - `reversy-orchestrator`: приватный, вызывается через service binding. **Один Durable Object на один запуск.** Фазы: brief → inspecting → planning → planned → building → done; цикл на alarm-таймере.
-- **Daytona.** Песочницы для кода: snapshot `daytona-medium`, регион eu, публичные preview-URL `https://3000-{id}.daytonaproxy01.eu`. Агенты — Codex CLI в песочнице (`codex exec --dangerously-bypass-approvals-and-sandbox`, `< /dev/null`); изоляция обеспечивается самой песочницей Daytona.
+- **Хакатон:** Daytona HackSprint NYC с Arize AI, 16 Oct 2026, AWS JFK27 (12 W 39th St).
+  - Дедлайн Devpost 15:30 EDT.
+  - Требования: публичный GitHub, видео до 2 минут, описание и список всех спонсорских инструментов.
+  - Критерии: impact, техника, креативность и презентация, по 25% каждый; плюс бонус за осмысленное использование спонсорских инструментов.
+  - Призы «Best use of» были у Daytona, Arize, Anchor, SurrealDB и ElevenLabs.
+- **Команда:**
+  - Julia: оркестрация, песочницы Daytona, Firstmate, ролевая память SurrealDB, report mode v1, Devpost.
+  - Thomas / AnalystTom (thomasmann2001): бэкенд, UI, Cloudflare-аккаунт, финальная интеграция; после хакатона много PR через свой Firstmate.
+- **Репозиторий:** https://github.com/AnalystTom/daytona_hack (владелец Thomas).
+- **Живой сайт:** https://reversy.thomasmann2001.workers.dev (Cloudflare-аккаунт Thomas).
+  - После отзыва ключей Julia 21 Oct сайт частично не работает (хранилище, память, скриншоты, сборка), пока Thomas не поставит свои.
+- **Спеки в репо:** `docs/spec.md` (продукт), `docs/orchestrator/spec.md` (система агентов).
+
+## 2. Идея и как она эволюционировала
+
+1. **Утро 16 Oct, Python-прототип** (`prototype/` в ветке `archive/python-prototype`). Конвейер «reverse-engineering финансовых отчётов»: взять открытый отчёт конкурента (GS, MS, Bloomberg), извлечь цифры с цитатами, найти базы, новости и отчёты, на которых он построен, проверить, сохранить в SurrealDB Agent Memory и дать голосовую сводку через ElevenLabs.
+   Вдохновение: https://surrealdb.com/explore/agent-memory-for-financial-services. Там claims, память, обновление документа и «что изменилось».
+2. **Командный продукт Reversy** (спека Thomas): «Take it apart. Make it yours.» Берёшь сайт и получаешь спеку, доказательства (скриншоты, HTML) и пересборку агентами в песочнице с ревью и верификацией. Julia взяла на себя оркестрацию.
+3. **Report mode**: идея Julia, встроенная в Reversy (PR #11). Thomas развил её в главный сценарий демо (PR #26, #32): дашборд происхождения цифр на канвасе.
+
+## 3. Что умеет продукт сейчас (main)
+
+### Report mode (главный сценарий)
+Бриф: `<URL отчёта> Reconstruct this report: rebuild its key figures and the investment breakdown as an editable page, link every number to where it appears in the source, and mark anything not observed.`
+**URL вставлять одной строкой.** Если перенос строки обрежет ссылку, захватится «Page Not Found», а в той же сессии это уже не исправить.
+
+Что делает:
+- захватывает статью и встроенные диаграммы (Anchor; есть запасные пути на случай, когда code execution выключен);
+- извлекает цифры: короткая метка, значение, единицы, период и точная цитата. Отбрасывает boilerplate («157 Years of Excellence»), годы и даты; повторы одной цифры склеивает, сохраняя все места;
+- ищет первоисточники онлайн (OpenAI web search, бюджет около 4 вызовов и 6 загрузок);
+- **строгое сопоставление**: «matches» только при том же значении, единице, масштабе и валюте; сомнительное идёт в «unverified» с обеими цитатами; непроверяемое помечается «not observed»;
+- дашборд на канвасе: сводка (Figures read / Not observed / Sources in the article / Traced online / Named, not found), разбивка инвестиций из диаграммы (US / Global ex-US × public / private / non-US), таблица ключевых цифр и раздел «Sources and datasets»;
+- редактирование: правки помечены, оригиналы хранятся в SurrealDB.
+
+Пример на статье GS «Global AI Investment Is Forecast to Exceed $1 Trillion in 2026»:
+- 25 цифр;
+- разбивка из диаграммы: US 530/35/15, Global ex-US 234/67/138 ($bn);
+- цифры $1T, $800bn (капекс гиперскейлеров), $581bn (AI-инвестиции США).
+
+Версия Julia (PR #11, v1) дополнительно пересчитывала капекс по **SEC EDGAR XBRL** (companyconcept API):
+- MSFT, GOOGL, META и ORCL: `PaymentsToAcquirePropertyPlantAndEquipment`; AMZN: `PaymentsToAcquireProductiveAssets`;
+- кварталы получены разностью year-to-date отчётов;
+- календарный 2025: $411.5bn (MSFT 83.1, GOOGL 91.4, AMZN 131.8, META 69.7, ORCL 35.5); H1 2026: $329.9bn;
+- вывод: прогноз $800bn на 2026 требует, чтобы H2 превысил H1 на 42.5%. Цифры $1T и $581bn по SEC не проверяемы, и это объяснено.
+**Хорошая идея для будущего: вернуть пересчёт из первичных данных в основной продукт.**
+
+### Website mode
+URL сайта → захват (скриншоты и HTML как доказательства со статусами observed / inferred / not_observed) → спека, согласуемая в чате → план задач с зависимостями и владением файлами → параллельные Codex-воркеры в песочнице Daytona (до 12, reasoning medium) → ревьюер → merge → превью → верификатор по каждой задаче и финальный.
+Ещё есть REA (PR #29): разбор JS-бандлов сайта во временной песочнице и карточка «Code evidence».
+Демо на daytona.io (запуск 03b191c5): t01 (фундамент) слит, t02 и t03 упали на ревью, t04–t08 так и не стартовали. Этот запуск до сих пор стоит дефолтным примером на `/workspace`, и для показа его лучше заменить.
+
+### Доступ
+- Вход через Cloudflare Access (PR #20).
+- Посетители и судьи запускают без operator token, у каждого свои запуски и лимит в день (PR #25).
+- Операторские маршруты защищены `OPERATOR_TOKEN`.
+
+## 4. Архитектура
+
+```
+Браузер ── reversy (Cloudflare Worker: UI + API /api/v1, Access, лимиты)
+              │ service binding ORCHESTRATOR
+              ▼
+         reversy-orchestrator (приватный Worker, workers_dev=false)
+              Durable Object «Run» на каждый запуск, цикл на alarm
+              фазы: brief → inspecting → planning → planned → building → done
+              ├─ Anchor Browser: скриншоты / fetch
+              ├─ OpenAI: чат, план, ревью, верификатор (сейчас gpt-6-luna), web search для отчётов
+              ├─ Daytona: песочница (daytona-medium, регион eu), Codex-воркеры, превью :3000
+              ├─ SurrealDB Cloud: записи запусков, отчётов, правок, пример
+              ├─ SurrealDB Agent Memory: ролевые ключи на участника
+              └─ Arize: OTLP-трейсы, один трейс на запуск
+```
+
+### Ключевые технические детали (то, что не очевидно)
+- **Daytona.**
+  - REST `app.daytona.io/api`; toolbox через `proxy.app-eu.daytona.io/toolbox/{id}`; `process/execute` и асинхронные сессии.
+  - Превью: `https://3000-{id}.daytonaproxy01.eu` с `public: true`.
+  - Регион us был недоступен, используем eu.
+  - Со стандартным snapshot нельзя задавать свои ресурсы, поэтому берём `daytona-medium`.
+  - Полный интернет только на Tier 3, и только у песочниц, созданных после его включения.
+- **Codex в песочнице.**
+  - Запуск: `codex exec --dangerously-bypass-approvals-and-sandbox --skip-git-repo-check -m <model> -c model_reasoning_effort=medium < /dev/null`. Без `< /dev/null` он зависает; собственный sandbox Codex в контейнере не работает, изоляция обеспечивается самой песочницей Daytona.
+  - Для git worktree нужен trust в конфиге.
+  - Воркеру прямо сказано: исходный сайт недоступен, серверы не запускать; `timeout 900`.
+- **Ревью.** Diff по файлам, до 5 KB на файл и 70 KB всего. Владение файлами нормализует абсолютные пути. Без этого ревьюер отклонял нормальную работу.
 - **Firstmate** (kunchenguid/firstmate): вторая, «тяжёлая» оркестрация внутри песочницы, в демо не используется.
-  - Состав: tmux, treehouse worktrees, fleet ledger, no-mistakes; Gitea вместо Forgejo.
-  - Merge guard требует зелёный commit status, поэтому мы написали свой `ci.mjs`.
-  - bridge.mjs переводит ledger в события UI.
-- **SurrealDB.**
-  - Записи запусков и отчётов.
-  - **Agent Memory с разным доступом для разных участников.** Каждой роли (оркестратор, воркер задачи, верификатор) выдаётся attenuated-ключ (`POST /keys` с `grants`) на свои scopes. Воркер видит только свою задачу и общий контекст запуска. Для вложенных scopes нужны паттерны `/*`. Это ключевая фишка для финансов: аналитики, клиенты и комплаенс видят разные срезы одной памяти.
-  - Факты пишутся с `infer: full` / `triples`, есть `asOf` (что было известно на дату).
-- **Anchor Browser:** скриншоты и fetch страниц, в том числе через редиректы и защиту от ботов.
-- **Arize:** трейсинг через OTLP/HTTP JSON (`otlp.arize.com/v1/traces`), один трейс на запуск, trace id = id запуска.
-- **LLM:** сейчас OpenAI `gpt-6-luna` (PR #34). Неделю раньше пробовали шлюз Nicrron, но там кончились кредиты (402).
-- **REA** (rea-agents): разбор JS-бандлов сайта во временной песочнице.
+  - Устройство: tmux, treehouse worktrees, `state/fleet-ledger.jsonl`, реестр `data/projects.md`, no-mistakes с агентом codex.
+  - Gitea 28.1 вместо Forgejo: Codeberg был заблокирован, а Gitea проще и быстрее. Нужны INTERNAL_TOKEN и LOCAL_ROOT_URL; запуск через `setsid nohup`.
+  - tea ставить из модуля `gitea.dev/tea@v0.16.0`: `@latest` даёт тег 2019 года. `tea login` неидемпотентен, поэтому сначала delete, потом add.
+  - Merge guard требует зелёный combined commit status, отсюда свой `sandbox/ci.mjs`.
+  - `sandbox/bridge.mjs` переводит ledger в события UI; CLI `sandbox/reversy` даёт агентам capture, remember, recall и say.
+- **SurrealDB Agent Memory.**
+  - Bearer-ключи `sp-…`. API: `<SPECTRON_URL>/api/v1/<CONTEXT_ID>/{facts,query,context,scopes,keys}`.
+  - **Ролевой доступ:** `POST /keys` с attenuated `grants` (verb → список scopes). Оркестратор, воркер задачи и верификатор получают разные ключи; воркер видит только свою задачу и общий контекст запуска.
+  - Для вложенных scopes нужны паттерны `${run}/*`, иначе 403.
+  - `observed_at` работает только с `infer: full|triples`. Чтобы факты разных авторов не вытесняли друг друга, сущность заводится на пару (автор, метрика).
+  - `asOf`: что было известно на дату.
+- **Arize.** OTLP/HTTP JSON на `otlp.arize.com/v1/traces` с заголовками `space_id` и `api_key`; trace id = id запуска без дефисов.
+- **Cloudflare secrets** ставить только через `printf '%s' "$V" | npx wrangler secret put NAME`. С переводом строки токены не совпадали, на этом потеряли время.
+- **Bridge-авторизация** у Thomas: `HMAC-SHA256(BRIDGE_TOKEN, runId)`.
+- **UI** опрашивает события раз в 2 секунды, а в простое и в фазе brief — раз в 15 секунд. Результаты отчёта приходят через 1,5–3 минуты, их нужно подождать или обновить страницу.
 
-## 3. Где что лежит на GitHub
+## 5. Хронология PR (main)
 
-- `main`: актуальный продукт. Report mode в коде: `orchestrator/src/dissection.ts`, `report-capture.ts`, `report-store.ts`, `report.ts`, `run.ts`.
-- Ветка `orchestrator` (не слита в main, но запушена) — моя исходная работа:
-  - `sandbox/*`: bootstrap, Firstmate, Gitea, bridge, CLI `reversy`, `ci.mjs`;
-  - `orchestrator/src/memory.ts`: ролевые ключи SurrealDB;
-  - `docs/devpost.md`, `docs/orchestrator/handoff.md`.
-- Ветка `fix/review-diff`, PR #11: первая версия report mode и фикс ревью. Её содержимое вошло в main через PR #26, сам PR можно закрыть.
-- Ветка `archive/python-prototype`: утренний Python-прототип в `prototype/` (fetch → extract → verify → memory → voice) и `HACKATHON.md` с требованиями хакатона. Там же лежит этот файл.
+- #4–#9 (16 Oct): лендинг, канбан, run API с SurrealDB и SSE, песочница с Firstmate, Anchor. #9 закрепил решение: **демо-движок — Cloudflare-оркестратор**, Firstmate остаётся вторым движком.
+- #10, #12: приватный оркестратор за front door с operator token, сессионная cookie, подписанные ссылки на превью.
+- #11 (Julia, открыт, но по сути влит в #26): report mode v1 и фикс ревью.
+- #14, #18, #22, #27, #28, #30, #31: надёжность захвата (Anchor, редиректы, отказ code execution, бюджет поиска, User-Agent).
+- #15, #21: сессии, канвас с зумом и перетаскиванием, сохранённый пример по умолчанию.
+- #16, #17: scope запуска из брифа, ссылки без протокола.
+- #20, #25: Access-вход, лимиты, запуски без токена.
+- #26, #32: report dissection и дашборд происхождения цифр.
+- #29: REA.
+- #33 (18 Oct): шлюз Nicrron и кнопки 44px для телефона.
+- #34 (20 Oct): возврат на OpenAI, модель `gpt-6-luna`, потому что у Nicrron кончились кредиты (402).
 
-## 4. Уроки (что сработало и где обожглись)
+Ветки Julia на GitHub:
+- `orchestrator`: песочница, Firstmate, память, `docs/devpost.md`, `docs/orchestrator/handoff.md`. В main не слита, часть кода оттуда Thomas переписал.
+- `fix/review-diff`: PR #11.
+- `archive/python-prototype`: прототип и этот файл.
 
-- Ссылку в бриф вставлять **одной строкой**: перенос строки обрезает URL, захватывается «Page Not Found», и в той же сессии это уже не исправить. Нужна новая сессия. Это баг: правка адреса в чате не перезахватывает страницу.
-- Дефолтный пример на `/workspace` — неудачная сборка daytona.io («1 merged, 2 failed»). Для показа его надо заменить удачным запуском отчёта: `POST /api/v1/example {runId}` с operator token.
-- Параллельная сборка сайта агентами хрупкая: зависимые задачи блокируются, если упала базовая. Report mode надёжнее и полезнее для показа.
-- Ревьюер отклонял работу из-за обрезанного diff (30 KB) и абсолютных путей во владении файлами. Исправлено: diff по файлам с лимитом 5 KB на файл.
-- `observed_at` в SurrealDB работает только с `infer: full`/`triples`.
-- Daytona: на тарифе ниже Tier 3 у песочниц нет полного интернета; полный доступ есть только у песочниц, созданных уже после включения Tier 3.
-- Секреты, которые вставлялись в чат во время хакатона, надо считать скомпрометированными и **перевыпустить**: OpenAI, Daytona, Arize, SurrealDB, Anchor, ElevenLabs, Cloudflare.
+## 6. Уроки и известные баги
 
-## 5. Идеи для будущего продукта
+- Перенос строки в URL брифа ломает запуск. Если поправить адрес в чате, бот пишет «updated the target», но **страницу заново не снимает**. Нужна новая сессия. Это баг, о нём надо сказать Thomas.
+- Дефолтный пример на `/workspace` — неудачная сборка. Заменить можно через `POST /api/v1/example {runId}` с operator token.
+- Сборка сайта агентами хрупкая: падение базовой задачи блокирует всё дерево зависимостей. Report mode надёжнее, и для финансов ценнее.
+- Python с python.org на macOS не видит сертификаты. Помогает `truststore.inject_into_ssl()` или `SSL_CERT_FILE` на бандл certifi.
+- Во время хакатона ключи пересылались через чат. 21 Oct Julia отозвала Daytona, Anchor, Arize и SurrealDB Agent Memory (проверено: 401/403). OpenAI и ElevenLabs оставлены. Cloudflare-токен принадлежит Thomas, его должен отозвать он. Пользователя SurrealDB Cloud `reversy_api` (инстанс `zealous-falcon`) проверить в Studio и удалить.
 
-- **Provenance-граф для любых финансовых документов**: отчёты брокеров, investor decks, 10-K и earnings call → цифра → цитата → первоисточник → статус проверки. Хранить как граф в SurrealDB, где каждая цифра — узел со связями и историей (`asOf`).
-- **Коннекторы первичных данных** вместо одного SEC: FRED (макро), ECB/Eurostat, company IR, World Bank. Каждая проверка воспроизводима, у неё есть URL датасета и метод расчёта.
-- **«Что изменилось»**: при новой версии отчёта сравнивать с прошлой (supersession фактов в памяти) и показывать, какие цифры и допущения сдвинулись.
-- **Ролевой доступ к памяти как продуктовая фича**: аналитик видит всё, клиент видит проверенные выводы, комплаенс видит журнал источников. Attenuated-ключи уже работают.
-- **Сравнение конкурентов**: один и тот же вопрос (например, капекс на ИИ) в отчётах GS, MS и JPM → где оценки расходятся и почему (разные источники или допущения).
-- Arize evals на качество извлечения: доля цифр с точной цитатой, доля ложных «matches».
+## 7. Ключи: шаблон (без значений)
 
-## 6. Как поднять всё на новом компьютере
+Значения хранить в менеджере паролей, не в Drive и не в git. Файл `.env` в корне репозитория лежит в gitignore.
 
-1. `git clone https://github.com/AnalystTom/daytona_hack && cd daytona_hack && npm ci` (и `cd orchestrator && npm ci`).
-2. Создать `.env` по `prototype/.env.example` из ветки archive и по списку ниже. Сам `.env` на GitHub не лежит, и так и должно быть.
-   Ключи: `OPENAI_API_KEY`, `DAYTONA_API_KEY` (+`DAYTONA_TARGET=eu`), `ARIZE_API_KEY`/`ARIZE_SPACE_ID`, `SPECTRON_URL`/`SPECTRON_API_KEY` (SurrealDB Agent Memory), `SURREALDB_*` (SurrealDB Cloud instance), `ANCHORBROWSER_API_KEY`, `CLOUDFLARE_API_TOKEN`, `OPERATOR_TOKEN`/`REVERSY_OPERATOR_TOKEN`, `REVERSY_BRIDGE_TOKEN`.
-3. Деплой (если нужен свой): `npm run deploy` в корне и в `orchestrator/`. Секреты Worker'ов задаются через `printf '%s' "$VALUE" | npx wrangler secret put NAME`: printf без перевода строки, иначе токены не совпадают.
-4. Python-прототип: `cd prototype && uv sync && uv run python -m app.server`.
+| Переменная | Где взять | Где используется | Статус 21 Oct |
+|---|---|---|---|
+| `OPENAI_API_KEY`, `LLM_MODEL` | platform.openai.com → API keys | оркестратор, верификатор, web search, Codex | действует |
+| `DAYTONA_API_KEY`, `DAYTONA_TARGET=eu` | app.daytona.io → Keys | песочницы | отозван |
+| `ANCHORBROWSER_API_KEY` | app.anchorbrowser.io → API keys | скриншоты и fetch | отозван |
+| `ARIZE_API_KEY`, `ARIZE_SPACE_ID`, `ARIZE_SPACE`, `ARIZE_DEFAULT_PROJECT` | app.arize.com → Settings → API Keys | трейсинг | отозван |
+| `SPECTRON_URL`, `SPECTRON_CONTEXT_ID`, `SPECTRON_API_KEY` | SurrealDB Studio → Agent Memory → context | ролевая память | отозван |
+| `SURREALDB_URL`, `SURREALDB_NAMESPACE`, `SURREALDB_DATABASE`, `SURREALDB_USER`, `SURREALDB_PASSWORD` | SurrealDB Cloud → инстанс → Authentication (пользователь с правами на ns/db) | хранилище запусков и отчётов | проверить или удалить `reversy_api` |
+| `ELEVENLABS_API_KEY` | elevenlabs.io → API Keys | голос в прототипе | действует |
+| `CLOUDFLARE_API_TOKEN` | у Thomas | деплой Worker'ов | токен Thomas |
+| `OPERATOR_TOKEN`, `GATEWAY_TOKEN`, `REVERSY_OPERATOR_TOKEN`, `REVERSY_BRIDGE_TOKEN` | генерируются (`openssl rand -hex 32`) и ставятся как secret на Worker | front door и bridge | сменить при новом деплое |
+| `REVERSY_API_URL`, `REVERSY_GATEWAY_URL` | URL Worker'ов | скрипты песочницы | — |
+
+Кредиты хакатона (промокоды) лежат в `prototype/.env.example`. Скорее всего, они уже истекли.
+
+## 8. Как поднять на новом компьютере
+
+1. Поставить Node 22+, `uv` (Python), git и gh; войти: `gh auth login`.
+2. `git clone https://github.com/AnalystTom/daytona_hack && cd daytona_hack && npm ci && (cd orchestrator && npm ci)`.
+3. Создать `.env` по таблице выше, взяв значения из менеджера паролей.
+4. Свой деплой: `npm run deploy` в корне и в `orchestrator/` (нужен свой Cloudflare-аккаунт), затем secrets через `printf … | wrangler secret put`.
+5. Прототип: `git checkout archive/python-prototype && cd prototype && uv sync`.
+
+## 9. Идеи для будущего продукта
+
+- **Граф происхождения цифр** для любых финансовых документов: sell-side отчёты, investor decks, 10-K/10-Q, earnings calls. Цепочка «цифра → цитата → первоисточник → проверка», каждая цифра — узел в SurrealDB с историей (`asOf`).
+- **Коннекторы к первичным данным:** SEC XBRL (уже работало), FRED, ECB/Eurostat, World Bank, IR компаний. Каждая проверка воспроизводима: URL датасета, метод и пересчёт.
+- **«Что изменилось»:** новая версия отчёта сравнивается с прошлой (supersession фактов), видно, какие цифры и допущения сдвинулись.
+- **Ролевой доступ к памяти как фича:** аналитик видит всё, клиент видит проверенные выводы, комплаенс видит журнал источников. Attenuated-ключи уже работают.
+- **Сравнение домов:** один вопрос (например, капекс на ИИ) в отчётах GS, MS и JPM; где расходятся и почему (разные источники или допущения).
+- **Evals в Arize:** доля цифр с точной цитатой, доля ложных «matches», полнота найденных источников.
+- **Безопасность:** текст сайтов и отчётов — данные, а не инструкции (защита от prompt injection). Изоляция в песочнице. Верификатор независим от исполнителя.
