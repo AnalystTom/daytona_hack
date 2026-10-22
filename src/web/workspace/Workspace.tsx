@@ -19,6 +19,7 @@ import { PreviewView } from "./PreviewView";
 import {
   fetchEvents,
   overrideVerdict,
+  promoteVariant,
   type RunCallError,
   type RunCallResult,
   runAction,
@@ -419,8 +420,19 @@ export function Workspace({
           aria-label={`${VIEWS.find((v) => v.id === view)?.label} canvas`}
         >
           {view === "preview" && runId ? (
-            // The preview's iframe stays outside the canvas so it is never panned or zoomed.
-            <PreviewView runId={runId} onRefused={(e) => addNotice(e)} />
+            <PreviewView
+              runId={runId}
+              onRefused={(e) => addNotice(e)}
+              phase={run.phase}
+              scope={run.scope}
+              variants={run.variants}
+              onMakeVariants={() =>
+                runId && void act(runAction(runId, "variants"))
+              }
+              onPromote={(variantId) =>
+                runId && void act(promoteVariant(runId, variantId))
+              }
+            />
           ) : (
             <Canvas
               key={refused.current ? "unavailable" : view}

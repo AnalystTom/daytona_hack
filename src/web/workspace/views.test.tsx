@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { CanvasEvidence } from "../../shared/workspace";
 import { BuildView } from "./BuildView";
 import { ChatPanel } from "./ChatPanel";
+import { PreviewView } from "./PreviewView";
 import { SpecView } from "./SpecView";
 import { runView } from "./orchestrator";
 
@@ -356,5 +357,21 @@ describe("ChatPanel", () => {
     expect(html).toContain("Dashboard needs an account.");
     expect(html).not.toContain("javascript:");
     expect(html).not.toContain("Send brief");
+  });
+});
+
+describe("PreviewView", () => {
+  it("waits for an authenticated preview link before embedding anything", () => {
+    const html = renderToStaticMarkup(
+      <PreviewView
+        runId="r1"
+        onRefused={noop}
+        variants={[]}
+        onMakeVariants={noop}
+        onPromote={noop}
+      />,
+    );
+    expect(html).toContain("Opening the preview");
+    expect(html).not.toContain("<iframe");
   });
 });

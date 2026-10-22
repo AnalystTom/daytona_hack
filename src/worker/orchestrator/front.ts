@@ -46,6 +46,10 @@ const OverrideRequest = z.object({
   reason: z.string().trim().max(2000).default(""),
 });
 
+const PromoteRequest = z.object({
+  variantId: z.string().regex(/^v\d{1,2}$/),
+});
+
 const RUNS = /^\/api\/v1\/runs(?:\/([\w-]{1,100})(?:\/(.+))?)?$/;
 const EVIDENCE = /^evidence\/[\w-]{1,100}$/;
 const OPERATOR_PREFIX = "/api/v1/orchestrator";
@@ -169,6 +173,8 @@ async function userRunRoute(
         "override",
         "approve",
         "build",
+        "variants",
+        "promote",
         "sign-in",
         "sign-in/resume",
         "sign-in/skip",
@@ -390,7 +396,21 @@ async function runRoute(
     }
     if (EVIDENCE.test(action)) return call(`${base}/${action}`);
     // A fresh short-lived signed link to the run's private sandbox preview.
-    if (action === "preview") return call(`${base}/preview`);
+    if (action === "preview") {
+      const variant = url.searchParams.get("variant");
+      if (
+        variant !== null &&
+        !PromoteRequest.shape.variantId.safeParse(variant).success
+      )
+        throw new Failure(
+          400,
+          "invalid_variant",
+          "variant must be a variant id.",
+        );
+      return call(
+        `${base}/preview${variant === null ? "" : `?variant=${variant}`}`,
+      );
+    }
   }
   if (method === "POST") {
     if (action === "report-edit") {
@@ -411,11 +431,15 @@ async function runRoute(
     if (action === "override") {
       return call(`${base}/override`, await readJson(request, OverrideRequest));
     }
+    if (action === "promote") {
+      return call(`${base}/promote`, await readJson(request, PromoteRequest));
+    }
     // sign-in answers {liveViewUrl}: Anchor's one-time live view, where the user signs in themselves.
     const actions = [
       "approve",
       "build",
       "stop",
+      "variants",
       "sign-in",
       "sign-in/resume",
       "sign-in/skip",

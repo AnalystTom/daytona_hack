@@ -123,13 +123,27 @@ export function sendMessage(
 
 export function runAction(
   runId: string,
-  action: "build" | "stop" | "sign-in/resume" | "sign-in/skip",
+  action: "build" | "stop" | "variants" | "sign-in/resume" | "sign-in/skip",
   fetchImpl: typeof fetch = fetch,
 ) {
   return call(
     "POST",
     runPath(runId, action),
     {},
+    async () => undefined,
+    fetchImpl,
+  );
+}
+
+export function promoteVariant(
+  runId: string,
+  variantId: string,
+  fetchImpl: typeof fetch = fetch,
+) {
+  return call(
+    "POST",
+    runPath(runId, "promote"),
+    { variantId },
     async () => undefined,
     fetchImpl,
   );
@@ -213,11 +227,13 @@ const PreviewLink = z.object({ url: z.url({ protocol: /^https$/ }) });
 // A short-lived signed link to the run's private preview.
 export function fetchPreviewLink(
   runId: string,
+  variantId?: string,
   fetchImpl: typeof fetch = fetch,
+  attempt = 0,
 ) {
   return call(
     "GET",
-    runPath(runId, "preview"),
+    `${runPath(runId, "preview")}${variantId === undefined ? "" : `?variant=${encodeURIComponent(variantId)}&attempt=${attempt}`}`,
     undefined,
     async (r) => PreviewLink.parse(await r.json()).url,
     fetchImpl,

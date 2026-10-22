@@ -77,14 +77,28 @@ async function setup(
     options.empty ? [] : [["state", state]],
   );
   let ready!: Promise<unknown>;
+  let scheduled: number | null = null;
   const storage = {
     get: async (key: string) => data.get(key),
     put: async (key: string, value: unknown) => {
       data.set(key, structuredClone(value));
     },
     list: async () => new Map([...data].filter(([k]) => k.startsWith("ev:"))),
-    setAlarm: vi.fn(async () => {}),
-    deleteAlarm: vi.fn(async () => {}),
+    getAlarm: async () => scheduled,
+    async transaction<T>(
+      fn: (storage: {
+        getAlarm: () => Promise<number | null>;
+        setAlarm: (at: number) => Promise<void>;
+      }) => Promise<T>,
+    ) {
+      return fn(this);
+    },
+    setAlarm: vi.fn(async (at: number) => {
+      scheduled = at;
+    }),
+    deleteAlarm: vi.fn(async () => {
+      scheduled = null;
+    }),
   };
   const ctx = {
     storage,
@@ -151,12 +165,11 @@ async function setup(
   const startWorker = vi
     .spyOn(Daytona.prototype, "startAsync")
     .mockResolvedValue("cmd1");
+  vi.spyOn(Daytona.prototype, "deleteSession").mockResolvedValue();
   vi.spyOn(Daytona.prototype, "writeFile").mockResolvedValue(undefined);
   vi.spyOn(Daytona.prototype, "create").mockResolvedValue({ id: "sb1" });
   vi.spyOn(Daytona.prototype, "remove").mockResolvedValue(undefined);
-  vi.spyOn(Daytona.prototype, "previewUrl").mockResolvedValue(
-    "https://preview.test/",
-  );
+  vi.spyOn(Daytona.prototype, "stop").mockResolvedValue(undefined);
   vi.spyOn(Daytona.prototype, "signedPreviewUrl").mockResolvedValue(
     "https://preview.test/",
   );
@@ -299,6 +312,15 @@ describe("provider-confirmed run cancellation", () => {
         new Error("worker cancellation failed"),
       );
     }
+    if (mode !== "explicit")
+      vi.mocked(Daytona.prototype.stop).mockImplementation(async (id) => {
+        const status = await get(id);
+        if (
+          provider === "command failure" ||
+          !["stopped", "archived", "deleted", "started"].includes(status.state)
+        )
+          throw new Error("sandbox shutdown unconfirmed");
+      });
     const client = frontFor(context);
     const confirmed = ["stopped", "archived", "deleted", "started"].includes(
       provider,
@@ -308,14 +330,24 @@ describe("provider-confirmed run cancellation", () => {
     else
       expect(
         (await client.send(mode === "explicit" ? "/r1/stop" : ""))?.status,
-      ).toBe(confirmed ? (mode === "explicit" ? 200 : 201) : 502);
-    expect(get).toHaveBeenCalledWith("sb1");
+      ).toBe(
+        confirmed
+          ? mode === "explicit"
+            ? 200
+            : 201
+          : mode === "explicit"
+            ? 502
+            : 429,
+      );
+    expect(get.mock.calls.map(([id]) => id)).toContain("sb1");
     expect(data.get("state")).toMatchObject({
-      phase: confirmed ? "stopped" : phase,
+      phase: confirmed || mode !== "explicit" ? "stopped" : phase,
       pending: confirmed ? undefined : "stop",
       startedAt: client.original.createdAt,
       tasks: [
-        expect.objectContaining({ status: confirmed ? "stopped" : "building" }),
+        expect.objectContaining({
+          status: confirmed || mode !== "explicit" ? "stopped" : "building",
+        }),
       ],
     });
     if (provider !== "started" && provider !== "command failure")
@@ -324,10 +356,9 @@ describe("provider-confirmed run cancellation", () => {
       expect(client.records[0]).toMatchObject(client.original);
       expect(client.start).not.toHaveBeenCalled();
       await expect(run.message("continue")).rejects.toThrow(/stopping/);
-      expect((await client.send(""))?.status).toBe(
-        mode === "explicit" ? 429 : 502,
-      );
+      expect((await client.send(""))?.status).toBe(429);
       get.mockResolvedValue({ state: "stopped" });
+      vi.mocked(Daytona.prototype.stop).mockResolvedValue(undefined);
       if (mode === "explicit")
         expect((await client.send("/r1/stop"))?.status).toBe(200);
     }
@@ -590,8 +621,11 @@ describe("run paid-work deadlines", () => {
       await expect(run.override("t01", "approve", "continue")).rejects.toThrow(
         /stopping/,
       );
-      await run.alarm();
-      expect(storage.setAlarm).not.toHaveBeenCalled();
+      expect(
+        storage.setAlarm.mock.calls.every(
+          ([at]) => at <= Date.now() + 120 * 60_000,
+        ),
+      ).toBe(true);
       expect(calls).toEqual([]);
       expect(startWorker).not.toHaveBeenCalled();
       release();
@@ -608,7 +642,7 @@ describe("run paid-work deadlines", () => {
   );
 
   it.each(["network", "command"] as const)(
-    "keeps cancellation pending after a %s failure until an explicit successful stop",
+    "completes cancellation after a %s failure when its alarm retries",
     async (kind) => {
       const { run, data, calls, storage } = await setup({
         phase: "building",
@@ -635,8 +669,11 @@ describe("run paid-work deadlines", () => {
       );
       await run.alarm();
       expect(calls).toEqual([]);
-      expect(storage.setAlarm).not.toHaveBeenCalled();
-      await run.stop();
+      expect(
+        storage.setAlarm.mock.calls.every(
+          ([at]) => at <= Date.now() + 120 * 60_000,
+        ),
+      ).toBe(true);
       expect(await run.getState()).toMatchObject({
         phase: "stopped",
         pending: undefined,
@@ -649,18 +686,22 @@ describe("run paid-work deadlines", () => {
       phase: "building",
       tasks: [task("building")],
     });
-    vi.mocked(Daytona.prototype.must).mockRejectedValueOnce(
+    vi.mocked(Daytona.prototype.stop).mockRejectedValue(
       new Error("cancellation refused"),
     );
     expire();
     await run.alarm();
     expect(data.get("state")).toMatchObject({
-      phase: "building",
+      phase: "stopped",
       pending: "stop",
     });
     await run.alarm();
     expect(calls).toEqual([]);
-    expect(storage.setAlarm).not.toHaveBeenCalled();
+    expect(
+      storage.setAlarm.mock.calls.every(
+        ([at]) => at <= Date.now() + 120 * 60_000,
+      ),
+    ).toBe(true);
   });
 
   it("checks the deadline again after worker launch returns", async () => {
@@ -686,15 +727,18 @@ describe("run paid-work deadlines", () => {
       phase: "inspecting",
       pending: "inspect",
     });
+    let stopping: Promise<unknown> | undefined;
     request.mockImplementation(async (input) => {
       if (String(input).includes("api.openai.com/v1/chat")) {
         calls.push("plan");
-        await run.stop();
+        stopping = run.stop();
+        await stopping;
         return chatReply(JSON.stringify({ tasks: [] }));
       }
       return new Response("<html>observed</html>");
     });
     await run.alarm();
+    await stopping;
     expect(calls).toEqual(["plan"]);
     expect((await run.getState()).phase).toBe("stopped");
   });
@@ -746,13 +790,21 @@ describe("run paid-work deadlines", () => {
       });
       expect(data.get("state")).toMatchObject({ phase: "failed" });
       expect(storage.deleteAlarm).toHaveBeenCalled();
-      expect(storage.setAlarm).not.toHaveBeenCalled();
+      expect(
+        storage.setAlarm.mock.calls.every(
+          ([at]) => at <= Date.now() + 120 * 60_000,
+        ),
+      ).toBe(true);
       await run.alarm();
       const reloaded = new Run(ctx as unknown as DurableObjectState, env);
       await Promise.resolve();
       await reloaded.alarm();
       expect(calls).toEqual(["verify_final"]);
-      expect(storage.setAlarm).not.toHaveBeenCalled();
+      expect(
+        storage.setAlarm.mock.calls.every(
+          ([at]) => at <= Date.now() + 120 * 60_000,
+        ),
+      ).toBe(true);
     },
   );
 

@@ -6,6 +6,10 @@
   // Private: reached only through the `reversy` Worker's ORCHESTRATOR service binding.
   "workers_dev": false,
   "preview_urls": false,
+  // Run records go to SurrealDB through the `reversy` Worker's Records entrypoint (not public).
+  "services": [
+    { "binding": "RECORDS", "service": "reversy", "entrypoint": "Records" }
+  ],
   "durable_objects": {
     "bindings": [{ "name": "RUNS", "class_name": "Run" }]
   },

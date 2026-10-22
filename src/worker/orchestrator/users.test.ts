@@ -36,7 +36,15 @@ function setup(
       if (
         request.method === "POST" &&
         action !== undefined &&
-        ["messages", "override", "approve", "build", "sign-in"].includes(action)
+        [
+          "messages",
+          "override",
+          "approve",
+          "build",
+          "variants",
+          "promote",
+          "sign-in",
+        ].includes(action)
       )
         await onAction?.(id, action);
       if (action === "stop") {
@@ -343,6 +351,8 @@ describe("Cloudflare Access users", () => {
     });
     for (const [action, body] of [
       ["messages", { text: "Make a variant" }],
+      ["variants", {}],
+      ["promote", { variantId: "v1" }],
       ["sign-in", {}],
       ["sign-in/resume", {}],
       ["sign-in/skip", {}],

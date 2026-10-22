@@ -1,9 +1,12 @@
+import { WorkerEntrypoint } from "cloudflare:workers";
 import { version } from "../../package.json";
 import { type DaytonaEnv, handleSandboxRoute } from "./daytona/routes";
 import { type EvidenceEnv, handleEvidence } from "./evidence/routes";
 import { type ExampleEnv, handleExample } from "./example/routes";
 import { handleOrchestrator, type OrchestratorEnv } from "./orchestrator/front";
+import { recordRunEvent } from "./records/records";
 import { handleRunsApi, type RunsEnv } from "./runs/api";
+import { resolveStore, type StoreEnv } from "./store";
 import { handleVerify, type VerifierEnv } from "./verifier/route";
 
 export default {
@@ -41,3 +44,14 @@ export default {
     OrchestratorEnv &
     ExampleEnv
 >;
+
+// The orchestrator's RECORDS service binding: run records into SurrealDB. Not reachable over HTTP.
+export class Records extends WorkerEntrypoint<StoreEnv> {
+  async record(input: unknown) {
+    const resolved = resolveStore(this.env);
+    if ("missing" in resolved) {
+      throw new Error(`Run records need ${resolved.missing.join(", ")}`);
+    }
+    await recordRunEvent(resolved.store, input);
+  }
+}

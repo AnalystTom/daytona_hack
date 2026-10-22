@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Canvas } from "./Canvas";
 import { ChatPanel } from "./ChatPanel";
 import { PreviewView } from "./PreviewView";
+import { runView } from "./orchestrator";
 import { SessionSwitcher } from "./SessionSwitcher";
 import { SpecView } from "./SpecView";
 import { Workspace } from "./Workspace";
@@ -330,9 +331,113 @@ describe("workspace ownership", () => {
             : Response.json({ id: "alice-run" }),
         ),
       );
-      mount(() => PreviewView({ runId: "alice-run", onRefused }));
+      mount(() =>
+        PreviewView({
+          runId: "alice-run",
+          onRefused,
+          variants: [],
+          onMakeVariants: () => {},
+          onPromote: () => {},
+        }),
+      );
       await flush();
       expect(onRefused).toHaveBeenCalledTimes(accessible ? 0 : 1);
     },
   );
+  it.each(["frontend", "both", "backend", undefined] as const)(
+    "offers landing-page variants only for a recorded frontend scope (%s)",
+    async (scope) => {
+      const view = runView("alice-run", [
+        {
+          seq: 1,
+          ts: "2026-10-22T12:00:00Z",
+          type: "spec",
+          data: {
+            url: "https://alice.example/",
+            scope,
+            pages: [],
+            flows: [],
+            openQuestions: [],
+            approved: true,
+          },
+        },
+        {
+          seq: 2,
+          ts: "2026-10-22T12:00:00Z",
+          type: "phase",
+          data: { phase: "done" },
+        },
+      ]);
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => Response.json({ url: "https://preview.example/" })),
+      );
+      const make = vi.fn();
+      mount(() =>
+        PreviewView({
+          runId: "alice-run",
+          phase: view.phase,
+          scope: view.scope,
+          variants: [],
+          onMakeVariants: make,
+          onPromote: () => {},
+          onRefused: () => {},
+        }),
+      );
+      await flush();
+      const button = nodes(tree).find(
+        (node) =>
+          node.type === "button" &&
+          node.props.children === "Make three variants",
+      );
+      expect(renderToStaticMarkup(tree)).toContain('title="Rebuild preview"');
+      if (scope === "frontend" || scope === "both") {
+        expect(button).toBeDefined();
+        (button!.props as { onClick: () => void }).onClick();
+        expect(make).toHaveBeenCalledTimes(1);
+      } else {
+        expect(button).toBeUndefined();
+        expect(renderToStaticMarkup(tree)).not.toContain(
+          "Landing-page variants",
+        );
+      }
+    },
+  );
+
+  it("passes the loaded backend scope into the workspace preview", async () => {
+    const loaded = events.map((event) =>
+      event.type === "spec"
+        ? { ...event, data: { ...event.data, scope: "backend" } }
+        : event,
+    );
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input) =>
+        Response.json(
+          String(input).includes("/events")
+            ? [
+                ...loaded,
+                {
+                  seq: 5,
+                  ts: "2026-10-22T12:00:00Z",
+                  type: "preview",
+                  data: { sandboxId: "sb1" },
+                },
+              ]
+            : { id: "alice-run" },
+        ),
+      ),
+    );
+    mount(() => Workspace({ runId: "alice-run" }));
+    await flush();
+    const preview = nodes(tree).find(
+      (node) => node.type === "button" && node.props.children === "Preview",
+    );
+    expect(preview).toBeDefined();
+    (preview!.props as { onClick: () => void }).onClick();
+    await flush();
+    expect(
+      element<ComponentProps<typeof PreviewView>>(PreviewView).props.scope,
+    ).toBe("backend");
+  });
 });

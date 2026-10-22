@@ -19,6 +19,9 @@ class DaytonaResponseError extends Error {
   }
 }
 
+export const sandboxIsStopped = (state: string | undefined) =>
+  state !== undefined && ["stopped", "archived", "deleted"].includes(state);
+
 export class Daytona {
   private toolbox = new Map<string, string>();
   constructor(private env: Env) {}
@@ -54,6 +57,7 @@ export class Daytona {
       autoDeleteInterval?: number; // minutes stopped before deleting; 0 deletes on stop
     },
     signal?: AbortSignal,
+    allocated?: (id: string) => Promise<void>,
   ) {
     signal?.throwIfAborted();
     let sb: { id: string };
@@ -84,24 +88,55 @@ export class Daytona {
       throw new SandboxCleanupError(undefined, error);
     }
     try {
-      for (let i = 0; i < 60; i++) {
-        signal?.throwIfAborted();
-        const s = await this.get(sb.id, signal);
-        signal?.throwIfAborted();
-        if (s.state === "started") return s;
-        if (s.state === "error" || s.state === "build_failed")
-          throw new Error(`sandbox ${sb.id} ${s.state}`);
-        await sleep(2000, signal);
-      }
-      throw new Error(`sandbox ${sb.id} did not start`);
+      await allocated?.(sb.id);
+      return await this.started(sb.id, signal);
     } catch (error) {
       await this.remove(sb.id);
       throw error;
     }
   }
 
+  async fork(
+    id: string,
+    allocated: (id: string) => Promise<void>,
+    signal?: AbortSignal,
+  ) {
+    const sb = await this.call(
+      `${this.env.DAYTONA_API_URL}/sandbox/${id}/fork`,
+      { method: "POST", body: "{}" },
+    );
+    await allocated(sb.id);
+    return this.started(sb.id, signal);
+  }
+
+  private async started(id: string, signal?: AbortSignal) {
+    for (let i = 0; i < 60; i++) {
+      signal?.throwIfAborted();
+      const s = await this.get(id, signal);
+      signal?.throwIfAborted();
+      if (s.state === "started") return s;
+      if (s.state === "error" || s.state === "build_failed")
+        throw new Error(`sandbox ${id} ${s.state}`);
+      await sleep(2000, signal);
+    }
+    throw new Error(`sandbox ${id} did not start`);
+  }
+
   get(id: string, signal?: AbortSignal) {
     return this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}`, { signal });
+  }
+
+  async cleanupState(
+    id: string,
+    signal?: AbortSignal,
+  ): Promise<string | undefined> {
+    try {
+      return (await this.get(id, signal)).state;
+    } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404)
+        return "deleted";
+      throw error;
+    }
   }
 
   async remove(id: string) {
@@ -111,15 +146,35 @@ export class Daytona {
         signal: AbortSignal.timeout(15_000),
       });
     } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404) return;
       throw new SandboxCleanupError(id, error);
     }
   }
 
-  async previewUrl(id: string, port: number): Promise<string> {
-    const r = await this.call(
-      `${this.env.DAYTONA_API_URL}/sandbox/${id}/ports/${port}/preview-url`,
-    );
-    return r.url;
+  /** Stops the sandbox (it keeps its disk and can be started again). */
+  async stop(id: string, signal?: AbortSignal) {
+    const current = await this.cleanupState(id, signal);
+    if (sandboxIsStopped(current)) return;
+    if (current !== "stopping") {
+      try {
+        await this.call(`${this.env.DAYTONA_API_URL}/sandbox/${id}/stop`, {
+          method: "POST",
+          signal,
+        });
+      } catch (error) {
+        if (error instanceof DaytonaResponseError && error.status === 404)
+          return;
+        throw error;
+      }
+    }
+    for (let i = 0; i < 60; i++) {
+      const state = await this.cleanupState(id, signal);
+      if (sandboxIsStopped(state)) return;
+      if (state === "error" || state === "build_failed")
+        throw new Error(`sandbox ${id} ${state}`);
+      await sleep(2000, signal);
+    }
+    throw new Error(`sandbox ${id} did not stop`);
   }
 
   /** A preview link that works without headers until it expires. */
@@ -175,12 +230,23 @@ export class Daytona {
     return r.result;
   }
 
+  async deleteSession(id: string, sessionId: string) {
+    try {
+      await this.call(`${await this.tb(id)}/process/session/${sessionId}`, {
+        method: "DELETE",
+      });
+    } catch (error) {
+      if (error instanceof DaytonaResponseError && error.status === 404) return;
+      throw error;
+    }
+  }
+
   /** Start a long command in its own session; returns immediately. */
   async startAsync(
     id: string,
     sessionId: string,
     command: string,
-    beforeWork?: () => Promise<void>,
+    beforeWork?: () => void | Promise<void>,
   ) {
     const base = await this.tb(id);
     await beforeWork?.();

@@ -192,7 +192,10 @@ export async function capture(
   runId: string,
   request: CaptureRequest,
   landed: (evidence: Evidence) => Promise<void>,
-  control: Pick<CaptureDeps, "signal" | "onSession" | "beforeWork"> = {},
+  control: Pick<
+    CaptureDeps,
+    "signal" | "onSession" | "beforeWork" | "waitUntil"
+  > = {},
 ) {
   if (!env.ANCHORBROWSER_API_KEY)
     throw new Error(

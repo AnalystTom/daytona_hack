@@ -1,0 +1,2780 @@
+function reply(body: Record<string, unknown>, init?: ResponseInit) {
+  return Response.json(
+    body.output_text === undefined
+      ? body
+      : { choices: [{ message: { content: body.output_text } }] },
+    init,
+  );
+}
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { Run } from "../src/run";
+import { Daytona } from "../src/daytona";
+import { runView } from "../../src/web/workspace/orchestrator";
+import { recordRunEvent } from "../../src/worker/records/records";
+import { MemoryRunStore } from "../../src/worker/store/memory";
+import type { Env, RunEvent, RunRecord, Task } from "../src/types";
+
+// A Durable Object state in memory; Daytona and OpenAI are answered by a mocked fetch.
+function fakeRun(
+  state: object,
+  overrides: Partial<Env> = {},
+  initialAlarm: number | null = null,
+) {
+  const pending: Promise<unknown>[] = [];
+  const snapshots: object[] = [structuredClone(state)];
+  const data = new Map<string, unknown>([["state", state]]);
+  let ready: Promise<unknown> = Promise.resolve();
+  let scheduled = initialAlarm;
+  let transacting: Promise<unknown> = Promise.resolve();
+  const storage = {
+    get: async (key: string) => data.get(key),
+    list: async ({ prefix, start }: { prefix: string; start: string }) =>
+      new Map(
+        [...data]
+          .filter(([key]) => key.startsWith(prefix) && key >= start)
+          .sort(([a], [b]) => a.localeCompare(b)),
+      ),
+    put: async (key: string, value: unknown) => {
+      data.set(key, value);
+      if (key === "state") snapshots.push(structuredClone(value as object));
+    },
+    deleteAlarm: async () => {
+      scheduled = null;
+    },
+    getAlarm: async () => scheduled,
+    setAlarm: async (at: number) => {
+      scheduled = at;
+    },
+    transaction: (
+      fn: (txn: {
+        getAlarm: () => Promise<number | null>;
+        setAlarm: (at: number) => Promise<void>;
+      }) => Promise<void>,
+    ) => {
+      const result = transacting.then(() => fn(storage));
+      transacting = result.catch(() => {});
+      return result;
+    },
+  };
+  const ctx = {
+    storage,
+    waitUntil: (promise: Promise<unknown>) => void pending.push(promise),
+    blockConcurrencyWhile: (fn: () => Promise<unknown>) => {
+      ready = fn();
+    },
+  };
+  const env = {
+    DAYTONA_API_URL: "https://daytona.test",
+    OPENAI_API_KEY: "test",
+    ORCHESTRATOR_MODEL: "gpt-test",
+    VERIFIER_MODEL: "gpt-test",
+    ...overrides,
+  } as Env;
+  const run = new Run(ctx as never, env);
+  const alarm = run.alarm.bind(run);
+  run.alarm = async () => {
+    scheduled = null;
+    await alarm();
+  };
+  return {
+    run,
+    scheduled: () => scheduled,
+    state: () => data.get("state") as any,
+    persisted: () => structuredClone(snapshots.at(-1)) as any,
+    ready,
+    flush: () => Promise.all(pending),
+  };
+}
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+const variant = (id: string, pod: "fork" | "copy" = "fork") => ({
+  id,
+  title: `Alternative ${id}`,
+  explanation: "An alternative layout",
+  change: "Update the landing page",
+  pod,
+  sandboxId: pod === "fork" ? `sb${Number(id.slice(1)) + 1}` : "sb1",
+  dir: pod === "fork" ? "/home/daytona/app" : `/home/daytona/variants/${id}`,
+  status: "ready",
+  snapshot: "abc",
+});
+
+const calls: string[] = [];
+function mockFetch(verdict?: object, status = 200) {
+  const stopped = new Set<string>();
+  vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+    calls.push(`${init.method ?? "GET"} ${input}`);
+    if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
+    if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+      return reply({
+        state: stopped.has(input) ? "stopped" : "started",
+      });
+    if (input.endsWith("/toolbox-proxy-url"))
+      return reply({ url: "https://toolbox.test" });
+    if (input.endsWith("/process/execute"))
+      return reply({ exitCode: 0, result: "" });
+    if (input === "https://api.openai.com/v1/chat/completions")
+      return reply({ output_text: JSON.stringify(verdict) }, { status });
+    if (input.startsWith("https://3000-"))
+      return new Response("<main>rebuild</main>");
+    return reply({});
+  });
+}
+
+const task = (id: string, status: Task["status"]): Task => ({
+  id,
+  title: `Task ${id}`,
+  brief: "",
+  outOfScope: "",
+  acceptance: [],
+  evidence: ["ev_001"],
+  owns: ["sections/hero.html"],
+  dependsOn: [],
+  status,
+  attempts: 1,
+  branch: `task/${id}`,
+});
+
+const verifiedVariantTask = (id: string): Task => ({
+  ...task(id, "merged"),
+  variant: id,
+  verification: true,
+});
+
+const baseState = (startedAt: string, phase: string, tasks: Task[]) => ({
+  id: "run-1",
+  startedAt,
+  phase,
+  chat: [],
+  evidence: [
+    { id: "ev_rea", kind: "code", tool: "rea", status: "not_observed" },
+  ],
+  tasks,
+  sandboxId: "sb1",
+  previewReady: true,
+  spec: {
+    url: "https://example.com/",
+    goal: "",
+    scope: "frontend",
+    pages: [],
+    flows: [],
+    openQuestions: [],
+    approved: true,
+    revision: 1,
+  },
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  calls.length = 0;
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
+});
+
+describe("Run", () => {
+  it("stops workers and the sandbox at the 2-hour limit, then refuses actions", async () => {
+    mockFetch();
+    const threeHoursAgo = new Date(Date.now() - 3 * 3600_000).toISOString();
+    const { run, state, ready } = fakeRun(
+      baseState(threeHoursAgo, "building", [task("t01", "building")]),
+    );
+    await ready;
+    await run.alarm();
+    expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+    expect(state()).toMatchObject({ phase: "stopped", expired: true });
+    expect(state().tasks[0].status).toBe("stopped");
+    await expect(run.message("more")).rejects.toThrow(/2-hour limit|stopping/);
+  });
+
+  it("keeps the next alarm within the run's deadline", async () => {
+    mockFetch();
+    const startedAt = new Date(Date.now() - 3600_000).toISOString();
+    const { run, scheduled, ready } = fakeRun(baseState(startedAt, "done", []));
+    await ready;
+    await run.alarm();
+    expect(scheduled()).toBe(Date.parse(startedAt) + 2 * 3600_000);
+  });
+
+  it("retries a failed sandbox shutdown without retrying sandboxes already stopped", async () => {
+    let stops = 0;
+    const stopped = new Set<string>();
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === "https://daytona.test/sandbox/sb1/stop" && ++stops === 1)
+        return new Response("temporary failure", { status: 503 });
+      if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
+      if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+        return reply({
+          state: stopped.has(input) ? "stopped" : "started",
+        });
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready, scheduled } = fakeRun({
+      ...baseState(
+        new Date(Date.now() - 3 * 3600_000).toISOString(),
+        "done",
+        [],
+      ),
+      variants: [{ sandboxId: "sb2" }],
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({
+      expired: true,
+      phase: "stopped",
+      stoppingSandboxIds: ["sb1"],
+    });
+    expect(scheduled()).toBeGreaterThan(Date.now());
+    await expect(run.message("more")).rejects.toThrow(/2-hour limit|stopping/);
+    await run.alarm();
+    expect(state().stoppingSandboxIds).toEqual([]);
+    expect(stops).toBe(2);
+    expect(
+      calls.filter((c) => c === "POST https://daytona.test/sandbox/sb2/stop"),
+    ).toHaveLength(1);
+  });
+
+  it("promotes a copy, accepts the next brief and reuses its sandbox for the next build", async () => {
+    const uploads: { path: string; text: string }[] = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      if (input.includes("/files/upload")) {
+        const file = (init.body as FormData).get("file") as Blob;
+        uploads.push({
+          path: new URL(input).searchParams.get("path")!,
+          text: await file.text(),
+        });
+      }
+      if (input === "https://api.openai.com/v1/chat/completions") {
+        const name = JSON.parse(init.body as string).response_format.json_schema
+          .name;
+        return reply({
+          output_text: JSON.stringify(
+            name === "orchestrator_turn"
+              ? {
+                  reply: "Follow-up approved",
+                  spec: {
+                    scope: "frontend",
+                    pages: [],
+                    flows: [],
+                    openQuestions: [],
+                  },
+                  userApproved: true,
+                }
+              : name === "plan"
+                ? {
+                    tasks: [
+                      {
+                        id: "next",
+                        title: "Footer",
+                        brief: "Add footer",
+                        outOfScope: "",
+                        acceptance: [],
+                        evidence: [],
+                        owns: ["sections/footer.html"],
+                        dependsOn: [],
+                      },
+                    ],
+                  }
+                : { pass: true, summary: "Plan accepted", findings: [] },
+          ),
+        });
+      }
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
+      variants: [
+        {
+          id: "v1",
+          title: "Alternative",
+          pod: "copy",
+          sandboxId: "sb1",
+          dir: "/home/daytona/variants/v1",
+          status: "ready",
+          snapshot: "abc",
+        },
+      ],
+    });
+    await ready;
+    await run.promote("v1");
+    expect(state()).toMatchObject({
+      phase: "brief",
+      promoted: "v1",
+      sandboxId: "sb1",
+      spec: { approved: false },
+    });
+    await run.message("Add a footer. I approve the follow-up.");
+    expect(state().phase).toBe("inspecting");
+    (await run.getState()).pending = "plan"; // Capture is covered by run.capture.test.ts.
+    await run.alarm();
+    expect(state().phase).toBe("planned");
+    await run.startBuild();
+    await run.alarm();
+    expect(state()).toMatchObject({ phase: "building", sandboxId: "sb1" });
+    expect(state().pending).toBeUndefined();
+    expect(calls).not.toContain("POST https://daytona.test/sandbox");
+    expect(
+      JSON.parse(
+        uploads.find((u) => u.path.endsWith("/spec.json"))?.text ?? "null",
+      ),
+    ).toMatchObject({ approved: true, revision: 2 });
+  });
+
+  it("preserves the promoted sandbox if follow-up preparation fails", async () => {
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      return new Response("temporary failure", { status: 503 });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", []),
+      promoted: "v1",
+      pending: "build_setup",
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({ phase: "planned", sandboxId: "sb1" });
+    expect(runView("run-1", await run.events(0)).phase).toBe("planned");
+    expect(calls).not.toContain("DELETE https://daytona.test/sandbox/sb1");
+    await expect(run.startBuild()).resolves.toMatchObject({
+      phase: "building",
+    });
+  });
+
+  it.each(["partial", "unavailable"])(
+    "publishes retry readiness after a %s variant proposal",
+    async (failure) => {
+      mockFetch(
+        {
+          variants: [{ title: "Only one", change: "", explanation: "" }],
+        },
+        failure === "unavailable" ? 503 : 200,
+      );
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "variants", []),
+        pending: "variants",
+      });
+      await ready;
+      await run.alarm();
+      expect(state()).toMatchObject({ phase: "done" });
+      expect(runView("run-1", await run.events(0)).phase).toBe("done");
+      expect(state().variants).toBeUndefined();
+      expect(calls.some((c) => c.includes("/fork"))).toBe(false);
+      await expect(run.makeVariants()).resolves.toMatchObject({
+        phase: "variants",
+      });
+    },
+  );
+
+  it("opens a fix task when the verifier fails a merged task, without rolling back", async () => {
+    mockFetch({
+      pass: false,
+      summary: "Hero is off",
+      findings: [
+        { item: "t02", evidence: ["ev_001"], problem: "wrong colour" },
+      ],
+    });
+    const { run, state, ready } = fakeRun(
+      baseState(new Date().toISOString(), "done", [task("t02", "in_review")]),
+    );
+    await ready;
+    await run.override("t02", "approve", "Accept the merged work");
+    const [merged, fix] = state().tasks;
+    expect(merged.status).toBe("merged");
+    expect(fix).toMatchObject({
+      id: "t02-fix",
+      status: "queued",
+      dependsOn: ["t02"],
+      acceptance: ["t02: wrong colour"],
+      owns: ["sections/hero.html"],
+      fixFor: "t02",
+    });
+    expect(state().phase).toBe("building");
+  });
+
+  it("removes a fork whose preview fails and falls back to a copy, keeping forks enabled", async () => {
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === "https://daytona.test/sandbox/sb1/fork")
+        return reply({ id: "sb2" });
+      if (input === "https://daytona.test/sandbox/sb2")
+        return reply({ id: "sb2", state: "started" });
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      if (input.startsWith("https://toolbox.test/sb2/process/session/"))
+        return new Response("no session", { status: 500 });
+      if (input.endsWith("/process/execute"))
+        return reply({ exitCode: 0, result: "" });
+      if (input.endsWith("/preview-url"))
+        return reply({ url: "https://3001-sb1.daytona.test" });
+      return reply({});
+    });
+    const { run, state, ready } = fakeRun(
+      baseState(new Date().toISOString(), "variants", []),
+    );
+    await ready;
+    const pod = await (
+      run as unknown as {
+        startPod(
+          id: string,
+          n: number,
+        ): Promise<{ pod: string; sandboxId: string }>;
+      }
+    ).startPod("v1", 1);
+    expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+    expect(pod).toMatchObject({ pod: "copy", sandboxId: "sb1" });
+    expect(state().forkUnavailable).toBeFalsy();
+  });
+
+  it("retains the original sandbox after a failed promotion stop and retries it at expiry", async () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    let fail = true;
+    const stopped = new Set<string>();
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input.endsWith("/stop")) {
+        if (fail) return new Response("unavailable", { status: 503 });
+        stopped.add(input.slice(0, -5));
+      }
+      if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+        return reply({
+          state: stopped.has(input) ? "stopped" : "started",
+        });
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(
+        new Date(started).toISOString(),
+        "done",
+        ["v1", "v2", "v3"].map(verifiedVariantTask),
+      ),
+      variants: [variant("v1"), variant("v2"), variant("v3")],
+    });
+    await ready;
+    await expect(run.promote("v1")).rejects.toThrow("503");
+    expect(state().sandboxId).toBe("sb1");
+    expect(state().promoted).toBeUndefined();
+    fail = false;
+    vi.setSystemTime(started + 3 * 3600_000);
+    await run.alarm();
+    expect(state().stoppingSandboxIds).toEqual([]);
+    expect(
+      calls.filter((c) => c === "POST https://daytona.test/sandbox/sb1/stop"),
+    ).toHaveLength(2);
+    expect(stopped.size).toBe(4);
+  });
+
+  it.each(["fork", "copy"] as const)(
+    "serializes %s promotion before its first external await",
+    async (pod) => {
+      const entered = deferred();
+      const release = deferred();
+      const stopped = new Set<string>();
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        if (
+          (pod === "fork" && input === "https://daytona.test/sandbox/sb1") ||
+          (pod === "copy" && input.endsWith("/process/execute"))
+        ) {
+          entered.resolve();
+          await release.promise;
+        }
+        if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+          return reply({
+            state: stopped.has(input) ? "stopped" : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        return reply({ exitCode: 0, result: "" });
+      });
+      const { run, state, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          "done",
+          ["v1", "v2"].map(verifiedVariantTask),
+        ),
+        variants: [variant("v1", pod), variant("v2", pod)],
+      });
+      await ready;
+      const first = run.promote("v1");
+      await entered.promise;
+      expect(state().sandboxId).toBe("sb1");
+      await expect(run.promote("v2")).rejects.toThrow("already in progress");
+      release.resolve();
+      await first;
+      expect(state()).toMatchObject({
+        promoted: "v1",
+        phase: "brief",
+        sandboxId: pod === "fork" ? "sb2" : "sb1",
+      });
+      expect(calls).not.toContain("POST https://daytona.test/sandbox/sb2/stop");
+    },
+  );
+
+  it.each([undefined, "v1"])(
+    "verifies a variant task despite preview refresh failure (fixFor: %s)",
+    async (fixFor) => {
+      const requests: string[] = [];
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.includes("/signed-preview-url"))
+          return new Response("unavailable", { status: 503 });
+        if (input === "https://api.openai.com/v1/chat/completions") {
+          requests.push(
+            JSON.parse(init.body as string).response_format.json_schema.name,
+          );
+          return reply({
+            output_text: JSON.stringify({
+              pass: false,
+              summary: "Needs work",
+              findings: [],
+            }),
+          });
+        }
+        return reply({ exitCode: 0, result: "" });
+      });
+      const t = {
+        ...task(fixFor ? "v1-fix" : "v1", "in_review"),
+        variant: "v1",
+        fixFor,
+      };
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [t]),
+        variants: [{ ...variant("v1"), status: "building" }],
+      });
+      await ready;
+      await run.override(t.id, "approve", "Accept the merge");
+      expect(requests).toEqual(["verify_task"]);
+      expect(state().tasks[0].status).toBe("merged");
+      expect(state().tasks).toHaveLength(fixFor ? 1 : 2);
+      expect(
+        (await run.events(0)).filter((e) => e.type === "verification"),
+      ).toMatchObject([
+        { data: { target: "task", taskId: t.id, pass: false } },
+      ]);
+    },
+  );
+
+  it.each(["task", "spec", "variant", "plan"] as const)(
+    "snapshots queued %s records before later mutations",
+    async (type) => {
+      const release = deferred();
+      const recorded: RunRecord[] = [];
+      const { run, ready, flush } = fakeRun(
+        baseState(new Date().toISOString(), "done", []),
+        {
+          RECORDS: {
+            async record(input) {
+              await release.promise;
+              recorded.push(structuredClone(input));
+            },
+          },
+        },
+      );
+      await ready;
+      const emitting = run as unknown as {
+        emit(type: RunEvent["type"], data: unknown): Promise<void>;
+      };
+      await emitting.emit("phase", { phase: "building" });
+      const data = { status: "building", nested: { values: ["original"] } };
+      await emitting.emit(type, data);
+      data.status = "merged";
+      data.nested.values.push("later");
+      release.resolve();
+      await flush();
+      expect(recorded.map((r) => r.event.type)).toEqual(["phase", type]);
+      expect(recorded[1]?.event.data).toEqual({
+        status: "building",
+        nested: { values: ["original"] },
+      });
+      expect((await run.events(0))[1]?.data).toEqual(recorded[1]?.event.data);
+    },
+  );
+
+  it.each(["fork_start", "fork_failure", "fork_preview", "copy_clone"])(
+    "expires without more allocations after %s crosses the deadline",
+    async (boundary) => {
+      vi.useFakeTimers();
+      const started = Date.now();
+      const expire = () => vi.setSystemTime(started + 2 * 3600_000 + 1);
+      const stopped = new Set<string>();
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((n) => ({
+                title: `Variant ${n}`,
+                change: "Layout",
+                explanation: "Different layout",
+              })),
+            }),
+          });
+        if (input.endsWith("/fork")) {
+          if (boundary === "fork_failure") {
+            expire();
+            return new Response("unavailable", { status: 503 });
+          }
+          return reply({ id: "sb2" });
+        }
+        if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input)) {
+          if (boundary === "fork_start" && input.endsWith("sb2")) expire();
+          return reply({
+            id: input.split("/").pop(),
+            state: stopped.has(input) ? "stopped" : "started",
+          });
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute")) {
+          if (
+            boundary === "copy_clone" &&
+            JSON.parse(init.body as string).command.includes("git clone")
+          )
+            expire();
+          return reply({ exitCode: 0, result: "abc" });
+        }
+        if (
+          boundary === "fork_preview" &&
+          input.endsWith("/process/session/preview/exec")
+        )
+          expire();
+        if (input.includes("/signed-preview-url")) {
+          return reply({ url: "https://3000-sb2.daytona.test" });
+        }
+        return reply({});
+      });
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date(started).toISOString(), "variants", []),
+        pending: "variants",
+        forkUnavailable: boundary === "copy_clone",
+      });
+      await ready;
+      await run.alarm();
+      expect(state()).toMatchObject({
+        phase: "stopped",
+        expired: true,
+        stoppingSandboxIds: [],
+      });
+      expect(calls.filter((c) => c.endsWith("/fork"))).toHaveLength(
+        boundary === "copy_clone" ? 0 : 1,
+      );
+      expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+      expect(calls.some((c) => c.includes("/session/preview-v"))).toBe(false);
+      if (boundary === "fork_start")
+        expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+      if (boundary === "fork_preview")
+        expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+    },
+  );
+
+  it.each(["review", "worker_setup"])(
+    "does not dispatch a worker after %s crosses the deadline",
+    async (boundary) => {
+      vi.useFakeTimers();
+      const started = Date.now();
+      let stopped = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        if (input.endsWith("/stop")) stopped = true;
+        if (input === "https://daytona.test/sandbox/sb1")
+          return reply({ state: stopped ? "stopped" : "started" });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute")) {
+          const command = JSON.parse(init.body as string).command as string;
+          if (
+            (boundary === "review" && command.includes("--name-only")) ||
+            (boundary === "worker_setup" &&
+              command.includes("git worktree add"))
+          )
+            vi.setSystemTime(started + 2 * 3600_000 + 1);
+          return reply({
+            exitCode: 0,
+            result: command.includes(".exit") ? "1" : "",
+          });
+        }
+        return reply({});
+      });
+      const { run, state, ready } = fakeRun(
+        baseState(new Date(started).toISOString(), "building", [
+          task("t1", boundary === "review" ? "building" : "queued"),
+        ]),
+      );
+      await ready;
+      await run.alarm();
+      expect(state()).toMatchObject({ phase: "stopped", expired: true });
+      expect(state().tasks[0].status).toBe("stopped");
+      expect(calls.some((c) => c.includes("/process/session"))).toBe(false);
+    },
+  );
+
+  it("cleans up a main sandbox that finishes starting after the deadline", async () => {
+    vi.useFakeTimers();
+    const started = Date.now();
+    let stopped = false;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      calls.push(`${init.method ?? "GET"} ${input}`);
+      if (input === "https://daytona.test/sandbox") return reply({ id: "sb1" });
+      if (input.endsWith("/stop")) stopped = true;
+      if (input === "https://daytona.test/sandbox/sb1") {
+        vi.setSystemTime(started + 2 * 3600_000 + 1);
+        return reply({
+          id: "sb1",
+          state: stopped ? "stopped" : "started",
+        });
+      }
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date(started).toISOString(), "building", []),
+      sandboxId: undefined,
+      pending: "build_setup",
+    });
+    await ready;
+    await run.alarm();
+    expect(state()).toMatchObject({
+      phase: "stopped",
+      expired: true,
+      stoppingSandboxIds: [],
+    });
+    expect(calls).toContain("DELETE https://daytona.test/sandbox/sb1");
+    expect(calls.some((c) => c.includes("/process/session"))).toBe(false);
+  });
+
+  it.each(["pass", "fix_pass", "fix_verification_fail", "fix_review_fail"])(
+    "derives variant promotion from required verification and fixes: %s",
+    async (outcome) => {
+      const t = { ...task("v1", "in_review"), variant: "v1" };
+      const { run, state, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "variants", [t]),
+        variants: [{ ...variant("v1", "copy"), status: "building" }],
+      });
+      await ready;
+      mockFetch({
+        pass: outcome === "pass",
+        summary: "Task checked",
+        findings: [],
+      });
+      await run.override("v1", "approve", "Accept the merge");
+      expect(state().tasks[0].verification).toBe(outcome === "pass");
+      if (outcome !== "pass") {
+        expect(state().variants[0].status).toBe("building");
+        const fix = state().tasks[1];
+        expect(fix).toMatchObject({ fixFor: "v1", status: "queued" });
+        if (outcome === "fix_review_fail") {
+          fix.status = "building";
+          fix.attempts = 2;
+          vi.stubGlobal("fetch", async (input: string) => {
+            if (input.endsWith("/toolbox-proxy-url"))
+              return reply({ url: "https://toolbox.test" });
+            return reply({ exitCode: 0, result: "1" });
+          });
+        } else {
+          mockFetch({
+            pass: outcome === "fix_pass",
+            summary: "Fix checked",
+            findings: [],
+          });
+          await run.override(fix.id, "approve", "Accept the fix");
+        }
+      }
+      await run.alarm();
+      const passes = outcome === "pass" || outcome === "fix_pass";
+      expect(state().phase).toBe("done");
+      expect(state().variants[0].status).toBe(passes ? "ready" : "failed");
+      if (passes) {
+        await expect(run.promote("v1")).resolves.toMatchObject({
+          promoted: "v1",
+          phase: "brief",
+        });
+      } else {
+        await expect(run.promote("v1")).rejects.toThrow("not ready");
+      }
+    },
+  );
+
+  it("never exposes a ready variant while its verifier is still pending", async () => {
+    const entered = deferred();
+    const release = deferred();
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      if (input === "https://api.openai.com/v1/chat/completions") {
+        entered.resolve();
+        await release.promise;
+        return reply({
+          output_text: JSON.stringify({
+            pass: true,
+            summary: "Verified",
+            findings: [],
+          }),
+        });
+      }
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "variants", [
+        { ...task("v1", "in_review"), variant: "v1" },
+      ]),
+      variants: [{ ...variant("v1"), status: "building" }],
+    });
+    await ready;
+    const merging = run.override("v1", "approve", "Accept");
+    await entered.promise;
+    expect(state().variants[0].status).toBe("building");
+    expect(
+      (await run.events(0))
+        .filter((e) => e.type === "variant")
+        .every((e) => (e.data as { status: string }).status !== "ready"),
+    ).toBe(true);
+    release.resolve();
+    await merging;
+    expect(state().variants[0].status).toBe("ready");
+  });
+
+  it.each([undefined, false])(
+    "refuses a stored ready variant without successful verification (%s)",
+    async (verification) => {
+      mockFetch();
+      const { run, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          { ...verifiedVariantTask("v1"), verification },
+        ]),
+        variants: [variant("v1")],
+      });
+      await ready;
+      await expect(run.promote("v1")).rejects.toThrow(
+        "has not passed required verification",
+      );
+      expect(calls).toEqual([]);
+    },
+  );
+
+  it.each(["main", "variant", "fix"])(
+    "persists an explicit %s verification-request failure and permits a successful retry",
+    async (kind) => {
+      const t = {
+        ...task(kind === "fix" ? "v1-fix" : "v1", "in_review"),
+        variant: kind === "main" ? undefined : "v1",
+        fixFor: kind === "fix" ? "v1" : undefined,
+      };
+      const tasks =
+        kind === "fix"
+          ? [{ ...verifiedVariantTask("v1"), verification: false }, t]
+          : [t];
+      const { run, state, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          kind === "main" ? "building" : "variants",
+          tasks,
+        ),
+        variants:
+          kind === "main"
+            ? undefined
+            : [{ ...variant("v1", "copy"), status: "building" }],
+      });
+      await ready;
+      mockFetch({}, 503);
+      await expect(run.override(t.id, "approve", "Accept")).rejects.toThrow(
+        "503",
+      );
+      const failed = state().tasks.find((item: Task) => item.id === t.id);
+      expect(failed).toMatchObject({
+        status: "failed",
+        failure: expect.stringContaining("Verification unavailable"),
+        nextAction: expect.stringContaining("retry verification"),
+      });
+      expect(failed.verification).toBeUndefined();
+      expect(state().tasks).toHaveLength(tasks.length);
+      if (kind !== "main") expect(state().variants[0].status).toBe("failed");
+      expect(
+        (await run.events(0)).filter((e) => e.type === "verification"),
+      ).toEqual([]);
+      const restored = fakeRun(structuredClone(state()));
+      await restored.ready;
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      await restored.run.override(t.id, "approve", "Retry the check");
+      expect(
+        restored.state().tasks.find((item: Task) => item.id === t.id),
+      ).toMatchObject({
+        status: "merged",
+        verification: true,
+        failure: undefined,
+        nextAction: undefined,
+      });
+      await restored.run.alarm();
+      expect(restored.state().phase).toBe("done");
+      if (kind !== "main")
+        expect(restored.state().variants[0].status).toBe("ready");
+    },
+  );
+
+  it("reopens dependent work after retrying failed verification from a completed run", async () => {
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const { run, state, ready } = fakeRun(
+      baseState(new Date().toISOString(), "done", [
+        { ...task("t1", "failed"), failure: "Verification unavailable" },
+        { ...task("t2", "queued"), dependsOn: ["t1"] },
+      ]),
+    );
+    await ready;
+    await run.override("t1", "approve", "Retry");
+    expect(state().phase).toBe("building");
+    expect(state().tasks[0]).toMatchObject({
+      status: "merged",
+      verification: true,
+    });
+  });
+
+  it("revokes readiness and reopens the variant when its review is rejected", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    await run.override("v1", "reject", "Revise this task");
+    expect(state().phase).toBe("variants");
+    expect(state().tasks[0]).toMatchObject({
+      status: "queued",
+      verification: undefined,
+    });
+    expect(state().variants[0].status).toBe("building");
+  });
+
+  it.each(["plan", "final"])(
+    "does not announce %s completion when its verification request fails",
+    async (target) => {
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://api.openai.com/v1/chat/completions") {
+          const name = JSON.parse(init.body as string).response_format
+            .json_schema.name;
+          return name === "plan"
+            ? reply({ output_text: JSON.stringify({ tasks: [] }) })
+            : reply({ error: "unavailable" }, { status: 503 });
+        }
+        return reply({});
+      });
+      const { run, state, ready } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          target === "plan" ? "inspecting" : "building",
+          [],
+        ),
+        pending: target === "plan" ? "plan" : undefined,
+      });
+      await ready;
+      await run.alarm();
+      expect(state().phase).toBe("failed");
+      const events = await run.events(0);
+      expect(
+        events
+          .filter((e) => e.type === "phase")
+          .some((e) =>
+            ["planned", "done"].includes((e.data as { phase: string }).phase),
+          ),
+      ).toBe(false);
+      expect(events.some((e) => e.type === "error")).toBe(true);
+      if (target === "plan") {
+        await expect(run.startBuild()).rejects.toThrow(
+          /No build started|failed/,
+        );
+      } else {
+        mockFetch({ pass: true, summary: "Verified", findings: [] });
+        await run.alarm();
+        expect(state().phase).toBe("failed"); // A verifier request failure never starts paid retries automatically.
+      }
+    },
+  );
+
+  it("reports best-effort record failures locally without recursively recording notices", async () => {
+    mockFetch();
+    let fail = true;
+    const projected: RunRecord[] = [];
+    const { run, ready, flush } = fakeRun(
+      baseState(new Date().toISOString(), "brief", []),
+      {
+        RECORDS: {
+          async record(input) {
+            projected.push(structuredClone(input));
+            if (fail) throw new Error("projection unavailable");
+          },
+        },
+      },
+    );
+    await ready;
+    await run.approveSpec();
+    await flush();
+    expect(projected).toHaveLength(2);
+    const notices = (await run.events(0)).filter((e) => e.type === "error");
+    expect(notices).toHaveLength(2);
+    for (const input of projected)
+      expect(
+        notices.some((e) =>
+          (e.data as { message: string }).message.includes(
+            `record ${input.event.seq} was not fully persisted`,
+          ),
+        ),
+      ).toBe(true);
+    fail = false;
+    await run.stop();
+    await flush();
+    expect(projected).toHaveLength(3);
+    expect(projected.every((input) => input.event.type !== "error")).toBe(true);
+    expect(projected[2]?.event.data).toEqual({ phase: "stopped" });
+  });
+
+  it("reports a partial projection failure without claiming its missing approval was saved", async () => {
+    const store = new MemoryRunStore();
+    vi.spyOn(store, "recordApproval").mockRejectedValueOnce(
+      new Error("approval unavailable"),
+    );
+    const { run, ready, flush } = fakeRun(
+      baseState(new Date().toISOString(), "brief", []),
+      {
+        RECORDS: { record: (input) => recordRunEvent(store, input) },
+      },
+    );
+    await ready;
+    await run.approveSpec();
+    await flush();
+    const records = store.runs.get("run-1");
+    expect(records?.events.some((e) => e.state === "inspecting")).toBe(true);
+    expect(records?.approvals).toEqual([]);
+    expect(
+      (await run.events(0)).filter((e) => e.type === "error"),
+    ).toMatchObject([
+      { data: { message: expect.stringContaining("approval unavailable") } },
+    ]);
+  });
+
+  it("invalidates a completed fix when its parent task is reopened", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        { ...verifiedVariantTask("v1"), verification: false },
+        {
+          ...task("v1-fix", "merged"),
+          variant: "v1",
+          fixFor: "v1",
+          verification: true,
+        },
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    await run.override("v1", "reject", "Rebuild this version");
+    expect(state().tasks.map((t: Task) => [t.status, t.verification])).toEqual([
+      ["queued", undefined],
+      ["queued", undefined],
+    ]);
+    expect(state().variants[0].status).toBe("building");
+    mockFetch({ pass: false, summary: "Still needs work", findings: [] });
+    await run.override("v1", "approve", "Review the new work");
+    expect(state().variants[0].status).toBe("building");
+    expect(state().tasks[1].status).toBe("queued");
+  });
+
+  it("marks a variant failed when its required fix is blocked by a failed task", async () => {
+    const { run, state, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "variants", [
+        { ...task("v1", "failed"), variant: "v1" },
+        {
+          ...task("v1-fix", "queued"),
+          variant: "v1",
+          fixFor: "v1",
+          dependsOn: ["v1"],
+        },
+      ]),
+      variants: [{ ...variant("v1"), status: "building" }],
+    });
+    await ready;
+    await run.alarm();
+    expect(state().phase).toBe("done");
+    expect(state().variants[0].status).toBe("failed");
+    await expect(run.promote("v1")).rejects.toThrow("not ready");
+  });
+
+  it.each(["fork_start", "fork_preview", "main_start", "main_setup"])(
+    "keeps allocated ownership and retries failed cleanup after %s",
+    async (stage) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      const main = stage.startsWith("main");
+      let forks = 1;
+      let allowDeletion = false;
+      let deletions = 0;
+      const stopped = new Set<string>();
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((n) => ({
+                title: `Variant ${n}`,
+                change: "Layout",
+                explanation: "Alternative layout",
+              })),
+            }),
+          });
+        if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
+          return reply({ id: main ? "sb2" : `sb${++forks}` });
+        if (
+          init.method === "DELETE" &&
+          input.startsWith("https://daytona.test/sandbox/")
+        ) {
+          deletions++;
+          return allowDeletion
+            ? reply({})
+            : new Response("delete unavailable", { status: 503 });
+        }
+        if (input.endsWith("/stop")) {
+          stopped.add(input.slice(0, -5));
+        }
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+          return reply({
+            id: input.split("/").pop(),
+            state: stopped.has(input)
+              ? "stopped"
+              : input.endsWith("sb2") && stage.endsWith("start")
+                ? "error"
+                : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (
+          stage === "fork_preview" &&
+          input.includes("/sb2/process/session/preview/exec")
+        )
+          return new Response("preview unavailable", { status: 503 });
+        if (input.endsWith("/process/execute"))
+          return reply({
+            exitCode: stage === "main_setup" ? 1 : 0,
+            result: "abc",
+          });
+        return reply({ cmdId: "command" });
+      });
+      const { run, state, persisted, ready, scheduled } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          main ? "building" : "variants",
+          [],
+        ),
+        sandboxId: main ? undefined : "sb1",
+        pending: main ? "build_setup" : "variants",
+      });
+      await ready;
+      await run.alarm();
+      expect(persisted().sandboxIds).toContain("sb2");
+      expect(persisted().stoppingSandboxIds).toContain("sb2");
+      if (main) expect(state().sandboxId).toBeUndefined();
+      else expect(state().forkUnavailable).toBeFalsy();
+      const retryAt = Date.now() + (main ? 10_000 : 100);
+      expect(scheduled()).toBe(retryAt);
+      await run.stop().catch(() => {});
+      expect(scheduled()).toBe(retryAt);
+      const restored = fakeRun(persisted(), {}, scheduled());
+      await restored.ready;
+      expect(restored.scheduled()).toBe(retryAt);
+      vi.setSystemTime(retryAt);
+      await restored.run.alarm();
+      expect(restored.persisted().stoppingSandboxIds).toContain("sb2");
+      expect(restored.state().expired).toBeUndefined();
+      expect(restored.scheduled()).toBe(retryAt + 10_000);
+      allowDeletion = true;
+      vi.setSystemTime(retryAt + 10_000);
+      await restored.run.alarm();
+      expect(restored.persisted().stoppingSandboxIds).toEqual([]);
+      expect(restored.persisted().deletingSandboxIds).toEqual([]);
+      expect(restored.persisted().sandboxIds).not.toContain("sb2");
+      expect(deletions).toBeGreaterThan(2);
+    },
+  );
+
+  it("keeps shutdown retries within the deadline until the run expires", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    const deadline = Date.now() + 500;
+    mockFetch();
+    const provider = fetch;
+    let stops = 0;
+    vi.stubGlobal("fetch", (input: string, init?: RequestInit) => {
+      if (input.endsWith("/stop") && ++stops === 1)
+        return Promise.resolve(new Response("unavailable", { status: 503 }));
+      return provider(input, init);
+    });
+    const { run, ready, scheduled, persisted } = fakeRun({
+      ...baseState(
+        new Date(deadline - 2 * 3600_000).toISOString(),
+        "stopped",
+        [],
+      ),
+      stoppingSandboxIds: ["sb1"],
+    });
+    await ready;
+    await run.alarm();
+    expect(scheduled()).toBe(deadline);
+    vi.setSystemTime(deadline);
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      expired: true,
+      stoppingSandboxIds: [],
+    });
+    expect(stops).toBe(2);
+    expect(scheduled()).toBeNull();
+  });
+
+  it("claims Stop before awaiting worker cleanup", async () => {
+    const entered = deferred();
+    const release = deferred();
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+        return reply({ state: "started" });
+      entered.resolve();
+      await release.promise;
+      return reply({ exitCode: 0, result: "" });
+    });
+    const { run, state, persisted, ready } = fakeRun(
+      baseState(new Date().toISOString(), "done", []),
+    );
+    await ready;
+    const stopping = run.stop();
+    await entered.promise;
+    expect(state().pending).toBe("stop");
+    expect(persisted().pending).toBe("stop");
+    await expect(run.makeVariants()).rejects.toThrow(/stopping|stopped/);
+    release.resolve();
+    await stopping;
+  });
+
+  it.each([
+    "ideas",
+    "main_create",
+    "fork_start",
+    "main_preview",
+    "worker_session",
+    "review",
+    "plan",
+    "final",
+    "promotion",
+  ])(
+    "never resumes allocation, dispatch or completion after Stop during %s",
+    async (stage) => {
+      const entered = deferred();
+      const release = deferred();
+      let paused = false;
+      const stopped = new Set<string>();
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        calls.push(`${init.method ?? "GET"} ${input}`);
+        const name =
+          input === "https://api.openai.com/v1/chat/completions"
+            ? JSON.parse(init.body as string).response_format.json_schema.name
+            : "";
+        const command = input.endsWith("/process/execute")
+          ? (JSON.parse(init.body as string).command as string)
+          : "";
+        const shouldPause =
+          stage === "ideas"
+            ? name === "variants"
+            : stage === "main_create"
+              ? input === "https://daytona.test/sandbox"
+              : stage === "fork_start"
+                ? input === "https://daytona.test/sandbox/sb2"
+                : ["worker_session", "main_preview"].includes(stage)
+                  ? input.endsWith("/process/session")
+                  : stage === "promotion"
+                    ? command.includes("git fetch")
+                    : name ===
+                      (stage === "final"
+                        ? "verify_final"
+                        : stage === "plan"
+                          ? "plan"
+                          : "review");
+        if (!paused && shouldPause) {
+          paused = true;
+          entered.resolve();
+          await release.promise;
+        }
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify(
+              name === "variants"
+                ? {
+                    variants: [1, 2, 3].map((n) => ({
+                      title: `Variant ${n}`,
+                      change: "Layout",
+                      explanation: "Alternative layout",
+                    })),
+                  }
+                : name === "plan"
+                  ? { tasks: [] }
+                  : name === "review"
+                    ? { verdict: "approve", reason: "Accepted", findings: [] }
+                    : { pass: true, summary: "Verified", findings: [] },
+            ),
+          });
+        if (input === "https://daytona.test/sandbox" || input.endsWith("/fork"))
+          return reply({ id: "sb2" });
+        if (input.endsWith("/stop")) stopped.add(input.slice(0, -5));
+        if (/^https:\/\/daytona.test\/sandbox\/[^/]+$/.test(input))
+          return reply({
+            id: input.split("/").pop(),
+            state: stopped.has(input) ? "stopped" : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return reply({
+            exitCode: 0,
+            result: command.includes("cat /home/daytona/logs/") ? "0" : "diff",
+          });
+        return reply({ cmdId: "command" });
+      });
+      const initial = baseState(
+        new Date().toISOString(),
+        ["ideas", "fork_start"].includes(stage)
+          ? "variants"
+          : stage === "promotion"
+            ? "done"
+            : stage === "plan"
+              ? "inspecting"
+              : "building",
+        stage === "worker_session"
+          ? [task("t1", "queued")]
+          : stage === "review"
+            ? [task("t1", "building")]
+            : stage === "promotion"
+              ? [verifiedVariantTask("v1")]
+              : [],
+      );
+      const { run, state, ready } = fakeRun({
+        ...initial,
+        sandboxId: ["main_create", "main_preview"].includes(stage)
+          ? undefined
+          : "sb1",
+        pending: ["ideas", "fork_start"].includes(stage)
+          ? "variants"
+          : ["main_create", "main_preview"].includes(stage)
+            ? "build_setup"
+            : stage === "plan"
+              ? "plan"
+              : undefined,
+        variants: stage === "promotion" ? [variant("v1", "copy")] : undefined,
+      });
+      await ready;
+      const work = (
+        stage === "promotion" ? run.promote("v1") : run.alarm()
+      ).catch((e) => e);
+      await entered.promise;
+      await run.stop();
+      const stopIndex = calls.length;
+      release.resolve();
+      await work;
+      expect(state().phase).toBe("stopped");
+      const later = calls.slice(stopIndex);
+      expect(
+        later.filter(
+          (call) =>
+            call === "POST https://daytona.test/sandbox" ||
+            call.endsWith("/fork") ||
+            /POST .*\/process\/session\/[^/]+\/exec$/.test(call),
+        ),
+      ).toEqual([]);
+      const phases = (await run.events(0)).filter((e) => e.type === "phase");
+      expect(phases.at(-1)?.data).toMatchObject({ phase: "stopped" });
+      for (let i = 0; i < 30; i++) await Promise.resolve();
+      if (stage === "main_create")
+        expect(calls).toContain("DELETE https://daytona.test/sandbox/sb2");
+      if (stage === "worker_session" || stage === "review")
+        expect(state().tasks[0].status).toBe("stopped");
+    },
+  );
+
+  it.each([
+    { variantId: undefined, pass: false },
+    { variantId: "v1", pass: false },
+    { variantId: undefined, pass: true },
+    { variantId: "v1", pass: true },
+  ])(
+    "finalizes and schedules a completed-run override before reporting fails ($variantId, $pass)",
+    async ({ variantId, pass }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch({
+        pass,
+        summary: pass ? "Verified" : "Needs repair",
+        findings: [],
+      });
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init?: RequestInit) => {
+        if (input.startsWith("https://memory.test"))
+          throw new Error("memory unavailable");
+        return provider(input, init);
+      });
+      const dependent = pass && !variantId;
+      const { run, persisted, ready, scheduled } = fakeRun(
+        {
+          ...baseState(new Date().toISOString(), "done", [
+            { ...task("t1", "failed"), variant: variantId },
+            ...(dependent
+              ? [{ ...task("t2", "queued"), dependsOn: ["t1"] }]
+              : []),
+          ]),
+          variants: variantId
+            ? [{ ...variant("v1", "copy"), status: "failed" }]
+            : undefined,
+        },
+        { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+      );
+      await ready;
+      await expect(run.override("t1", "approve", "Accept")).rejects.toThrow(
+        "memory unavailable",
+      );
+      const active = !pass || dependent;
+      const phase = active ? (variantId ? "variants" : "building") : "done";
+      const view = runView("run-1", await run.events(0));
+      expect(persisted().phase).toBe(phase);
+      if (active) expect(view.phase).toBe(phase);
+      expect(persisted().tasks[0]).toMatchObject({
+        id: "t1",
+        status: "merged",
+        verification: pass,
+      });
+      if (variantId) {
+        const status = pass ? "ready" : "building";
+        expect(persisted().variants[0].status).toBe(status);
+        expect(view.variants[0]?.status).toBe(status);
+      }
+      if (!pass)
+        expect(persisted().tasks[1]).toMatchObject({
+          id: "t1-fix",
+          status: "queued",
+          fixFor: "t1",
+          variant: variantId,
+        });
+      const next = Date.now() + 100;
+      expect(scheduled()).toBe(next);
+      const restored = fakeRun(persisted(), {}, scheduled());
+      await restored.ready;
+      expect(restored.scheduled()).toBe(next);
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      vi.setSystemTime(next);
+      await restored.run.alarm();
+      if (active) {
+        expect(
+          restored
+            .persisted()
+            .tasks.find((t: Task) => t.id === (dependent ? "t2" : "t1-fix"))
+            ?.status,
+        ).toBe("building");
+        expect(
+          calls.some((call) =>
+            /POST .*\/process\/session\/w-.*\/exec$/.test(call),
+          ),
+        ).toBe(true);
+      } else if (variantId) {
+        await expect(restored.run.promote(variantId)).resolves.toMatchObject({
+          phase: "brief",
+          promoted: variantId,
+        });
+      }
+    },
+  );
+
+  it.each([
+    "plan",
+    "final",
+    "review_approve",
+    "review_reject",
+    "build_setup",
+    "variants_setup",
+  ])("keeps %s lifecycle progress ahead of failed reporting", async (stage) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      const name = body.response_format?.json_schema?.name;
+      const report =
+        stage === "plan" || stage === "final"
+          ? `Verifier on ${stage}`
+          : stage.startsWith("review")
+            ? "Review of"
+            : stage === "build_setup"
+              ? "Build started"
+              : "Variants from";
+      if (input.endsWith("/facts") && body.text?.startsWith(report))
+        throw new Error("memory unavailable");
+      if (name === "plan")
+        return reply({ output_text: JSON.stringify({ tasks: [] }) });
+      if (name === "review")
+        return reply({
+          output_text: JSON.stringify({
+            verdict: stage === "review_reject" ? "reject" : "approve",
+            reason: "Review result",
+            findings: [],
+          }),
+        });
+      if (name === "variants")
+        return reply({
+          output_text: JSON.stringify({
+            variants: [1, 2, 3].map((n) => ({
+              title: `Variant ${n}`,
+              explanation: "Alternative layout",
+              change: "Layout",
+            })),
+          }),
+        });
+      if (input.endsWith("/process/execute"))
+        return reply({
+          exitCode: 0,
+          result: body.command.includes("cat /home/daytona/logs/")
+            ? "0"
+            : body.command.includes("--name-only")
+              ? "sections/hero.html"
+              : "diff",
+        });
+      return provider(input, init);
+    });
+    const tasks = stage.startsWith("review")
+      ? [
+          task("t1", "building"),
+          ...(stage === "review_approve"
+            ? [{ ...task("t2", "queued"), dependsOn: ["t1"] }]
+            : []),
+        ]
+      : stage === "build_setup"
+        ? [task("t1", "queued")]
+        : [];
+    const { run, ready, persisted, scheduled } = fakeRun(
+      {
+        ...baseState(
+          new Date().toISOString(),
+          stage === "plan"
+            ? "inspecting"
+            : stage === "variants_setup"
+              ? "variants"
+              : "building",
+          tasks,
+        ),
+        pending:
+          stage === "plan"
+            ? "plan"
+            : stage === "build_setup"
+              ? "build_setup"
+              : stage === "variants_setup"
+                ? "variants"
+                : undefined,
+        forkUnavailable: true,
+        promoted: stage === "build_setup" ? "v1" : undefined,
+      },
+      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+    );
+    await ready;
+    await run.alarm();
+    const phase =
+      stage === "plan"
+        ? "planned"
+        : stage === "final"
+          ? "done"
+          : stage === "variants_setup"
+            ? "variants"
+            : "building";
+    expect(persisted().phase).toBe(phase);
+    const events = await run.events(0);
+    if (stage === "plan" || stage === "final")
+      expect(runView("run-1", events).phase).toBe(phase);
+    expect(
+      events.some(
+        (e) =>
+          e.type === "error" &&
+          (e.data as { message: string }).message.includes(
+            "memory unavailable",
+          ),
+      ),
+    ).toBe(true);
+    const next =
+      stage === "plan" || stage === "final"
+        ? Date.now() + 2 * 3600_000
+        : Date.now() + 100;
+    expect(scheduled()).toBe(next);
+    expect(calls.filter((call) => call.startsWith("DELETE"))).toEqual(
+      stage === "build_setup"
+        ? ["DELETE https://toolbox.test/sb1/process/session/preview"]
+        : stage === "variants_setup"
+          ? [1, 2, 3].map(
+              (n) =>
+                `DELETE https://toolbox.test/sb1/process/session/preview-v${n}`,
+            )
+          : [],
+    );
+    if (stage !== "plan" && stage !== "final") {
+      const queued = persisted().tasks.filter(
+        (t: Task) => t.status === "queued",
+      );
+      expect(queued.length).toBeGreaterThan(0);
+      mockFetch({ pass: true, summary: "Verified", findings: [] });
+      vi.setSystemTime(next);
+      await run.alarm();
+      expect(
+        persisted().tasks.some(
+          (t: Task) => t.id === queued[0].id && t.status === "building",
+        ),
+      ).toBe(true);
+    }
+  });
+
+  it("keeps signed variant capabilities out of durable data, prompts, webhooks and traces", async () => {
+    const signed = "https://private-preview.test/?token=capability-secret";
+    const outbound: string[] = [];
+    const records: RunRecord[] = [];
+    const signedRequests: string[] = [];
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input.includes("/signed-preview-url")) {
+        signedRequests.push(input);
+        return reply({ url: signed });
+      }
+      if (input === signed) return new Response("<main>Preview HTML</main>");
+      if (typeof init.body === "string") outbound.push(init.body);
+      if (init.body instanceof FormData)
+        outbound.push(await ((init.body.get("file") as Blob)?.text() ?? ""));
+      if (input.endsWith("/toolbox-proxy-url"))
+        return reply({ url: "https://toolbox.test" });
+      if (input.endsWith("/process/execute"))
+        return reply({ exitCode: 0, result: "abc" });
+      if (input === "https://api.openai.com/v1/chat/completions") {
+        const name = JSON.parse(init.body as string).response_format.json_schema
+          .name;
+        return reply({
+          output_text: JSON.stringify(
+            name === "variants"
+              ? {
+                  variants: [1, 2, 3].map((n) => ({
+                    title: `Variant ${n}`,
+                    change: "Layout",
+                    explanation: "Alternative layout",
+                  })),
+                }
+              : name === "orchestrator_turn"
+                ? {
+                    reply: "Follow up",
+                    spec: {
+                      scope: "frontend",
+                      pages: [],
+                      flows: [],
+                      openQuestions: [],
+                    },
+                    userApproved: true,
+                  }
+                : name === "plan"
+                  ? { tasks: [] }
+                  : { pass: true, summary: "Verified", findings: [] },
+          ),
+        });
+      }
+      return reply({ cmdId: "command" });
+    });
+    const { run, persisted, flush, ready } = fakeRun(
+      {
+        ...baseState(new Date().toISOString(), "variants", []),
+        pending: "variants",
+        forkUnavailable: true,
+      },
+      {
+        RECORDS: {
+          async record(input) {
+            records.push(structuredClone(input));
+          },
+        },
+        EVENTS_WEBHOOK_URL: "https://webhook.test",
+        ARIZE_API_KEY: "test",
+        ARIZE_SPACE_ID: "test",
+      },
+    );
+    await ready;
+    await run.alarm();
+    expect(signedRequests).toEqual([]);
+    for (const id of ["v1", "v2", "v3"])
+      await run.override(id, "approve", "Accept");
+    await run.alarm();
+    expect(await run.previewLink(undefined, "v1")).toBe(signed);
+    expect(signedRequests.at(-1)).toContain("/ports/3001/");
+    await run.promote("v1");
+    await run.message("Approve a follow-up");
+    await run.alarm();
+    await flush();
+    const serialized = JSON.stringify({
+      state: persisted(),
+      events: await run.events(0),
+      records,
+      outbound,
+    });
+    expect(serialized).not.toContain(signed);
+    expect(serialized).not.toContain("capability-secret");
+    expect(
+      persisted().variants.every((v: object) => !("previewUrl" in v)),
+    ).toBe(true);
+  });
+
+  it.each([
+    ["plan", "verifier"],
+    ["plan", "report"],
+    ["plan", "report_error"],
+    ["final", "report"],
+    ["task", "report"],
+    ["promotion", "report"],
+  ])("keeps Stop terminal during %s %s", async (target, delay) => {
+    const entered = deferred();
+    const release = deferred();
+    mockFetch({ pass: false, summary: "Needs repair", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      const report =
+        target === "promotion"
+          ? "Promoted variant"
+          : `Verifier on ${target === "task" ? "t1" : target}`;
+      if (
+        (delay === "verifier" &&
+          body.response_format?.json_schema?.name === "verify_plan") ||
+        (delay.startsWith("report") &&
+          input.endsWith("/facts") &&
+          body.text?.startsWith(report))
+      ) {
+        entered.resolve();
+        await release.promise;
+        if (delay === "report_error") throw new Error("memory unavailable");
+      }
+      if (body.response_format?.json_schema?.name === "plan")
+        return reply({ output_text: JSON.stringify({ tasks: [] }) });
+      return provider(input, init);
+    });
+    const { run, persisted, ready, scheduled } = fakeRun(
+      {
+        ...baseState(
+          new Date().toISOString(),
+          target === "plan"
+            ? "inspecting"
+            : target === "promotion" || target === "task"
+              ? "done"
+              : "building",
+          target === "task"
+            ? [task("t1", "in_review")]
+            : target === "promotion"
+              ? [verifiedVariantTask("v1")]
+              : [],
+        ),
+        pending: target === "plan" ? "plan" : undefined,
+        variants: target === "promotion" ? [variant("v1", "copy")] : undefined,
+      },
+      { SPECTRON_URL: "https://memory.test", SPECTRON_CONTEXT_ID: "context" },
+    );
+    await ready;
+    const work = (
+      target === "task"
+        ? run.override("t1", "approve", "Accept")
+        : target === "promotion"
+          ? run.promote("v1")
+          : run.alarm()
+    ).catch((e) => e);
+    await entered.promise;
+    if (delay.startsWith("report")) {
+      expect(scheduled()).not.toBeNull();
+      if (target === "task") {
+        expect(scheduled()).toBeLessThanOrEqual(Date.now() + 100);
+        expect(runView("run-1", await run.events(0)).phase).toBe("building");
+      }
+    }
+    await run.stop();
+    const stoppedSeq = (await run.events(0)).at(-1)!.seq;
+    release.resolve();
+    await work;
+    expect(persisted().phase).toBe("stopped");
+    expect(
+      (await run.events(stoppedSeq)).filter(
+        (e) => e.type === "phase" || e.type === "chat",
+      ),
+    ).toEqual([]);
+    await expect(run.startBuild()).rejects.toThrow("was stopped");
+    expect(calls).not.toContain("POST https://daytona.test/sandbox");
+  });
+
+  it.each([
+    [undefined, "2026-10-16T10:30:00.000Z", "2026-10-16T10:30:00.000Z"],
+    ["invalid", "2026-10-16T10:30:00-01:00", "2026-10-16T10:30:00-01:00"],
+    [
+      "2026-10-16T11:00:00.000Z",
+      "2026-10-16T11:30:00.000Z",
+      "2026-10-16T11:00:00.000Z",
+    ],
+  ])(
+    "migrates stored start %s and first chat %s without extending the run",
+    async (startedAt, ts, expected) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch();
+      const store = new MemoryRunStore();
+      const records: RunRecord[] = [];
+      const initial = {
+        ...baseState("", "done", []),
+        startedAt,
+        chat: [{ role: "user", text: "Original request", ts }],
+      };
+      const { run, persisted, ready, flush, scheduled } = fakeRun(initial, {
+        RECORDS: {
+          async record(input) {
+            records.push(input);
+            await recordRunEvent(store, input);
+          },
+        },
+      });
+      await ready;
+      expect(persisted().startedAt).toBe(expected);
+      expect(scheduled()).toBe(Date.parse(expected!) + 2 * 3600_000);
+      await run.stop();
+      await flush();
+      expect(records.length).toBeGreaterThan(0);
+      expect(
+        records.every(
+          (r) =>
+            new Date(r.run.startedAt).getTime() ===
+            new Date(expected).getTime(),
+        ),
+      ).toBe(true);
+      expect((await store.getRun("run-1"))?.createdAt).toBe(
+        new Date(expected).toISOString(),
+      );
+      const earlier = Date.now() + 1000;
+      const restored = fakeRun(persisted(), {}, earlier);
+      await restored.ready;
+      expect(restored.scheduled()).toBe(earlier);
+    },
+  );
+
+  it("arms immediate cleanup for a legacy run already past its original deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+    mockFetch();
+    const ts = "2026-10-16T09:00:00.000Z";
+    const { run, persisted, ready, scheduled } = fakeRun({
+      ...baseState("", "done", []),
+      startedAt: undefined,
+      chat: [{ role: "user", text: "Original request", ts }],
+    });
+    await ready;
+    expect(persisted().startedAt).toBe(ts);
+    expect(scheduled()).toBe(Date.now());
+    await expect(run.makeVariants()).rejects.toThrow(/2-hour limit|stopping/);
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "stopped",
+      expired: true,
+      startedAt: ts,
+    });
+    expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+    expect(scheduled()).toBeNull();
+  });
+
+  it.each([
+    undefined,
+    "invalid",
+    "2026-02-30T12:00:00Z",
+    "2026-10-16T24:00:00Z",
+    "2026-10-16T12:00:00+99:00",
+  ])(
+    "stops legacy runs with unusable history %s without fabricating records",
+    async (ts) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-10-16T12:00:00.000Z"));
+      mockFetch();
+      const record = vi.fn();
+      const { run, persisted, ready, flush, scheduled } = fakeRun(
+        {
+          ...baseState("", "done", []),
+          startedAt: ts,
+          chat: ts ? [{ role: "user", text: "Original request", ts }] : [],
+        },
+        { RECORDS: { record } },
+      );
+      await ready;
+      expect(persisted()).toMatchObject({ phase: "stopped", expired: true });
+      expect(persisted().startedAt).toBeUndefined();
+      expect(persisted().error).toContain("no valid stored start time");
+      expect(runView("run-1", await run.events(0)).phase).toBe("stopped");
+      expect(
+        (await run.events(0)).filter((e) => e.type === "error"),
+      ).toHaveLength(1);
+      expect(scheduled()).toBe(Date.now());
+      await expect(run.startBuild()).rejects.toThrow(
+        "no valid stored start time",
+      );
+      await run.alarm();
+      await flush();
+      expect(calls).toContain("POST https://daytona.test/sandbox/sb1/stop");
+      expect(record).not.toHaveBeenCalled();
+      expect(scheduled()).toBeNull();
+      const restored = fakeRun(persisted(), { RECORDS: { record } });
+      await restored.ready;
+      expect(restored.persisted().startedAt).toBeUndefined();
+      expect(restored.scheduled()).toBeNull();
+    },
+  );
+
+  it("preserves existing preview availability while dropping legacy capability fields from saved state", async () => {
+    const legacy = "https://legacy-preview.test/?token=old-capability";
+    vi.stubGlobal("fetch", async () =>
+      reply({ url: "https://fresh-preview.test/" }),
+    );
+    const { run, persisted, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        verifiedVariantTask("v1"),
+      ]),
+      previewReady: undefined,
+      previewUrl: legacy,
+      variants: [{ ...variant("v1", "copy"), previewUrl: legacy }],
+    });
+    await ready;
+    expect(JSON.stringify(persisted())).not.toContain(legacy);
+    expect(await run.previewLink()).toBe("https://fresh-preview.test/");
+    expect(await run.previewLink(undefined, "v1")).toBe(
+      "https://fresh-preview.test/",
+    );
+  });
+  it.each(["worker", "main preview", "fork preview", "copy preview"])(
+    "requires sandbox shutdown while a %s launch POST is unresolved",
+    async (stage) => {
+      const launched = deferred();
+      const releaseLaunch = deferred();
+      const stopping = deferred();
+      const releaseStop = deferred();
+      let active = false;
+      let stopped = false;
+      let sandbox = "";
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (/\/process\/session\/[^/]+\/exec$/.test(input)) {
+          sandbox = input.includes("/sb2/") ? "sb2" : "sb1";
+          launched.resolve();
+          await releaseLaunch.promise;
+          active = !stopped;
+          return reply({ cmdId: "late-command" });
+        }
+        if (input.endsWith("/stop")) {
+          stopping.resolve();
+          await releaseStop.promise;
+          stopped = true;
+          active = false;
+          return reply({});
+        }
+        if (init.method === "DELETE") {
+          active = false;
+          return reply({});
+        }
+        if (input === "https://daytona.test/sandbox")
+          return reply({ id: "sb1" });
+        if (input.endsWith("/fork")) return reply({ id: "sb2" });
+        if (
+          input.startsWith("https://daytona.test/sandbox/") &&
+          !input.endsWith("/toolbox-proxy-url")
+        )
+          return reply({
+            id: input.split("/").pop(),
+            state: stopped ? "stopped" : "started",
+          });
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: "abc" });
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((n) => ({
+                title: `Variant ${n}`,
+                change: "Layout",
+                explanation: "Alternative layout",
+              })),
+            }),
+          });
+        return reply({});
+      });
+      const { run, ready, persisted, flush } = fakeRun({
+        ...baseState(
+          new Date().toISOString(),
+          stage.includes("fork") || stage.includes("copy")
+            ? "variants"
+            : "building",
+          stage === "worker" ? [task("t1", "queued")] : [],
+        ),
+        sandboxId: stage === "main preview" ? undefined : "sb1",
+        pending:
+          stage === "worker"
+            ? undefined
+            : stage === "main preview"
+              ? "build_setup"
+              : "variants",
+        forkUnavailable: stage === "copy preview",
+      });
+      await ready;
+      const alarm = run.alarm();
+      await launched.promise;
+      expect(persisted().launchingSandboxIds).toContain(sandbox);
+      let confirmed = false;
+      const cancellation = run.stop().then(() => {
+        confirmed = true;
+      });
+      await stopping.promise;
+      expect(confirmed).toBe(false);
+      expect(persisted().pending).toBe("stop");
+      releaseLaunch.resolve();
+      await alarm;
+      expect(confirmed).toBe(false);
+      releaseStop.resolve();
+      await cancellation;
+      await flush();
+      expect(stopped).toBe(true);
+      expect(active).toBe(false);
+      expect(persisted()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+        launchingSandboxIds: [],
+      });
+      expect(persisted().tasks.every((t: Task) => t.status === "stopped")).toBe(
+        true,
+      );
+    },
+  );
+
+  it("retains unresolved launch shutdown across failed confirmation and restoration", async () => {
+    let available = false;
+    let stopped = false;
+    vi.stubGlobal("fetch", async (input: string) => {
+      if (input.endsWith("/stop")) {
+        if (!available) return new Response("unavailable", { status: 503 });
+        stopped = true;
+      }
+      return reply({ state: stopped ? "stopped" : "started" });
+    });
+    const { run, ready, persisted, scheduled } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", [
+        task("t1", "queued"),
+      ]),
+      launchingSandboxIds: ["sb1"],
+    });
+    await ready;
+    await expect(run.stop()).rejects.toThrow("shutdown is unconfirmed");
+    expect(persisted()).toMatchObject({
+      pending: "stop",
+      launchingSandboxIds: ["sb1"],
+      stoppingSandboxIds: ["sb1"],
+    });
+    expect(scheduled()).not.toBeNull();
+    available = true;
+    const restored = fakeRun(persisted(), {}, scheduled());
+    await restored.ready;
+    await restored.run.alarm();
+    expect(restored.persisted()).toMatchObject({
+      phase: "stopped",
+      pending: undefined,
+      launchingSandboxIds: [],
+      stoppingSandboxIds: [],
+    });
+    expect(restored.scheduled()).toBe(
+      new Date(restored.persisted().startedAt).getTime() + 2 * 3600_000,
+    );
+    expect(stopped).toBe(true);
+  });
+
+  it.each(["stalled", "failed"])(
+    "retains REA deletion ownership after %s cleanup at expiry",
+    async (failure) => {
+      vi.useFakeTimers();
+      const deleting = deferred();
+      const release = deferred();
+      let deletes = 0;
+      let retry = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://example.com/")
+          return new Response('<script src="/main.js"></script>', {
+            headers: { "content-type": "text/html" },
+          });
+        if (input === "https://example.com/main.js")
+          return new Response("fetch('/api/items')");
+        if (input === "https://daytona.test/sandbox")
+          return reply({ id: "rea" });
+        if (init.method === "DELETE") {
+          deletes++;
+          deleting.resolve();
+          if (failure === "stalled" && !retry) await release.promise;
+          return retry
+            ? reply({})
+            : new Response("delete unavailable", { status: 503 });
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input === "https://daytona.test/sandbox/rea")
+          return reply({ id: "rea", state: "started" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: '{"findings":[]}' });
+        return reply({});
+      });
+      const { run, ready, persisted, scheduled, flush } = fakeRun({
+        ...baseState(
+          new Date(Date.now() - 2 * 3600_000 + 1000).toISOString(),
+          "inspecting",
+          [],
+        ),
+        sandboxId: undefined,
+        evidence: [],
+        pending: "plan",
+      });
+      await ready;
+      const alarm = run.alarm();
+      await deleting.promise;
+      expect(persisted().sandboxIds).toContain("rea");
+      if (failure === "failed") {
+        await alarm;
+        await vi.advanceTimersByTimeAsync(1001);
+        await run.alarm();
+      } else {
+        await vi.advanceTimersByTimeAsync(11_001);
+        await alarm;
+      }
+      expect(persisted()).toMatchObject({
+        phase: "stopped",
+        pending: "stop",
+        deletingSandboxIds: ["rea"],
+      });
+      expect(scheduled()).not.toBeNull();
+      expect(
+        persisted().chat.some((m: { text: string }) =>
+          m.text.includes("sandboxes are shut down"),
+        ),
+      ).toBe(false);
+      retry = true;
+      const restored = fakeRun(persisted(), {}, scheduled());
+      await restored.ready;
+      await restored.run.alarm();
+      expect(restored.persisted()).toMatchObject({
+        pending: undefined,
+        deletingSandboxIds: [],
+        sandboxIds: [],
+      });
+      expect(restored.scheduled()).toBeNull();
+      expect(deletes).toBeGreaterThan(1);
+      release.resolve();
+      await flush();
+    },
+  );
+
+  it("keeps late REA allocations owned across expiry and restoration", async () => {
+    vi.useFakeTimers();
+    const allocating = deferred();
+    const release = deferred();
+    let canDelete = false;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input === "https://example.com/")
+        return new Response('<script src="/main.js"></script>', {
+          headers: { "content-type": "text/html" },
+        });
+      if (input === "https://example.com/main.js")
+        return new Response("fetch('/api/items')");
+      if (input === "https://daytona.test/sandbox") {
+        allocating.resolve();
+        await release.promise;
+        return reply({ id: "late-rea" });
+      }
+      if (init.method === "DELETE")
+        return canDelete
+          ? reply({})
+          : new Response("unavailable", { status: 503 });
+      return reply({});
+    });
+    const { run, ready, persisted, scheduled, flush } = fakeRun({
+      ...baseState(
+        new Date(Date.now() - 2 * 3600_000 + 1000).toISOString(),
+        "inspecting",
+        [],
+      ),
+      sandboxId: undefined,
+      evidence: [],
+      pending: "plan",
+    });
+    await ready;
+    const alarm = run.alarm();
+    await allocating.promise;
+    await vi.advanceTimersByTimeAsync(1001);
+    await alarm;
+    expect(persisted()).toMatchObject({
+      phase: "stopped",
+      pending: "stop",
+      reaPending: true,
+    });
+    expect(scheduled()).not.toBeNull();
+    release.resolve();
+    await flush();
+    expect(persisted()).toMatchObject({
+      pending: "stop",
+      reaPending: false,
+      sandboxIds: ["late-rea"],
+      deletingSandboxIds: ["late-rea"],
+    });
+    canDelete = true;
+    const restored = fakeRun(persisted(), {}, scheduled());
+    await restored.ready;
+    await restored.run.alarm();
+    expect(restored.persisted()).toMatchObject({
+      pending: undefined,
+      sandboxIds: [],
+      deletingSandboxIds: [],
+    });
+    expect(restored.scheduled()).toBeNull();
+  });
+
+  it("retires startup failures whose sandbox was already deleted", async () => {
+    let deleted = false;
+    vi.stubGlobal("fetch", async (_input: string, init: RequestInit = {}) => {
+      if (init.method === "POST") return reply({ id: "sb2" });
+      if (deleted) return new Response("not found", { status: 404 });
+      if (init.method === "DELETE") {
+        deleted = true;
+        return reply({});
+      }
+      return reply({ state: "error" });
+    });
+    const { run, ready, persisted } = fakeRun({
+      ...baseState(new Date().toISOString(), "building", []),
+      sandboxId: undefined,
+      pending: "build_setup",
+    });
+    await ready;
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "planned",
+      sandboxIds: [],
+      stoppingSandboxIds: [],
+      deletingSandboxIds: [],
+    });
+    expect(persisted().sandboxId).toBeUndefined();
+    await expect(run.stop()).resolves.toMatchObject({
+      phase: "stopped",
+      pending: undefined,
+    });
+  });
+
+  it.each(["absent", "deleted", "archived"])(
+    "cancels and promotes around a sandbox that is %s",
+    async (terminal) => {
+      vi.stubGlobal("fetch", async (input: string) => {
+        if (input === "https://daytona.test/sandbox/sb1")
+          return terminal === "absent"
+            ? new Response("missing", { status: 404 })
+            : reply({ state: terminal });
+        return reply({});
+      });
+      const cancelled = fakeRun(
+        baseState(new Date().toISOString(), "done", []),
+      );
+      await cancelled.ready;
+      await expect(cancelled.run.stop()).resolves.toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+      });
+      const promoted = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          verifiedVariantTask("v1"),
+        ]),
+        variants: [variant("v1")],
+      });
+      await promoted.ready;
+      await expect(promoted.run.promote("v1")).resolves.toMatchObject({
+        phase: "brief",
+        sandboxId: "sb2",
+        promoted: "v1",
+      });
+    },
+  );
+
+  it.each(["fork", "copy"] as const)(
+    "excludes review overrides during %s promotion",
+    async (pod) => {
+      const entered = deferred();
+      const release = deferred();
+      mockFetch();
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        const command = input.endsWith("/process/execute")
+          ? JSON.parse(String(init.body)).command
+          : "";
+        if (input.endsWith("/stop") || command.includes("git fetch")) {
+          entered.resolve();
+          await release.promise;
+        }
+        return provider(input, init);
+      });
+      const { run, ready, persisted } = fakeRun({
+        ...baseState(new Date().toISOString(), "done", [
+          verifiedVariantTask("v1"),
+        ]),
+        variants: [variant("v1", pod)],
+      });
+      await ready;
+      const promotion = run.promote("v1");
+      await entered.promise;
+      for (const verdict of ["approve", "reject"] as const)
+        await expect(
+          run.override("v1", verdict, "Change decision"),
+        ).rejects.toThrow("in progress");
+      expect(persisted().tasks[0]).toMatchObject({
+        status: "merged",
+        verification: true,
+      });
+      release.resolve();
+      await promotion;
+      expect(persisted()).toMatchObject({ phase: "brief", promoted: "v1" });
+      await run.override("v1", "approve", "Retain decision");
+    },
+  );
+
+  it("excludes promotion while a review override is awaiting verification", async () => {
+    const entered = deferred();
+    const release = deferred();
+    mockFetch({ pass: true, summary: "Verified", findings: [] });
+    const provider = fetch;
+    vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+      if (input === "https://api.openai.com/v1/chat/completions") {
+        entered.resolve();
+        await release.promise;
+      }
+      return provider(input, init);
+    });
+    const { run, ready } = fakeRun({
+      ...baseState(new Date().toISOString(), "done", [
+        { ...task("v1", "in_review"), variant: "v1" },
+      ]),
+      variants: [variant("v1", "copy")],
+    });
+    await ready;
+    const overriding = run.override("v1", "approve", "Accept");
+    await entered.promise;
+    await expect(run.promote("v1")).rejects.toThrow("in progress");
+    release.resolve();
+    await overriding;
+    await expect(run.promote("v1")).resolves.toMatchObject({ promoted: "v1" });
+  });
+
+  it("delivers a bounded diff for every file through the real review command", async () => {
+    const dir = mkdtempSync(join(process.cwd(), ".review-diff-"));
+    const git = (...args: string[]) =>
+      execFileSync("git", args, { cwd: dir, encoding: "utf8" });
+    try {
+      git("init", "-q", "-b", "main");
+      git("config", "user.email", "review@example.test");
+      git("config", "user.name", "Review test");
+      writeFileSync(join(dir, "README.md"), "base");
+      git("add", ".");
+      git("commit", "-qm", "base");
+      git("checkout", "-qb", "task/t1");
+      const names = [
+        "00-large.txt",
+        ":(glob)*",
+        "line\nbreak.txt",
+        ...Array.from({ length: 16 }, (_, i) => `file ${i} [*].txt`),
+        "zz-last.txt",
+      ];
+      for (const [i, name] of names.entries())
+        writeFileSync(
+          join(dir, name),
+          `FILE_SENTINEL_${i}\n` +
+            "observed line\n".repeat(
+              i === 0 ? 5000 : i === names.length - 1 ? 1 : 700,
+            ),
+        );
+      git("add", ".");
+      git("commit", "-qm", "submission");
+      let submitted:
+        | { diff: string; filesOutsideOwnership: string[] }
+        | undefined;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute")) {
+          const command = JSON.parse(String(init.body)).command as string;
+          const script = command
+            .replaceAll("/home/daytona/app", dir)
+            .replaceAll("/home/daytona/wt/t1", dir);
+          return reply({
+            exitCode: 0,
+            result: execFileSync("bash", ["-c", script], {
+              encoding: "utf8",
+              maxBuffer: 2_000_000,
+            }),
+          });
+        }
+        if (input === "https://api.openai.com/v1/chat/completions") {
+          const body = JSON.parse(String(init.body));
+          if (body.response_format.json_schema.name === "review") {
+            submitted = JSON.parse(body.messages[1].content);
+            return reply({
+              output_text: JSON.stringify({
+                verdict: "reject",
+                reason: "Revise",
+                findings: [],
+              }),
+            });
+          }
+          return reply({
+            output_text: JSON.stringify({
+              pass: true,
+              summary: "Checked",
+              findings: [],
+            }),
+          });
+        }
+        return reply({});
+      });
+      const { run, ready } = fakeRun({
+        ...baseState(new Date().toISOString(), "building", [
+          { ...task("t1", "building"), attempts: 2, owns: names },
+        ]),
+      });
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input.endsWith("/process/execute")) {
+          const command = JSON.parse(String(init.body)).command as string;
+          if (command.includes("/home/daytona/logs/"))
+            return reply({
+              exitCode: 0,
+              result: command.includes(".exit") ? "0" : "worker finished",
+            });
+        }
+        return provider(input, init);
+      });
+      await ready;
+      await run.alarm();
+      expect(submitted).toBeDefined();
+      expect(submitted!.filesOutsideOwnership).toEqual([]);
+      for (let i = 0; i < names.length; i++)
+        expect(submitted!.diff).toContain(`FILE_SENTINEL_${i}\n`);
+      expect(submitted!.diff.length).toBeGreaterThan(70_000);
+      expect(submitted!.diff.length).toBeLessThan(names.length * 5001);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+  it.each(["launch", "rea", "worker"])(
+    "finalizes a restored %s cancellation only after its retry confirms cleanup",
+    async (kind) => {
+      vi.useFakeTimers();
+      const entered = [deferred(), deferred()];
+      const release = [deferred(), deferred()];
+      let attempt = 0;
+      let stopped = false;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        const confirming =
+          kind === "launch"
+            ? input.endsWith("/stop")
+            : kind === "rea"
+              ? init.method === "DELETE"
+              : input.endsWith("/process/execute");
+        if (confirming) {
+          const i = attempt++;
+          entered[i]?.resolve();
+          if (release[i]) await release[i].promise;
+          if (i === 0)
+            return new Response("cleanup unavailable", { status: 503 });
+          stopped = true;
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (input.endsWith("/process/execute"))
+          return reply({ exitCode: 0, result: "" });
+        return reply({ state: stopped ? "stopped" : "started" });
+      });
+      const startedAt = new Date().toISOString();
+      const first = fakeRun({
+        ...baseState(startedAt, "building", [task("t1", "building")]),
+        pending: "stop",
+        sandboxId: kind === "rea" ? undefined : "sb1",
+        sandboxIds: ["sb1"],
+        launchingSandboxIds: kind === "launch" ? ["sb1"] : [],
+        deletingSandboxIds: kind === "rea" ? ["sb1"] : [],
+      });
+      await first.ready;
+      const failing = first.run.alarm();
+      await entered[0].promise;
+      expect(first.persisted()).toMatchObject({
+        phase: "building",
+        pending: "stop",
+        tasks: [expect.objectContaining({ status: "building" })],
+      });
+      release[0].resolve();
+      await failing;
+      expect(first.scheduled()).not.toBeNull();
+      expect(first.scheduled()).toBeLessThanOrEqual(Date.now() + 10_000);
+      const restored = fakeRun(first.persisted(), {}, first.scheduled());
+      await restored.ready;
+      const retry = restored.run.alarm();
+      await entered[1].promise;
+      expect(restored.persisted().pending).toBe("stop");
+      expect(restored.persisted().tasks[0].status).toBe("building");
+      release[1].resolve();
+      await retry;
+      expect(restored.persisted()).toMatchObject({
+        phase: "stopped",
+        pending: undefined,
+        tasks: [expect.objectContaining({ status: "stopped" })],
+      });
+      expect(
+        (await restored.run.events(0)).filter((e) => e.type === "phase").at(-1)
+          ?.data,
+      ).toEqual({ phase: "stopped" });
+      expect(restored.scheduled()).toBe(Date.parse(startedAt) + 2 * 3600_000);
+    },
+  );
+
+  it("keeps scheduling cancellation while a restored REA allocation remains unknown", async () => {
+    const { run, ready, persisted, scheduled } = fakeRun({
+      ...baseState(new Date().toISOString(), "inspecting", []),
+      sandboxId: undefined,
+      reaPending: true,
+      pending: "stop",
+    });
+    await ready;
+    await run.alarm();
+    expect(persisted()).toMatchObject({
+      phase: "inspecting",
+      pending: "stop",
+      reaPending: true,
+    });
+    expect(scheduled()).not.toBeNull();
+    expect(scheduled()).toBeLessThanOrEqual(Date.now() + 10_000);
+  });
+
+  it("refuses backend variants through the action and queued setup without starting paid work", async () => {
+    const fetcher = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetcher);
+    const initial = baseState(new Date().toISOString(), "done", []);
+    initial.spec.scope = "backend";
+    const action = fakeRun(initial);
+    await action.ready;
+    await expect(action.run.makeVariants()).rejects.toThrow("frontend scope");
+    expect(action.persisted()).toMatchObject({ phase: "done", tasks: [] });
+    const queued = fakeRun({
+      ...initial,
+      phase: "variants",
+      pending: "variants",
+    });
+    await queued.ready;
+    await queued.run.alarm();
+    expect(queued.persisted()).toMatchObject({ phase: "done", tasks: [] });
+    expect(queued.persisted().variants).toBeUndefined();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it.each(
+    ["frontend", "both"].flatMap((scope) =>
+      ["fork", "copy"].map((pod) => [scope, pod]),
+    ),
+  )(
+    "starts executable %s previews in every %s variant on its own port",
+    async (scope, pod) => {
+      const dir = mkdtempSync(join(process.cwd(), ".review-preview-"));
+      const mainDir = join(dir, "main");
+      const sessions = new Set<string>();
+      const launches: {
+        sb: string;
+        session: string;
+        program: string;
+        port: number;
+        dir: string;
+      }[] = [];
+      let forks = 1;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (input === "https://api.openai.com/v1/chat/completions")
+          return reply({
+            output_text: JSON.stringify({
+              variants: [1, 2, 3].map((i) => ({
+                title: `Variant ${i}`,
+                change: "Layout",
+                explanation: "Alternative",
+              })),
+            }),
+          });
+        if (input.endsWith("/fork")) {
+          const id = `sb${++forks}`;
+          sessions.add(`${id}:preview`);
+          return reply({ id });
+        }
+        if (input.endsWith("/toolbox-proxy-url"))
+          return reply({ url: "https://toolbox.test" });
+        if (init.method === "DELETE") {
+          const match = input.match(
+            /toolbox.test\/(sb\d+)\/process\/session\/(.+)$/,
+          );
+          if (match) sessions.delete(`${match[1]}:${match[2]}`);
+          return reply({});
+        }
+        if (input.startsWith("https://daytona.test/sandbox/"))
+          return reply({ id: input.split("/").pop(), state: "started" });
+        return reply({ exitCode: 0, result: "abc" });
+      });
+      vi.spyOn(Daytona.prototype, "startAsync").mockImplementation(
+        async (sb, session, command, beforeWork) => {
+          await beforeWork?.();
+          expect(sessions.has(`${sb}:${session}`)).toBe(false);
+          const mapped = command
+            .replaceAll("/home/daytona/app", mainDir)
+            .replaceAll("/home/daytona/variants/", `${dir}/`);
+          const output = execFileSync(
+            "bash",
+            [
+              "-c",
+              `node() { printf '{"program":"node","port":%s,"dir":"%s"}\n' "$PORT" "$PWD"; exit; }; npx() { printf '{"program":"serve","port":%s,"dir":"%s"}\n' "$4" "$PWD"; exit; }; ${mapped}`,
+            ],
+            { encoding: "utf8" },
+          );
+          launches.push({ sb, session, ...JSON.parse(output) });
+          sessions.add(`${sb}:${session}`);
+          return "preview-command";
+        },
+      );
+      try {
+        for (const name of ["main", "v1", "v2", "v3"])
+          mkdirSync(join(dir, name));
+        const initial = baseState(new Date().toISOString(), "done", []);
+        initial.spec.scope = scope;
+        const { run, ready } = fakeRun({
+          ...initial,
+          forkUnavailable: pod === "copy",
+        });
+        await ready;
+        await run.makeVariants();
+        await run.alarm();
+        expect(launches).toHaveLength(3);
+        launches.forEach((launch, i) => {
+          expect(launch).toMatchObject({
+            program: scope === "both" ? "node" : "serve",
+            port: pod === "fork" ? 3000 : 3001 + i,
+            dir: pod === "fork" ? mainDir : join(dir, `v${i + 1}`),
+          });
+        });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(
+    ["new", "frontend", "backend", "both"].flatMap((from) =>
+      ["frontend", "backend", "both"].map((to) => [from, to]),
+    ),
+  )(
+    "replaces an existing %s preview for an approved %s continuation",
+    async (from, to) => {
+      const dir = mkdtempSync(join(process.cwd(), ".review-preview-"));
+      let session: { program: string; port: number; dir?: string } | undefined =
+        from === "new"
+          ? undefined
+          : { program: from === "frontend" ? "serve" : "node", port: 3000 };
+      let allocated = false;
+      const deleted: string[] = [];
+      mockFetch();
+      const provider = fetch;
+      vi.stubGlobal("fetch", async (input: string, init: RequestInit = {}) => {
+        if (
+          input === "https://daytona.test/sandbox" &&
+          init.method === "POST"
+        ) {
+          allocated = true;
+          return reply({ id: "sb1" });
+        }
+        if (input === "https://daytona.test/sandbox/sb1")
+          return reply({ id: "sb1", state: "started" });
+        if (
+          init.method === "DELETE" &&
+          input.endsWith("/process/session/preview")
+        ) {
+          deleted.push(input);
+          const exists = Boolean(session);
+          session = undefined;
+          return exists ? reply({}) : new Response("missing", { status: 404 });
+        }
+        return provider(input, init);
+      });
+      vi.spyOn(Daytona.prototype, "startAsync").mockImplementation(
+        async (_sb, _session, command) => {
+          expect(session).toBeUndefined();
+          session = JSON.parse(
+            execFileSync(
+              "bash",
+              [
+                "-c",
+                `node() { printf '{"program":"node","port":%s,"dir":"%s"}\n' "$PORT" "$PWD"; exit; }; npx() { printf '{"program":"serve","port":%s,"dir":"%s"}\n' "$4" "$PWD"; exit; }; ${command.replaceAll("/home/daytona/app", dir)}`,
+              ],
+              { encoding: "utf8" },
+            ),
+          );
+          return "replacement-preview";
+        },
+      );
+      try {
+        const initial = baseState(new Date().toISOString(), "planned", []);
+        initial.spec.scope = to;
+        const { run, ready, persisted } = fakeRun({
+          ...initial,
+          sandboxId: from === "new" ? undefined : "sb1",
+          promoted: from === "new" ? undefined : "v1",
+        });
+        await ready;
+        await run.startBuild();
+        await run.alarm();
+        expect(deleted).toEqual([
+          "https://toolbox.test/sb1/process/session/preview",
+        ]);
+        expect(session).toEqual({
+          program: to === "frontend" ? "serve" : "node",
+          port: 3000,
+          dir,
+        });
+        expect(persisted()).toMatchObject({
+          phase: "building",
+          sandboxId: "sb1",
+          previewReady: true,
+          pending: undefined,
+        });
+        expect(allocated).toBe(from === "new");
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+});

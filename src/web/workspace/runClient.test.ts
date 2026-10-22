@@ -127,7 +127,7 @@ describe("run client", () => {
       for (const result of [
         await createRun(brief, reply(401, body)),
         await fetchEvents("run_1", 0, reply(401, body)),
-        await fetchPreviewLink("run_1", reply(401, body)),
+        await fetchPreviewLink("run_1", undefined, reply(401, body)),
         await fetchEvidence(
           "/api/v1/runs/run_1/evidence/ev_1",
           reply(401, body),
@@ -163,7 +163,7 @@ describe("run client", () => {
       () => fetchEvents("r1", 0, edge),
       () => fetchRun("r1", edge),
       () => fetchRunHistory(edge),
-      () => fetchPreviewLink("r1", edge),
+      () => fetchPreviewLink("r1", undefined, edge),
       () => fetchEvidence("/api/v1/runs/r1/evidence/ev1", edge),
     ])
       expect(await request()).toMatchObject({
@@ -175,12 +175,18 @@ describe("run client", () => {
 
   it("reads a signed https preview link and refuses anything else", async () => {
     const url = "https://3000-abc.proxy.daytona.works/";
-    expect(await fetchPreviewLink("run_1", reply(200, { url }))).toEqual({
+    expect(
+      await fetchPreviewLink("run_1", undefined, reply(200, { url })),
+    ).toEqual({
       ok: true,
       value: url,
     });
     expect(
-      await fetchPreviewLink("run_1", reply(200, { url: "javascript:x" })),
+      await fetchPreviewLink(
+        "run_1",
+        undefined,
+        reply(200, { url: "javascript:x" }),
+      ),
     ).toMatchObject({ ok: false, error: "failed" });
   });
 
